@@ -13,7 +13,6 @@
 #include <GL/gl.h>
 #include <GL/glx.h>
 #include "linux_gl.h"
-#define LC_OPENGL_DYNAMIC 1
 #endif 
 
 #ifdef LC_MACOSX
@@ -21,34 +20,19 @@
 #include <AGL/agl.h>
 #endif
 
-#ifdef LC_IPHONE
-#import <UIKit/UIKit.h>
-#import <OpenGLES/EAGL.h>
-#import <OpenGLES/ES1/gl.h>
-#import <OpenGLES/ES1/glext.h>
-#define LC_OPENGLES 1
-#endif
-
-#ifdef LC_OPENGLES
-
-typedef GLfloat GLdouble;
-
-#define glFrustum(l, r, b, t, n, f) glFrustumf(l, r, b, t, n, f)
-#define glOrtho(l, r, b, t, n, f) glOrthof(l, r, b, t, n, f)
-
-#endif
-
 //#include <GL/glu.h> // TODO: remove all glu calls
-void gluLookAt(GLfloat eyex, GLfloat eyey, GLfloat eyez,
-               GLfloat centerx, GLfloat centery, GLfloat centerz,
-               GLfloat upx, GLfloat upy, GLfloat upz);
-void gluPerspective(GLfloat fovy, GLfloat aspect, GLfloat zNear, GLfloat zFar);
-GLint gluProject(GLfloat objx, GLfloat objy, GLfloat objz,
-                 const GLfloat model[16], const GLfloat proj[16], const GLint viewport[4],
-                 GLfloat *winx, GLfloat *winy, GLfloat *winz);
-GLint gluUnProject(GLfloat winx, GLfloat winy, GLfloat winz,
-                   const GLfloat model[16], const GLfloat proj[16], const GLint viewport[4],
-                   GLfloat *objx, GLfloat *objy, GLfloat *objz);
+void gluLookAt (GLdouble eyex, GLdouble eyey, GLdouble eyez,
+		GLdouble centerx, GLdouble centery, GLdouble centerz,
+		GLdouble upx, GLdouble upy, GLdouble upz);
+void gluPerspective (GLdouble fovy, GLdouble aspect, GLdouble zNear, GLdouble zFar);
+GLint gluProject (GLdouble objx, GLdouble objy, GLdouble objz,
+		  const GLdouble model[16], const GLdouble proj[16],
+		  const GLint viewport[4],
+		  GLdouble *winx, GLdouble *winy, GLdouble *winz);
+GLint gluUnProject (GLdouble winx, GLdouble winy, GLdouble winz,
+		    const GLdouble model[16], const GLdouble proj[16],
+		    const GLint viewport[4],
+		    GLdouble *objx, GLdouble *objy, GLdouble *objz);
 
 bool GL_Initialize (const char* libname);
 void GL_Shutdown ();
@@ -58,8 +42,6 @@ int  GL_GetMultiTextures ();
 bool GL_HasCompiledVertexArrays ();
 bool GL_HasClampToEdge ();
 bool GL_HasPointParameters ();
-
-#ifdef LC_OPENGL_DYNAMIC
 
 // =============================================================================
 // OpenGL functions typedefs
@@ -428,8 +410,6 @@ typedef void (APIENTRY *PFNGLLOADNAME) (GLuint name);
 typedef void (APIENTRY *PFNGLPUSHNAME) (GLuint name);
 typedef void (APIENTRY *PFNGLPOPNAME) (void);
 
-#endif // LC_OPENGL_DYNAMIC
-
 // GL_ARB_multitexture
 typedef void (APIENTRY *PFNGLACTIVETEXTUREARB) (GLenum texture);
 typedef void (APIENTRY *PFNGLCLIENTACTIVETEXTUREARB) (GLenum texture);
@@ -535,8 +515,6 @@ typedef void (APIENTRY *PFNGLUNLOCKARRAYSEXT) (void);
 
 // =============================================================================
 // OpenGL extern declarations
-
-#ifdef LC_OPENGL_DYNAMIC
 
 extern PFNGLCLEARINDEX pfnglClearIndex;
 extern PFNGLCLEARCOLOR pfnglClearColor;
@@ -875,8 +853,6 @@ extern PFNGLLOADNAME pfnglLoadName;
 extern PFNGLPUSHNAME pfnglPushName;
 extern PFNGLPOPNAME pfnglPopName;
 
-#endif // LC_OPENGL_DYNAMIC
-
 extern PFNGLACTIVETEXTUREARB pfnglActiveTextureARB;
 extern PFNGLCLIENTACTIVETEXTUREARB pfnglClientActiveTextureARB;
 extern PFNGLMULTITEXCOORD1DARB pfnglMultiTexCoord1dARB;
@@ -918,8 +894,6 @@ extern PFNGLUNLOCKARRAYSEXT pfnglUnlockArraysEXT;
 
 // =============================================================================
 // Replace OpenGL function names with the dynamic functions
-
-#ifdef LC_OPENGL_DYNAMIC
 
 #define glClearIndex pfnglClearIndex
 #define glClearColor pfnglClearColor
@@ -1258,8 +1232,6 @@ extern PFNGLUNLOCKARRAYSEXT pfnglUnlockArraysEXT;
 #define glPushName pfnglPushName
 #define glPopName pfnglPopName
 
-#endif // LC_OPENGL_DYNAMIC
-
 #define glActiveTextureARB pfnglActiveTextureARB
 #define glClientActiveTextureARB pfnglClientActiveTextureARB
 #define glMultiTexCoord1dARB pfnglMultiTexCoord1dARB
@@ -1298,20 +1270,5 @@ extern PFNGLUNLOCKARRAYSEXT pfnglUnlockArraysEXT;
 #define glPointParameterfvEXT pfnglPointParameterfvEXT
 #define glLockArraysEXT pfnglLockArraysEXT
 #define glUnlockArraysEXT pfnglUnlockArraysEXT
-
-inline void glEnableLineStipple()
-{
-#ifndef LC_OPENGLES
-	glEnable(GL_LINE_STIPPLE);
-	glLineStipple(5, 0x5555);
-#endif
-}
-
-inline void glDisableLineStipple()
-{
-#ifndef LC_OPENGLES
-	glDisable(GL_LINE_STIPPLE);
-#endif
-}
 
 #endif // _OPENGL_H_

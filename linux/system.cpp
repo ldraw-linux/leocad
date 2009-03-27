@@ -15,7 +15,6 @@
 #include "toolbar.h"
 #include "dialogs.h"
 #include "globals.h"
-#include "lc_application.h"
 
 // =============================================================================
 // Cursor functions
@@ -180,7 +179,7 @@ void SystemUpdateCategories(bool SearchOnly)
 {
 }
 
-static void create_bitmap_and_mask_from_xpm (GdkBitmap **bitmap, GdkBitmap **mask, const char **xpm)
+static void create_bitmap_and_mask_from_xpm (GdkBitmap **bitmap, GdkBitmap **mask, gchar **xpm)
 {
   int height, width, colors;
   char pixmap_buffer [(32 * 32)/8];
@@ -241,7 +240,7 @@ void SystemUpdateAction(int new_action, int old_action)
     return;
 
   GtkWidget* button;
-  const char** xpm = NULL;
+  char** xpm = NULL;
   int x, y;
 
   switch (new_action)
@@ -293,9 +292,9 @@ void SystemUpdateAction(int new_action, int old_action)
 
   if (xpm != NULL)
   {
-    create_bitmap_and_mask_from_xpm(&bitmap, &mask, xpm);
-    cursor = gdk_cursor_new_from_pixmap(bitmap, mask, &white, &black, x, y);
-    gdk_window_set_cursor(drawing_area->window, cursor);
+    create_bitmap_and_mask_from_xpm (&bitmap, &mask, xpm);
+    cursor = gdk_cursor_new_from_pixmap (bitmap, mask, &white, &black, x, y);
+    gdk_window_set_cursor (drawing_area->window, cursor);
   }
   else
   {
@@ -491,13 +490,13 @@ void SystemUpdateSnap(unsigned short move_snap, unsigned short RotateSnap)
   if (!label_snap)
     return;
 
-  char Text[256], xy[32], z[32];
+  char text[11];
+  if (move_snap)
+    sprintf (text, "Move x%i", move_snap);
+  else
+    strcpy (text, "Move /2");
 
-  lcGetActiveProject()->GetSnapDistanceText(xy, z);
-
-  sprintf(Text, " M: %s %s R: %d ", xy, z, RotateSnap);
-
-  gtk_label_set (GTK_LABEL (label_snap), Text);
+  gtk_label_set (GTK_LABEL (label_snap), text);
 }
 
 void SystemUpdateSelected(unsigned long flags, int SelectedCount, Object* Focus)
@@ -512,7 +511,7 @@ void SystemUpdateSelected(unsigned long flags, int SelectedCount, Object* Focus)
 
   gtk_widget_set_sensitive (item, (flags & LC_SEL_UNSELECTED) != 0);
   item = GTK_WIDGET (gtk_object_get_data (GTK_OBJECT (((GtkWidget*)(*main_window))), "menu_edit_select_none"));
-  gtk_widget_set_sensitive (item, (flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT)) != 0);
+  gtk_widget_set_sensitive (item, flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT) != 0);
   item = GTK_WIDGET (gtk_object_get_data (GTK_OBJECT (((GtkWidget*)(*main_window))), "menu_edit_select_invert"));
   gtk_widget_set_sensitive (item, (flags & LC_SEL_NO_PIECES) == 0);
   item = GTK_WIDGET (gtk_object_get_data (GTK_OBJECT (((GtkWidget*)(*main_window))), "menu_edit_select_byname"));
@@ -610,74 +609,80 @@ void SystemFinish()
 }
 
 // FIXME: remove 
-int SystemDoMessageBox(const char* prompt, int mode)
+int SystemDoMessageBox(char* prompt, int mode)
 {
-  return msgbox_execute(prompt, "LeoCAD", mode);
+  return msgbox_execute (prompt, "LeoCAD", mode);
 }
 
 bool SystemDoDialog(int mode, void* param)
 {
   switch (mode)
   {
-    case LC_DLG_FILE_OPEN_PROJECT:
+    case LC_DLG_FILE_OPEN_PROJECT: {
       return openprojectdlg_execute ((char*)param) == LC_OK;
+    } break;
 
-    case LC_DLG_FILE_SAVE_PROJECT:
+    case LC_DLG_FILE_SAVE_PROJECT: {
       return saveprojectdlg_execute ((char*)param) == LC_OK;
+    } break;
 
-    case LC_DLG_FILE_MERGE_PROJECT:
+    case LC_DLG_FILE_MERGE_PROJECT: {
       return openprojectdlg_execute ((char*)param) == LC_OK;
+    } break;
 
-    case LC_DLG_FILE_OPEN:
-      return openprojectdlg_execute ((char*)param) == LC_OK;
-
-    case LC_DLG_ABOUT:
+    case LC_DLG_ABOUT: {
       return aboutdlg_execute(param) == LC_OK;
+    } break;
 
-    case LC_DLG_ARRAY:
+    case LC_DLG_ARRAY: {
       return arraydlg_execute(param) == LC_OK;
+    } break;
 
-    case LC_DLG_HTML:
+    case LC_DLG_HTML: {
       return htmldlg_execute(param) == LC_OK;
+    } break;
 
-    case LC_DLG_POVRAY:
+    case LC_DLG_POVRAY: {
       return povraydlg_execute(param) == LC_OK;
+    } break;
 
-    case LC_DLG_VRML97:
+    case LC_DLG_WAVEFRONT: {
       return filedlg_execute("Save File", (char*)param) == LC_OK;
+    } break;
 
-    case LC_DLG_X3DV:
-      return filedlg_execute("Save File", (char*)param) == LC_OK;
-
-    case LC_DLG_WAVEFRONT:
-      return filedlg_execute("Save File", (char*)param) == LC_OK;
-
-    case LC_DLG_PREFERENCES:
+    case LC_DLG_PREFERENCES: {
       return preferencesdlg_execute(param) == LC_OK;
+    } break;
 
-    case LC_DLG_PICTURE_SAVE:
+    case LC_DLG_PICTURE_SAVE: {
       return savepicturedlg_execute (param) == LC_OK;
+    } break;
 
-    case LC_DLG_MINIFIG:
+    case LC_DLG_MINIFIG: {
       return minifigdlg_execute(param) == LC_OK;
+    } break;
 
-    case LC_DLG_PROPERTIES:
+    case LC_DLG_PROPERTIES: {
       return propertiesdlg_execute(param) == LC_OK;
+    } break;
 
-    case LC_DLG_LIBRARY:
+    case LC_DLG_LIBRARY: {
       return librarydlg_execute(param) == LC_OK;
+    } break;
 
-    case LC_DLG_SELECTBYNAME:
-      break;
+    case LC_DLG_SELECTBYNAME: {
+    } break;
 
-    case LC_DLG_STEPCHOOSE:
-      break;
+    case LC_DLG_STEPCHOOSE: {
+    } break;
 
-    case LC_DLG_EDITGROUPS:
+    case LC_DLG_EDITGROUPS: {
       return groupeditdlg_execute(param) == LC_OK;
+    } break;
 
-    case LC_DLG_GROUP:
+    case LC_DLG_GROUP: {
       return groupdlg_execute(param) == LC_OK;
+    } break;
   }
 
   return false;
@@ -689,22 +694,17 @@ void SystemDoPopupMenu(int nMenu, int x, int y)
 
 void SystemDoWaitCursor(int code)
 {
-  GdkWindow* window = ((GtkWidget*)(*main_window))->window;
-
-  if (!GDK_IS_WINDOW(window))
-    return;
-
   if (code == 1)
   {
-    GdkCursor *cursor = gdk_cursor_new(GDK_WATCH);
-    gdk_window_set_cursor(window, cursor);
-    gdk_cursor_destroy(cursor);
+    GdkCursor *cursor = gdk_cursor_new (GDK_WATCH);
+    gdk_window_set_cursor (((GtkWidget*)(*main_window))->window, cursor);
+    gdk_cursor_destroy (cursor);
   } 
   else
   {
-    GdkCursor *cursor = gdk_cursor_new(GDK_LEFT_PTR);
-    gdk_window_set_cursor(window, cursor);
-    gdk_cursor_destroy(cursor);
+    GdkCursor *cursor = gdk_cursor_new (GDK_LEFT_PTR);
+    gdk_window_set_cursor (((GtkWidget*)(*main_window))->window, cursor);
+    gdk_cursor_destroy (cursor);
   }
 }
 

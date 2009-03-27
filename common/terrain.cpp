@@ -581,15 +581,6 @@ void Terrain::Render(Camera* pCam, float aspect)
 		glTranslatef(eye[0], eye[1], 0);
 		glScalef(pCam->m_zFar, pCam->m_zFar, 1);
 
-		float verts[4][2] =
-		{
-			{ -1, -1 }, {  1, -1 },
-			{  1,  1 },	{ -1,  1 }
-		};
-
-		glEnableClientState(GL_VERTEX_ARRAY);
-		glVertexPointer(2, GL_FLOAT, 0, verts);
-
 		if (m_nOptions & LC_TERRAIN_TEXTURE)
 		{
 			glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
@@ -604,29 +595,29 @@ float tx, ty;
 tx = (tw*eye[0])/(2*pCam->m_zFar);
 ty = (th*eye[1])/(2*pCam->m_zFar);
 
-			float coords[4][2] =
-			{
-				{    tx,    ty }, { tx+tw,    ty },
-				{ tx+tw, ty+th }, {    tx, ty+th }
-			};
-
-			glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-			glTexCoordPointer(2, GL_FLOAT, 0, coords);
-
-			glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-
-			glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+			glBegin(GL_QUADS);
+				glTexCoord2f(tx, ty);
+				glVertex2f(-1, -1);
+				glTexCoord2f(tx+tw, ty);
+				glVertex2f(1, -1);
+				glTexCoord2f(tx+tw, ty+th);
+				glVertex2f(1, 1);
+				glTexCoord2f(tx, ty+th);
+				glVertex2f(-1, 1);
+			glEnd();
 
 			glDisable(GL_TEXTURE_2D);
 		}
 		else
 		{
-			glColor4f(m_fColor[0], m_fColor[1], m_fColor[2], 1.0f);
-
-			glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+			glColor3fv(m_fColor);
+			glBegin(GL_QUADS);
+				glVertex2f(-1, -1);
+				glVertex2f(1, -1);
+				glVertex2f(1, 1);
+				glVertex2f(-1, 1);
+			glEnd();
 		}
-
-		glDisableClientState(GL_VERTEX_ARRAY);
 
 		glPopMatrix();
 	}
@@ -635,7 +626,7 @@ ty = (th*eye[1])/(2*pCam->m_zFar);
 		FindVisiblePatches(pCam, aspect);
 
 		int i, j;
-		glColor4f(m_fColor[0], m_fColor[1], m_fColor[2], 1.0f);
+		glColor3fv(m_fColor);
 		glEnableClientState(GL_VERTEX_ARRAY);
 
 		if (m_nOptions & LC_TERRAIN_TEXTURE)

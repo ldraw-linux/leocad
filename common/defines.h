@@ -5,7 +5,7 @@
 #define _DEFINES_H_
 
 // Check for supported platforms.
-#if !(defined(LC_WINDOWS) || defined(LC_LINUX) || defined(LC_MACOSX) || defined(LC_IPHONE))
+#if !(defined(LC_WINDOWS) || defined(LC_LINUX) || defined(LC_MACOSX))
 #error  YOU NEED TO DEFINE YOUR OS
 #endif
 
@@ -53,9 +53,9 @@ int stricmp(const char* str1, const char* str2);
 
 #endif
 
-#if defined(LC_MACOSX) || defined(LC_IPHONE) 
+#ifdef LC_MACOSX
 #include <sys/param.h>
-#define LC_MAXPATH MAXPATHLEN
+#define LC_MAXPATH MAXPATHLEN //FILENAME_MAX
 
 #define KEY_SHIFT       0x01
 #define KEY_CONTROL     0x02

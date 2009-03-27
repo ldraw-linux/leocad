@@ -118,9 +118,9 @@ protected:
   char m_strName[81];
   bool m_bEnabled;
 
-  void DrawCone();
-  void DrawTarget();
-  void DrawSphere();
+  GLuint m_nList;
+  static GLuint m_nSphereList;
+  static GLuint m_nTargetList;
 
   // Temporary parameters
   float m_fPos[4];

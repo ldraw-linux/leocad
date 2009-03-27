@@ -31,9 +31,9 @@ inline static void SetCurrentColor(unsigned char nColor, bool* bTrans, bool bLig
 	bool Transparent = (nColor > 13 && nColor < 22);
 
 	if (bLighting || Transparent)
-		glColor4ub(ColorArray[nColor][0], ColorArray[nColor][1], ColorArray[nColor][2], ColorArray[nColor][3]);
+		glColor4ubv(ColorArray[nColor]);
 	else
-		glColor4ub(FlatColorArray[nColor][0], FlatColorArray[nColor][1], FlatColorArray[nColor][2], 255);
+		glColor3ubv(FlatColorArray[nColor]);
 
 	if (nColor > 27)
 		return;
@@ -483,6 +483,21 @@ void Piece::MinIntersectDist(LC_CLICKLINE* pLine)
 		{
 			info++;
 
+			for (i = 0; i < *info; i += 4)
+			{
+				Vector3 v1(verts[info[i+1]*3], verts[info[i+1]*3+1], verts[info[i+1]*3+2]);
+				Vector3 v2(verts[info[i+2]*3], verts[info[i+2]*3+1], verts[info[i+2]*3+2]);
+				Vector3 v3(verts[info[i+3]*3], verts[info[i+3]*3+1], verts[info[i+3]*3+2]);
+				Vector3 v4(verts[info[i+4]*3], verts[info[i+4]*3+1], verts[info[i+4]*3+2]);
+
+				if (LineQuadMinIntersection(v1, v2, v3, v4, Start, End, pLine->mindist, Intersection))
+				{
+					pLine->pClosest = this;
+				}
+			}
+
+			info += *info + 1;
+
 			for (i = 0; i < *info; i += 3)
 			{
 				Vector3 v1(verts[info[i+1]*3], verts[info[i+1]*3+1], verts[info[i+1]*3+2]);
@@ -508,6 +523,21 @@ void Piece::MinIntersectDist(LC_CLICKLINE* pLine)
 		while (colors--)
 		{
 			info++;
+
+			for (i = 0; i < *info; i += 4)
+			{
+				Vector3 v1(verts[info[i+1]*3], verts[info[i+1]*3+1], verts[info[i+1]*3+2]);
+				Vector3 v2(verts[info[i+2]*3], verts[info[i+2]*3+1], verts[info[i+2]*3+2]);
+				Vector3 v3(verts[info[i+3]*3], verts[info[i+3]*3+1], verts[info[i+3]*3+2]);
+				Vector3 v4(verts[info[i+4]*3], verts[info[i+4]*3+1], verts[info[i+4]*3+2]);
+
+				if (LineQuadMinIntersection(v1, v2, v3, v4, Start, End, pLine->mindist, Intersection))
+				{
+					pLine->pClosest = this;
+				}
+			}
+
+			info += *info + 1;
 
 			for (i = 0; i < *info; i += 3)
 			{
@@ -672,6 +702,18 @@ bool Piece::IntersectsVolume(const Vector4* Planes, int NumPlanes)
 		{
 			info++;
 
+			for (i = 0; i < *info; i += 4)
+			{
+				if (PolygonIntersectsPlanes(&verts[info[i+1]*3], &verts[info[i+2]*3],
+				                            &verts[info[i+3]*3], &verts[info[i+4]*3], LocalPlanes, NumPlanes))
+				{
+					ret = true;
+					break;
+				}
+			}
+
+			info += *info + 1;
+
 			for (i = 0; i < *info; i += 3)
 			{
 				if (PolygonIntersectsPlanes(&verts[info[i+1]*3], &verts[info[i+2]*3],
@@ -695,6 +737,18 @@ bool Piece::IntersectsVolume(const Vector4* Planes, int NumPlanes)
 		while (colors--)
 		{
 			info++;
+
+			for (i = 0; i < *info; i += 4)
+			{
+				if (PolygonIntersectsPlanes(&verts[info[i+1]*3], &verts[info[i+2]*3], 
+				                            &verts[info[i+3]*3], &verts[info[i+4]*3], LocalPlanes, NumPlanes))
+				{
+					ret = true;
+					break;
+				}
+			}
+
+			info += *info + 1;
 
 			for (i = 0; i < *info; i += 3)
 			{
@@ -824,7 +878,7 @@ void Piece::BuildDrawInfo()
 	DRAWGROUP* dg;
 	bool add;
 	unsigned short group, colcount, i, j;
-	unsigned long count[LC_COL_DEFAULT+1][2], vert;
+	unsigned long count[LC_COL_DEFAULT+1][3], vert;
 	memset (count, 0, sizeof(count));
 
 	// Get the vertex count
@@ -859,6 +913,8 @@ void Piece::BuildDrawInfo()
 					p += *p + 1;
 					count[curcol][1] += *p;
 					p += *p + 1;
+					count[curcol][2] += *p;
+					p += *p + 1;
 				}
 			}
 			else
@@ -876,6 +932,8 @@ void Piece::BuildDrawInfo()
 					p += *p + 1;
 					count[curcol][1] += *p;
 					p += *p + 1;
+					count[curcol][2] += *p;
+					p += *p + 1;
 				}
 			}
 		}
@@ -884,12 +942,12 @@ void Piece::BuildDrawInfo()
 	colcount = 0;
 	vert = 0;
 	for (i = 0; i < LC_COL_DEFAULT+1; i++)
-		if (count[i][0] || count[i][1])
+		if (count[i][0] || count[i][1] || count[i][2])
 		{
 			colcount++;
-			vert += count[i][0] + count[i][1];
+			vert += count[i][0] + count[i][1] + count[i][2];
 		}
-	vert += (colcount*3)+1;
+	vert += (colcount*4)+1;
 
 	// Build the info
 	if (m_pPieceInfo->m_nFlags & LC_PIECE_LONGDATA)
@@ -902,12 +960,12 @@ void Piece::BuildDrawInfo()
 
 		for (i = LC_COL_DEFAULT; i != LC_COL_EDGES+1;)
 		{
-			if (count[i][0] || count[i][1])
+			if (count[i][0] || count[i][1] || count[i][2])
 			{
 				*drawinfo = i;
 				drawinfo++;
 
-				for (j = 0; j < 2; j++)
+				for (j = 0; j < 3; j++)
 				{
 					*drawinfo = count[i][j];
 					drawinfo++;
@@ -956,10 +1014,18 @@ void Piece::BuildDrawInfo()
 									drawinfo += *p;
 								}
 								p += *p + 1;
-															}
+								
+								if (j == 2)
+								{
+									memcpy(drawinfo, p+1, (*p)*sizeof(unsigned long));
+									drawinfo += *p;
+								}
+								p += *p + 1;
+							}
 							else
 							{
 								p++;
+								p += *p + 1;
 								p += *p + 1;
 								p += *p + 1;
 							}
@@ -983,12 +1049,12 @@ void Piece::BuildDrawInfo()
 
 		for (i = LC_COL_DEFAULT; i != LC_COL_EDGES+1;)
 		{
-			if (count[i][0] || count[i][1])
+			if (count[i][0] || count[i][1] || count[i][2])
 			{
 				*drawinfo = i;
 				drawinfo++;
 
-				for (j = 0; j < 2; j++)
+				for (j = 0; j < 3; j++)
 				{
 					*drawinfo = (unsigned short)count[i][j];
 					drawinfo++;
@@ -1037,10 +1103,18 @@ void Piece::BuildDrawInfo()
 									drawinfo += *p;
 								}
 								p += *p + 1;
+								
+								if (j == 2)
+								{
+									memcpy(drawinfo, p+1, (*p)*sizeof(unsigned short));
+									drawinfo += *p;
+								}
+								p += *p + 1;
 							}
 							else
 							{
 								p++;
+								p += *p + 1;
 								p += *p + 1;
 								p += *p + 1;
 							}
@@ -1063,23 +1137,20 @@ void Piece::RenderBox(bool bHilite, float fLineWidth)
 	glTranslatef(m_fPosition[0], m_fPosition[1], m_fPosition[2]);
 	glRotatef(m_fRotation[3], m_fRotation[0], m_fRotation[1], m_fRotation[2]);
 
-#ifndef LC_OPENGLES
 	if (bHilite && ((m_nState & LC_PIECE_SELECTED) != 0))
 	{
-		int Color = m_nState & LC_PIECE_FOCUSED ? LC_COL_FOCUSED : LC_COL_SELECTED;
-		glColor4ub(FlatColorArray[Color][0], FlatColorArray[Color][1], FlatColorArray[Color][2], 255);
+		glColor3ubv(FlatColorArray[m_nState & LC_PIECE_FOCUSED ? LC_COL_FOCUSED : LC_COL_SELECTED]);
 		glLineWidth(2*fLineWidth);
 		glPushAttrib(GL_POLYGON_BIT);
 		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-		m_pPieceInfo->RenderBox();
+		glCallList(m_pPieceInfo->GetBoxDisplayList());
 		glPopAttrib();
 		glLineWidth(fLineWidth);
 	}
 	else
-#endif
 	{
-		glColor4ub(FlatColorArray[m_nColor][0], FlatColorArray[m_nColor][1], FlatColorArray[m_nColor][2], 255);
-		m_pPieceInfo->RenderBox();
+		glColor3ubv(FlatColorArray[m_nColor]);
+		glCallList(m_pPieceInfo->GetBoxDisplayList());
 	}
 	glPopMatrix();
 }
@@ -1103,23 +1174,21 @@ void Piece::Render(bool bLighting, bool bEdges, unsigned char* nLastColor, bool*
 		}
 
 		glEnable(GL_TEXTURE_2D);
-		glEnableClientState(GL_VERTEX_ARRAY);
-		glVertexPointer(3, GL_FLOAT, 0, m_pPieceInfo->m_pTextures[sh].vertex);
-		glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-		glTexCoordPointer(2, GL_FLOAT, 0, m_pPieceInfo->m_pTextures[sh].coords);
-
-		glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-
-		glDisableClientState(GL_VERTEX_ARRAY);
-		glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+		glBegin(GL_QUADS);
+		glTexCoord2fv(m_pPieceInfo->m_pTextures[sh].coords[0]);
+		glVertex3fv(m_pPieceInfo->m_pTextures[sh].vertex[0]);
+		glTexCoord2fv(m_pPieceInfo->m_pTextures[sh].coords[1]);
+		glVertex3fv(m_pPieceInfo->m_pTextures[sh].vertex[1]);
+		glTexCoord2fv(m_pPieceInfo->m_pTextures[sh].coords[2]);
+		glVertex3fv(m_pPieceInfo->m_pTextures[sh].vertex[2]);
+		glTexCoord2fv(m_pPieceInfo->m_pTextures[sh].coords[3]);
+		glVertex3fv(m_pPieceInfo->m_pTextures[sh].vertex[3]);
+		glEnd();
 		glDisable(GL_TEXTURE_2D);
 	}
 
-	glEnableClientState(GL_VERTEX_ARRAY);
-
 	if (m_pPieceInfo->m_nFlags & LC_PIECE_LONGDATA)
 	{
-#ifndef LC_OPENGLES
 		unsigned long colors, *info = (unsigned long*)m_pDrawInfo;
 		colors = *info;
 		info++;
@@ -1145,6 +1214,14 @@ void Piece::Render(bool bLighting, bool bEdges, unsigned char* nLastColor, bool*
 
 			if (lock)
 				glLockArraysEXT(0, m_pPieceInfo->m_nVertexCount);
+
+			if (*info)
+			{
+				glDrawElements(GL_QUADS, *info, GL_UNSIGNED_INT, info+1);
+				info += *info + 1;
+			}
+			else
+				info++;
 
 			if (*info)
 			{
@@ -1181,7 +1258,6 @@ void Piece::Render(bool bLighting, bool bEdges, unsigned char* nLastColor, bool*
 			if (lock)
 				glUnlockArraysEXT();
 		}
-#endif
 	}
 	else
 	{
@@ -1210,6 +1286,14 @@ void Piece::Render(bool bLighting, bool bEdges, unsigned char* nLastColor, bool*
 
 			if (lock)
 				glLockArraysEXT(0, m_pPieceInfo->m_nVertexCount);
+
+			if (*info)
+			{
+				glDrawElements(GL_QUADS, *info, GL_UNSIGNED_SHORT, info+1);
+				info += *info + 1;
+			}
+			else
+				info++;
 
 			if (*info)
 			{

@@ -96,6 +96,7 @@ Project::Project()
 	m_pGroups = NULL;
 	m_pUndoList = NULL;
 	m_pRedoList = NULL;
+	m_nGridList = 0;
   m_pTrackFile = NULL;
 	m_nCurClipboard = 0;
 	m_nCurAction = 0;
@@ -110,7 +111,7 @@ Project::Project()
 	messenger->AddRef();
 	messenger->Listen(&ProjectListener, this);
 
-	for (i = 0; i < LC_CONNECTIONS; i++)
+  for (i = 0; i < LC_CONNECTIONS; i++)
 	{
 		m_pConnections[i].entries = NULL;
 		m_pConnections[i].numentries = 0;
@@ -120,8 +121,6 @@ Project::Project()
 		m_pClipboard[i] = NULL;
 
 	m_pScreenFont = new TexFont();
-
-	VRMLScale = 0.01f; // centimeter to meter
 }
 
 Project::~Project()
@@ -397,22 +396,22 @@ void Project::LoadDefaults(bool cameras)
 bool Project::FileLoad(File* file, bool bUndo, bool bMerge)
 {
 	int i, count;
-	char fid[32];
+	char id[32];
 	unsigned long rgb;
 	float fv = 0.4f;
 	unsigned char ch, action = m_nCurAction;
 	unsigned short sh;
 
 	file->Seek(0, SEEK_SET);
-	file->Read(fid, 32);
-	sscanf(&fid[7], "%f", &fv);
+	file->Read(id, 32);
+	sscanf(&id[7], "%f", &fv);
 
 	// Fix the ugly floating point reading on computers with different decimal points.
 	if (fv == 0.0f)
 	{
 		lconv *loc = localeconv();
-		fid[8] = loc->decimal_point[0];
-		sscanf(&fid[7], "%f", &fv);
+		id[8] = loc->decimal_point[0];
+		sscanf(&id[7], "%f", &fv);
 
 		if (fv == 0.0f)
 			return false;
@@ -1239,7 +1238,8 @@ bool Project::DoSave(char* lpszPathName, bool bReplace)
 		else
 			ptr++;
 
-		sprintf(buf, "0 Model exported from LeoCAD\r\n0 Original name: %s\r\n", ptr);
+		sprintf(buf, "0 Model exported from LeoCAD\r\n"
+					"0 Original name: %s\r\n", ptr);
 		if (strlen(m_strAuthor) != 0)
 		{
 			strcat(buf, "0 Author: ");
@@ -1248,8 +1248,6 @@ bool Project::DoSave(char* lpszPathName, bool bReplace)
 		}
 		strcat(buf, "\r\n");
 		file.Write(buf, strlen(buf));
-
-		const char* OldLocale = setlocale(LC_NUMERIC, "C");
 
 		for (i = 1; i <= steps; i++)
 		{
@@ -1271,9 +1269,6 @@ bool Project::DoSave(char* lpszPathName, bool bReplace)
 			if (i != steps)
 				file.Write("0 STEP\r\n", 8);
 		}
-
-		setlocale(LC_NUMERIC, OldLocale);
-
 		file.Write("0\r\n", 3);
 	}
 	else
@@ -1402,8 +1397,7 @@ bool Project::OnOpenDocument (const char* lpszPathName)
     return false;
   }
 
-  char ext[4];
-  const char *ptr;
+  char ext[4], *ptr;
   memset(ext, 0, 4);
   ptr = strrchr(lpszPathName, '.');
   if (ptr != NULL)
@@ -1855,42 +1849,30 @@ void Project::RenderScene(bool bShaded, bool bDrawViewports)
 				switch (i)
 				{
 				case 0:
-					glColor4f(0.8f, 0.0f, 0.0f, 1.0f);
+					glColor3f(0.8f, 0.0f, 0.0f);
 					break;
 				case 1:
-					glColor4f(0.0f, 0.8f, 0.0f, 1.0f);
+					glColor3f(0.0f, 0.8f, 0.0f);
 					break;
 				case 2:
-					glColor4f(0.0f, 0.0f, 0.8f, 1.0f);
+					glColor3f(0.0f, 0.0f, 0.8f);
 					break;
 				}
 
-				float Verts[11][3];
+				glBegin(GL_LINES);
+				glVertex3f(pts[i][0], pts[i][1], pts[i][2]);
+				glVertex3f(0, 0, 0);
+				glEnd();
 
-				Verts[0][0] = 0.0f;
-				Verts[0][1] = 0.0f;
-				Verts[0][2] = 0.0f;
-
-				Verts[1][0] = pts[i][0];
-				Verts[1][1] = pts[i][1];
-				Verts[1][2] = pts[i][2];
-
+				glBegin(GL_TRIANGLE_FAN);
+				glVertex3f(pts[i][0], pts[i][1], pts[i][2]);
 				for (int j = 0; j < 9; j++)
 				{
 					float pt[3] = { 12.0f, cosf(LC_2PI * j / 8) * 3.0f, sinf(LC_2PI * j / 8) * 3.0f };
 					Mats[i].TransformPoints(pt, 1);
-					Verts[j+2][0] = pt[0];
-					Verts[j+2][1] = pt[1];
-					Verts[j+2][2] = pt[2];
+					glVertex3f(pt[0], pt[1], pt[2]);
 				}
-
-				glEnableClientState(GL_VERTEX_ARRAY);
-				glVertexPointer(3, GL_FLOAT, 0, Verts);
-
-				glDrawArrays(GL_LINES, 0, 2);
-				glDrawArrays(GL_TRIANGLE_FAN, 1, 10);
-
-				glDisableClientState(GL_VERTEX_ARRAY);
+				glEnd();
 			}
 
 			// Draw the text.
@@ -1899,10 +1881,12 @@ void Project::RenderScene(bool bShaded, bool bDrawViewports)
 			glEnable(GL_TEXTURE_2D);
 			glEnable(GL_ALPHA_TEST);
 
-			glColor4f(0, 0, 0, 1);
+			glBegin(GL_QUADS);
+			glColor3f(0, 0, 0);
 			m_pScreenFont->PrintText(pts[0][0], pts[0][1], 40.0f, "X");
 			m_pScreenFont->PrintText(pts[1][0], pts[1][1], 40.0f, "Y");
 			m_pScreenFont->PrintText(pts[2][0], pts[2][1], 40.0f, "Z");
+			glEnd();
 
 			glDisable(GL_TEXTURE_2D);
 			glDisable(GL_ALPHA_TEST);
@@ -1912,10 +1896,10 @@ void Project::RenderScene(bool bShaded, bool bDrawViewports)
 
 		if ((m_nSnap & LC_DRAW_AXIS) || (m_nSnap & LC_DRAW_GRID))
 		{
-			glColor4f(1.0f - m_fBackground[0], 1.0f - m_fBackground[1], 1.0f - m_fBackground[2], 1.0f);
+			glColor3f(1.0f - m_fBackground[0], 1.0f - m_fBackground[1], 1.0f - m_fBackground[2]);
 
 			if (m_nSnap & LC_DRAW_GRID)
-				DrawGrid();
+				glCallList (m_nGridList);
 
 			if ((bShaded) && (m_nDetail & LC_DET_LIGHTING))
 				glEnable(GL_LIGHTING);
@@ -1931,6 +1915,21 @@ void Project::RenderScene(bool bShaded, bool bDrawViewports)
 		}
 
     //    glDisable (GL_COLOR_MATERIAL);
+    /*
+      {
+	for (int i = -100; i < 100; i+=5)
+	{
+	  glBegin (GL_QUAD_STRIP);
+	  glNormal3f (0,0,1);
+	  for (int j = -100; j < 100; j+=5)
+	  {
+	    glVertex3f ((float)i/10, (float)j/10,0);
+	    glVertex3f ((float)(i+5)/10, (float)j/10,0);
+	  }
+	  glEnd();
+	}
+      }
+    */
     /*
     {
       LC_RENDER_INFO info;
@@ -2099,7 +2098,6 @@ void Project::RenderScene(bool bShaded, bool bDrawViewports)
 //			glEnable (GL_CULL_FACE);
 //			glShadeModel (GL_FLAT);
 //			glDisable (GL_LIGHTING);
-#ifndef LC_OPENGLES
 			if ((m_nDetail & LC_DET_BOX_FILL) == 0)
 			{
 				if ((m_nDetail & LC_DET_HIDDEN_LINE) != 0)
@@ -2121,7 +2119,6 @@ void Project::RenderScene(bool bShaded, bool bDrawViewports)
 				}
 			}
 			else
-#endif
 				RenderBoxes(true);
 		}
 
@@ -2195,28 +2192,27 @@ void Project::RenderScene(bool bShaded, bool bDrawViewports)
 			glTranslatef(0.375, 0.375, 0.0);
 
 			glDisable(GL_DEPTH_TEST);
-			glEnableLineStipple();
-			glColor4f(0, 0, 0, 1);
+			glEnable(GL_LINE_STIPPLE);
+			glLineStipple(5, 0x5555);
+			glColor3f(0, 0, 0);
 
 			float pt1x = (float)(m_nDownX - x);
 			float pt1y = (float)(m_nDownY - y);
 			float pt2x = m_fTrack[0] - x;
 			float pt2y = m_fTrack[1] - y;
 
-			float verts[8][2] =
-			{
-				{ pt1x, pt1y }, { pt2x, pt1y },
-				{ pt2x, pt1y }, { pt2x, pt2y },
-				{ pt2x, pt2y }, { pt1x, pt2y },
-				{ pt1x, pt2y }, { pt1x, pt1y }
-			};
+			glBegin(GL_LINES);
+			glVertex2f(pt1x, pt1y);
+			glVertex2f(pt2x, pt1y);
+			glVertex2f(pt2x, pt1y);
+			glVertex2f(pt2x, pt2y);
+			glVertex2f(pt2x, pt2y);
+			glVertex2f(pt1x, pt2y);
+			glVertex2f(pt1x, pt2y);
+			glVertex2f(pt1x, pt1y);
+			glEnd();
 
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glVertexPointer(2, GL_FLOAT, 0, verts);
-			glDrawArrays(GL_LINES, 0, 8);
-			glDisableClientState(GL_VERTEX_ARRAY);
-
-			glDisableLineStipple();
+			glDisable(GL_LINE_STIPPLE);
 			glEnable(GL_DEPTH_TEST);
 		}
 
@@ -2269,21 +2265,13 @@ void Project::RenderOverlays(int Viewport)
 			glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 			glEnable(GL_BLEND);
 
+			glBegin(GL_QUADS);
 			glColor4f(0.8f, 0.8f, 0.0f, 0.3f);
-
-			float verts[4][3] =
-			{
-				{ 0.0f, 0.0f, 0.0f },
-				{ 0.0f, OverlayScale * OverlayMovePlaneSize, 0.0f },
-				{ 0.0f, OverlayScale * OverlayMovePlaneSize, OverlayScale * OverlayMovePlaneSize },
-				{ 0.0f, 0.0f, OverlayScale * OverlayMovePlaneSize }
-			};
-
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glVertexPointer(3, GL_FLOAT, 0, verts);
-			glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-			glDisableClientState(GL_VERTEX_ARRAY);
-
+			glVertex3f(0.0f, 0.0f, 0.0f);
+			glVertex3f(0.0f, OverlayScale * OverlayMovePlaneSize, 0.0f);
+			glVertex3f(0.0f, OverlayScale * OverlayMovePlaneSize, OverlayScale * OverlayMovePlaneSize);
+			glVertex3f(0.0f, 0.0f, OverlayScale * OverlayMovePlaneSize);
+			glEnd();
 
 			glDisable(GL_BLEND);
 
@@ -2297,21 +2285,21 @@ void Project::RenderOverlays(int Viewport)
 			{
 			case 0:
 				if ((m_OverlayMode == LC_OVERLAY_X) || (m_OverlayMode == LC_OVERLAY_XY) || (m_OverlayMode == LC_OVERLAY_XZ))
-					glColor4f(0.8f, 0.8f, 0.0f, 1.0f);
+					glColor3f(0.8f, 0.8f, 0.0f);
 				else
-					glColor4f(0.8f, 0.0f, 0.0f, 1.0f);
+					glColor3f(0.8f, 0.0f, 0.0f);
 				break;
 			case 1:
 				if ((m_OverlayMode == LC_OVERLAY_Y) || (m_OverlayMode == LC_OVERLAY_XY) || (m_OverlayMode == LC_OVERLAY_YZ))
-					glColor4f(0.8f, 0.8f, 0.0f, 1.0f);
+					glColor3f(0.8f, 0.8f, 0.0f);
 				else
-					glColor4f(0.0f, 0.8f, 0.0f, 1.0f);
+					glColor3f(0.0f, 0.8f, 0.0f);
 				break;
 			case 2:
 				if ((m_OverlayMode == LC_OVERLAY_Z) || (m_OverlayMode == LC_OVERLAY_XZ) || (m_OverlayMode == LC_OVERLAY_YZ))
-					glColor4f(0.8f, 0.8f, 0.0f, 1.0f);
+					glColor3f(0.8f, 0.8f, 0.0f);
 				else
-					glColor4f(0.0f, 0.0f, 0.8f, 1.0f);
+					glColor3f(0.0f, 0.0f, 0.8f);
 				break;
 			}
 
@@ -2326,28 +2314,20 @@ void Project::RenderOverlays(int Viewport)
 			else if (i == 2)
 				glRotatef(90.0f, 0.0f, -1.0f, 0.0f);
 
-			float Verts[11][3];
+			glBegin(GL_LINES);
+			glVertex3f(0.0f, 0.0f, 0.0f);
+			glVertex3f(OverlayScale * OverlayMoveArrowSize, 0.0f, 0.0f);
+			glEnd();
 
-			Verts[0][0] = 0.0f;
-			Verts[0][1] = 0.0f;
-			Verts[0][2] = 0.0f;
-
-			Verts[1][0] = OverlayScale * OverlayMoveArrowSize;
-			Verts[1][1] = 0.0f;
-			Verts[1][2] = 0.0f;
-
+			glBegin(GL_TRIANGLE_FAN);
+			glVertex3f(OverlayScale * OverlayMoveArrowSize, 0.0f, 0.0f);
 			for (int j = 0; j < 9; j++)
 			{
-				Verts[j+2][0] = OverlayScale * OverlayMoveArrowCapSize;
-				Verts[j+2][1] = cosf(LC_2PI * j / 8) * OverlayMoveArrowCapRadius * OverlayScale;
-				Verts[j+2][2] = sinf(LC_2PI * j / 8) * OverlayMoveArrowCapRadius * OverlayScale;
+				float y = cosf(LC_2PI * j / 8) * OverlayMoveArrowCapRadius * OverlayScale;
+				float z = sinf(LC_2PI * j / 8) * OverlayMoveArrowCapRadius * OverlayScale;
+				glVertex3f(OverlayScale * OverlayMoveArrowCapSize, y, z);
 			}
-
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glVertexPointer(3, GL_FLOAT, 0, Verts);
-			glDrawArrays(GL_LINES, 0, 2);
-			glDrawArrays(GL_TRIANGLE_FAN, 1, 10);
-			glDisableClientState(GL_VERTEX_ARRAY);
+			glEnd();
 
 			glPopMatrix();
 		}
@@ -2429,16 +2409,9 @@ void Project::RenderOverlays(int Viewport)
 				glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 				glEnable(GL_BLEND);
 
-				float Verts[33][3];
-				int v = 0;
+				glBegin(GL_TRIANGLE_FAN);
 
-				glEnableClientState(GL_VERTEX_ARRAY);
-				glVertexPointer(3, GL_FLOAT, 0, Verts);
-
-				Verts[0][0] = 0.0f;
-				Verts[0][1] = 0.0f;
-				Verts[0][2] = 0.0f;
-				v++;
+				glVertex3f(0.0f, 0.0f, 0.0f);
 
 				float StartAngle;
 				int i = 0;
@@ -2453,19 +2426,7 @@ void Project::RenderOverlays(int Viewport)
 					float x = cosf((Step * i - StartAngle) * DTOR) * OverlayRotateRadius * OverlayScale;
 					float y = sinf((Step * i - StartAngle) * DTOR) * OverlayRotateRadius * OverlayScale;
 
-					Verts[v][0] = 0.0f;
-					Verts[v][1] = x;
-					Verts[v][2] = y;
-					v++;
-
-					if (v == 33)
-					{
-						glDrawArrays(GL_TRIANGLE_FAN, 0, v);
-						Verts[1][0] = Verts[32][0];
-						Verts[1][1] = Verts[32][1];
-						Verts[1][2] = Verts[32][2];
-						v = 2;
-					}
+					glVertex3f(0.0f, x, y);
 
 					i++;
 					if (Step > 0)
@@ -2475,10 +2436,8 @@ void Project::RenderOverlays(int Viewport)
 
 				} while (Angle >= 0.0f);
 
-				if (v > 2)
-					glDrawArrays(GL_TRIANGLE_FAN, 0, v);
+				glEnd();
 
-				glDisableClientState(GL_VERTEX_ARRAY);
 				glDisable(GL_BLEND);
 
 				glPopMatrix();
@@ -2490,7 +2449,8 @@ void Project::RenderOverlays(int Viewport)
 		Mat.SetTranslation(m_OverlayCenter);
 
 		// Draw the circles.
-		float Verts[32][3];
+		glBegin(GL_LINE_LOOP);
+		glColor3f(0.1f, 0.1f, 0.1f);
 
 		for (j = 0; j < 32; j++)
 		{
@@ -2502,17 +2462,10 @@ void Project::RenderOverlays(int Viewport)
 
 			Pt = Mul31(Pt, Mat);
 
-			Verts[j][0] = Pt[0];
-			Verts[j][1] = Pt[1];
-			Verts[j][2] = Pt[2];
+			glVertex3f(Pt[0], Pt[1], Pt[2]);
 		}
 
-		glColor4f(0.1f, 0.1f, 0.1f, 1.0f);
-
-		glEnableClientState(GL_VERTEX_ARRAY);
-		glVertexPointer(3, GL_FLOAT, 0, Verts);
-		glDrawArrays(GL_LINE_LOOP, 0, 32);
-		glDisableClientState(GL_VERTEX_ARRAY);
+		glEnd();
 
 		Vector3 ViewDir = Cam->GetTargetPosition() - Cam->GetEyePosition();
 		ViewDir.Normalize();
@@ -2536,26 +2489,25 @@ void Project::RenderOverlays(int Viewport)
 		{
 			if (m_OverlayMode == LC_OVERLAY_X + i)
 			{
-				glColor4f(0.8f, 0.8f, 0.0f, 1.0f);
+				glColor3f(0.8f, 0.8f, 0.0f);
 			}
 			else
 			{
 				switch (i)
 				{
 				case 0:
-					glColor4f(0.8f, 0.0f, 0.0f, 1.0f);
+					glColor3f(0.8f, 0.0f, 0.0f);
 					break;
 				case 1:
-					glColor4f(0.0f, 0.8f, 0.0f, 1.0f);
+					glColor3f(0.0f, 0.8f, 0.0f);
 					break;
 				case 2:
-					glColor4f(0.0f, 0.0f, 0.8f, 1.0f);
+					glColor3f(0.0f, 0.0f, 0.8f);
 					break;
 				}
 			}
 
-			float Verts[64][3];
-			int v = 0;
+			glBegin(GL_LINES);
 
 			for (int j = 0; j < 32; j++)
 			{
@@ -2584,21 +2536,12 @@ void Project::RenderOverlays(int Viewport)
 					Vector3 Pt1 = v1 * OverlayRotateRadius * OverlayScale;
 					Vector3 Pt2 = v2 * OverlayRotateRadius * OverlayScale;
 
-					Verts[v][0] = Pt1[0];
-					Verts[v][1] = Pt1[1];
-					Verts[v][2] = Pt1[2];
-					v++;
-					Verts[v][0] = Pt2[0];
-					Verts[v][1] = Pt2[1];
-					Verts[v][2] = Pt2[2];
-					v++;
+					glVertex3f(Pt1[0], Pt1[1], Pt1[2]);
+					glVertex3f(Pt2[0], Pt2[1], Pt2[2]);
 				}
 			}
 
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glVertexPointer(3, GL_FLOAT, 0, Verts);
-			glDrawArrays(GL_LINES, 0, v);
-			glDisableClientState(GL_VERTEX_ARRAY);
+			glEnd();
 		}
 
 		// Draw tangent vector.
@@ -2608,7 +2551,7 @@ void Project::RenderOverlays(int Viewport)
 			{
 				Vector3 Tangent, Normal = m_OverlayTrackStart - m_OverlayCenter;
 				Normal.Normalize();
-				float Angle = 0;
+				float Angle;
 
 				switch (m_OverlayMode)
 				{
@@ -2643,52 +2586,36 @@ void Project::RenderOverlays(int Viewport)
 					Vector3 Arrow;
 					Matrix33 Rot;
 
-					float Verts[6][3];
+					glBegin(GL_LINES);
+					glColor3f(0.8f, 0.8f, 0.0f);
 
-					Verts[0][0] = Pt[0];
-					Verts[0][1] = Pt[1];
-					Verts[0][2] = Pt[2];
-					Verts[1][0] = Tip[0];
-					Verts[1][1] = Tip[1];
-					Verts[1][2] = Tip[2];
+					glVertex3f(Pt[0], Pt[1], Pt[2]);
+					glVertex3f(Tip[0], Tip[1], Tip[2]);
 
 					Rot.CreateFromAxisAngle(Normal, LC_PI * 0.15f);
 					Arrow = Mul(Tangent, Rot) * OverlayRotateArrowCapSize;
 
-					Verts[2][0] = Tip[0];
-					Verts[2][1] = Tip[1];
-					Verts[2][2] = Tip[2];
-					Verts[3][0] = Tip[0] - Arrow[0];
-					Verts[3][1] = Tip[1] - Arrow[1];
-					Verts[3][2] = Tip[2] - Arrow[2];
+					glVertex3f(Tip[0], Tip[1], Tip[2]);
+					glVertex3f(Tip[0] - Arrow[0], Tip[1] - Arrow[1], Tip[2] - Arrow[2]);
 
 					Rot.CreateFromAxisAngle(Normal, -LC_PI * 0.15f);
 					Arrow = Mul(Tangent, Rot) * OverlayRotateArrowCapSize;
 
-					Verts[4][0] = Tip[0];
-					Verts[4][1] = Tip[1];
-					Verts[4][2] = Tip[2];
-					Verts[5][0] = Tip[0] - Arrow[0];
-					Verts[5][1] = Tip[1] - Arrow[1];
-					Verts[5][2] = Tip[2] - Arrow[2];
+					glVertex3f(Tip[0], Tip[1], Tip[2]);
+					glVertex3f(Tip[0] - Arrow[0], Tip[1] - Arrow[1], Tip[2] - Arrow[2]);
 
-					glColor4f(0.8f, 0.8f, 0.0f, 1.0f);
-
-					glEnableClientState(GL_VERTEX_ARRAY);
-					glVertexPointer(3, GL_FLOAT, 0, Verts);
-					glDrawArrays(GL_LINES, 0, 6);
-					glDisableClientState(GL_VERTEX_ARRAY);
+					glEnd();
 				}
 
 				// Draw text.
 				if (Viewport == m_nActiveViewport)
 				{
-					GLfloat ScreenX, ScreenY, ScreenZ;
-					GLfloat ModelMatrix[16], ProjMatrix[16];
+					GLdouble ScreenX, ScreenY, ScreenZ;
+					GLdouble ModelMatrix[16], ProjMatrix[16];
 					GLint Vp[4];
 
-					glGetFloatv(GL_MODELVIEW_MATRIX, ModelMatrix);
-					glGetFloatv(GL_PROJECTION_MATRIX, ProjMatrix);
+					glGetDoublev(GL_MODELVIEW_MATRIX, ModelMatrix);
+					glGetDoublev(GL_PROJECTION_MATRIX, ProjMatrix);
 					glGetIntegerv(GL_VIEWPORT, Vp);
 
 					gluProject(0, 0, 0, ModelMatrix, ProjMatrix, Vp, &ScreenX, &ScreenY, &ScreenZ);
@@ -2713,8 +2640,10 @@ void Project::RenderOverlays(int Viewport)
 					int cx, cy;
 					m_pScreenFont->GetStringDimensions(&cx, &cy, buf);
 
-					glColor4f(0.8f, 0.8f, 0.0f, 1.0f);
+					glBegin(GL_QUADS);
+					glColor3f(0.8f, 0.8f, 0.0f);
 					m_pScreenFont->PrintText((float)ScreenX - Vp[0] - (cx / 2), (float)ScreenY - Vp[1] + (cy / 2), 0.0f, buf);
+					glEnd();
 
 					glDisable(GL_TEXTURE_2D);
 					glDisable(GL_ALPHA_TEST);
@@ -2747,10 +2676,10 @@ void Project::RenderOverlays(int Viewport)
 		glTranslatef(0.375f, 0.375f, 0.0f);
 
 		glDisable(GL_DEPTH_TEST);
-		glColor4f(0, 0, 0, 1);
+		glColor3f(0, 0, 0);
 
 		// Draw circle.
-		float verts[32][2];
+		glBegin(GL_LINE_LOOP);
 
 		float r = min(w, h) * 0.35f;
 		float cx = x + w / 2.0f;
@@ -2758,44 +2687,45 @@ void Project::RenderOverlays(int Viewport)
 
 		for (int i = 0; i < 32; i++)
 		{
-			verts[i][0] = cosf((float)i / 32.0f * (2.0f * LC_PI)) * r + cx;
-			verts[i][1] = sinf((float)i / 32.0f * (2.0f * LC_PI)) * r + cy;
+			float x = cosf((float)i / 32.0f * (2.0f * LC_PI)) * r + cx;
+			float y = sinf((float)i / 32.0f * (2.0f * LC_PI)) * r + cy;
+
+			glVertex2f(x, y);
 		}
 
-		glEnableClientState(GL_VERTEX_ARRAY);
-		glVertexPointer(2, GL_FLOAT, 0, verts);
-		glDrawArrays(GL_LINE_LOOP, 0, 32);
+		glEnd();
 
 		const float OverlayCameraSquareSize = max(8.0f, (w+h)/200);
 
 		// Draw squares.
-		float Squares[16][3] =
-		{
-			{ cx + OverlayCameraSquareSize, cy + r + OverlayCameraSquareSize },
-			{ cx - OverlayCameraSquareSize, cy + r + OverlayCameraSquareSize },
-			{ cx - OverlayCameraSquareSize, cy + r - OverlayCameraSquareSize },
-			{ cx + OverlayCameraSquareSize, cy + r - OverlayCameraSquareSize },
-			{ cx + OverlayCameraSquareSize, cy - r + OverlayCameraSquareSize },
-			{ cx - OverlayCameraSquareSize, cy - r + OverlayCameraSquareSize },
-			{ cx - OverlayCameraSquareSize, cy - r - OverlayCameraSquareSize },
-			{ cx + OverlayCameraSquareSize, cy - r - OverlayCameraSquareSize },
-			{ cx + r + OverlayCameraSquareSize, cy + OverlayCameraSquareSize },
-			{ cx + r - OverlayCameraSquareSize, cy + OverlayCameraSquareSize },
-			{ cx + r - OverlayCameraSquareSize, cy - OverlayCameraSquareSize },
-			{ cx + r + OverlayCameraSquareSize, cy - OverlayCameraSquareSize },
-			{ cx - r + OverlayCameraSquareSize, cy + OverlayCameraSquareSize },
-			{ cx - r - OverlayCameraSquareSize, cy + OverlayCameraSquareSize },
-			{ cx - r - OverlayCameraSquareSize, cy - OverlayCameraSquareSize },
-			{ cx - r + OverlayCameraSquareSize, cy - OverlayCameraSquareSize }
-		};
+		glBegin(GL_LINE_LOOP);
+		glVertex2f(cx + OverlayCameraSquareSize, cy + r + OverlayCameraSquareSize);
+		glVertex2f(cx - OverlayCameraSquareSize, cy + r + OverlayCameraSquareSize);
+		glVertex2f(cx - OverlayCameraSquareSize, cy + r - OverlayCameraSquareSize);
+		glVertex2f(cx + OverlayCameraSquareSize, cy + r - OverlayCameraSquareSize);
+		glEnd();
 
-		glVertexPointer(3, GL_FLOAT, 0, Squares);
-		glDrawArrays(GL_LINE_LOOP, 0, 4);
-		glDrawArrays(GL_LINE_LOOP, 4, 4);
-		glDrawArrays(GL_LINE_LOOP, 8, 4);
-		glDrawArrays(GL_LINE_LOOP, 12, 4);
+		glBegin(GL_LINE_LOOP);
+		glVertex2f(cx + OverlayCameraSquareSize, cy - r + OverlayCameraSquareSize);
+		glVertex2f(cx - OverlayCameraSquareSize, cy - r + OverlayCameraSquareSize);
+		glVertex2f(cx - OverlayCameraSquareSize, cy - r - OverlayCameraSquareSize);
+		glVertex2f(cx + OverlayCameraSquareSize, cy - r - OverlayCameraSquareSize);
+		glEnd();
 
-		glDisableClientState(GL_VERTEX_ARRAY);
+		glBegin(GL_LINE_LOOP);
+		glVertex2f(cx + r + OverlayCameraSquareSize, cy + OverlayCameraSquareSize);
+		glVertex2f(cx + r - OverlayCameraSquareSize, cy + OverlayCameraSquareSize);
+		glVertex2f(cx + r - OverlayCameraSquareSize, cy - OverlayCameraSquareSize);
+		glVertex2f(cx + r + OverlayCameraSquareSize, cy - OverlayCameraSquareSize);
+		glEnd();
+
+		glBegin(GL_LINE_LOOP);
+		glVertex2f(cx - r + OverlayCameraSquareSize, cy + OverlayCameraSquareSize);
+		glVertex2f(cx - r - OverlayCameraSquareSize, cy + OverlayCameraSquareSize);
+		glVertex2f(cx - r - OverlayCameraSquareSize, cy - OverlayCameraSquareSize);
+		glVertex2f(cx - r + OverlayCameraSquareSize, cy - OverlayCameraSquareSize);
+		glEnd();
+
 		glEnable(GL_DEPTH_TEST);
 	}
 	else if (m_nCurAction == LC_ACTION_ZOOM_REGION)
@@ -2816,28 +2746,27 @@ void Project::RenderOverlays(int Viewport)
 		glTranslatef(0.375f, 0.375f, 0.0f);
 
 		glDisable(GL_DEPTH_TEST);
-		glEnableLineStipple();
-		glColor4f(0, 0, 0, 1);
+		glEnable(GL_LINE_STIPPLE);
+		glLineStipple(5, 0x5555);
+		glColor3f(0, 0, 0);
 
 		float pt1x = (float)(m_nDownX - x);
 		float pt1y = (float)(m_nDownY - y);
 		float pt2x = m_OverlayTrackStart[0] - x;
 		float pt2y = m_OverlayTrackStart[1] - y;
 
-		float Verts[8][2] =
-		{
-			{ pt1x, pt1y }, { pt2x, pt1y },
-			{ pt2x, pt1y }, { pt2x, pt2y },
-			{ pt2x, pt2y }, { pt1x, pt2y },
-			{ pt1x, pt2y }, { pt1x, pt1y }
-		};
+		glBegin(GL_LINES);
+		glVertex2f(pt1x, pt1y);
+		glVertex2f(pt2x, pt1y);
+		glVertex2f(pt2x, pt1y);
+		glVertex2f(pt2x, pt2y);
+		glVertex2f(pt2x, pt2y);
+		glVertex2f(pt1x, pt2y);
+		glVertex2f(pt1x, pt2y);
+		glVertex2f(pt1x, pt1y);
+		glEnd();
 
-		glEnableClientState(GL_VERTEX_ARRAY);
-		glVertexPointer(2, GL_FLOAT, 0, Verts);
-		glDrawArrays(GL_LINES, 0, 8);
-		glDisableClientState(GL_VERTEX_ARRAY);
-
-		glDisableLineStipple();
+		glDisable(GL_LINE_STIPPLE);
 		glEnable(GL_DEPTH_TEST);
 	}
 }
@@ -2863,14 +2792,7 @@ void Project::RenderViewports(bool bBackground, bool bLines)
 			if ((m_nDetail & LC_DET_SMOOTH) == 0)
 				glShadeModel(GL_SMOOTH);
 			glDisable(GL_DEPTH_TEST);
-
-			float Verts[4][2];
-			float Colors[4][3];
-
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glVertexPointer(2, GL_FLOAT, 0, Verts);
-			glEnableClientState(GL_COLOR_ARRAY);
-			glColorPointer(3, GL_FLOAT, 0, Colors);
+			glBegin(GL_QUADS);
 
 			for (vp = 0; vp < viewports[m_nViewportMode].n; vp++)
 			{
@@ -2879,21 +2801,14 @@ void Project::RenderViewports(bool bBackground, bool bLines)
 				w = viewports[m_nViewportMode].dim[vp][2] * (float)m_nViewX;
 				h = viewports[m_nViewportMode].dim[vp][3] * (float)m_nViewY;
 
-				Colors[0][0] = m_fGradient1[0]; Colors[0][1] = m_fGradient1[1]; Colors[0][2] = m_fGradient1[2];
-				Verts[0][0] = x+w; Verts[0][1] = y+h;
-				Colors[1][0] = m_fGradient1[0]; Colors[1][1] = m_fGradient1[1]; Colors[1][2] = m_fGradient1[2];
-				Verts[1][0] = x; Verts[1][1] = y+h;
-				Colors[2][0] = m_fGradient2[0]; Colors[2][1] = m_fGradient2[1]; Colors[2][2] = m_fGradient2[2];
-				Verts[2][0] = x; Verts[2][1] = y;
-				Colors[3][0] = m_fGradient2[0]; Colors[3][1] = m_fGradient2[1]; Colors[3][2] = m_fGradient2[2];
-				Verts[3][0] = x+w; Verts[3][1] = y;
-
-				glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+				glColor3fv(m_fGradient1);
+				glVertex2f(x+w, y+h);
+				glVertex2f(x, y+h);
+				glColor3fv(m_fGradient2);
+				glVertex2f(x, y);
+				glVertex2f(x+w, y);
 			}
-
-			glDisableClientState(GL_VERTEX_ARRAY);
-			glDisableClientState(GL_COLOR_ARRAY);
-
+			glEnd();
 			glEnable(GL_DEPTH_TEST);
 			if ((m_nDetail & LC_DET_SMOOTH) == 0)
 				glShadeModel(GL_FLAT);
@@ -2907,14 +2822,7 @@ void Project::RenderViewports(bool bBackground, bool bLines)
 			glDisable (GL_DEPTH_TEST);
 			glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 			m_pBackground->MakeCurrent();
-
-			float Verts[4][2];
-			float Coords[4][2];
-
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glVertexPointer(2, GL_FLOAT, 0, Verts);
-			glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-			glTexCoordPointer(2, GL_FLOAT, 0, Coords);
+			glBegin(GL_QUADS);
 
 			for (vp = 0; vp < viewports[m_nViewportMode].n; vp++)
 			{
@@ -2930,21 +2838,16 @@ void Project::RenderViewports(bool bBackground, bool bLines)
 					th = h/m_pBackground->m_nHeight;
 				}
 
-				Coords[0][0] = 0; Coords[0][1] = 0;
-				Verts[0][0] = x; Verts[0][1] = y+h;
-				Coords[1][0] = tw; Coords[1][1] = 0;
-				Verts[1][0] = x+w; Verts[1][1] = y+h;
-				Coords[2][0] = tw; Coords[2][1] = th; 
-				Verts[2][0] = x+w; Verts[2][1] = y;
-				Coords[3][0] = 0; Coords[3][1] = th;
-				Verts[3][0] = x; Verts[3][1] = y;
-
-				glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+				glTexCoord2f(0, 0);
+				glVertex2f(x, y+h);
+				glTexCoord2f(tw, 0);
+				glVertex2f(x+w, y+h);
+				glTexCoord2f(tw, th); 
+				glVertex2f(x+w, y);
+				glTexCoord2f(0, th);
+				glVertex2f(x, y);
 			}
-
-			glDisableClientState(GL_VERTEX_ARRAY);
-			glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-
+			glEnd();
 			glEnable(GL_DEPTH_TEST);
 		}
 
@@ -2955,12 +2858,13 @@ void Project::RenderViewports(bool bBackground, bool bLines)
 	if (bLines)
 	{
 		// Draw text
-		glColor4f(0, 0, 0, 1);
+		glColor3f(0, 0, 0);
 		if (!bBackground)
 			glEnable(GL_TEXTURE_2D);
 		glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 		m_pScreenFont->MakeCurrent();
 		glEnable(GL_ALPHA_TEST);
+		glBegin(GL_QUADS);
 
 		for (vp = 0; vp < viewports[m_nViewportMode].n; vp++)
 		{
@@ -2969,8 +2873,9 @@ void Project::RenderViewports(bool bBackground, bool bLines)
 			w = viewports[m_nViewportMode].dim[vp][2] * (float)(m_nViewX - 1);
 			h = viewports[m_nViewportMode].dim[vp][3] * (float)(m_nViewY - 1);
 
-			m_pScreenFont->PrintText(x + 3, y + h - 6, 0.0f, m_pViewCameras[vp]->GetName());
+      m_pScreenFont->PrintText(x + 3, y + h - 6, 0.0f, m_pViewCameras[vp]->GetName());
 		}
+		glEnd();
 	
 		glDisable(GL_ALPHA_TEST);
 		glDisable(GL_TEXTURE_2D);
@@ -2979,30 +2884,36 @@ void Project::RenderViewports(bool bBackground, bool bLines)
 		if (m_fLineWidth != 1.0f)
 			glLineWidth (1.0f);
 
-		glEnableClientState(GL_VERTEX_ARRAY);
-
 		for (vp = 0; vp < viewports[m_nViewportMode].n; vp++)
 		{
 			if (vp == m_nActiveViewport)
-				glColor4f(1.0f, 0.0f, 0.0f, 1.0f);
-			else
-				glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
+				continue;
 
 			x = viewports[m_nViewportMode].dim[vp][0] * (float)m_nViewX;
 			y = viewports[m_nViewportMode].dim[vp][1] * (float)m_nViewY;
 			w = viewports[m_nViewportMode].dim[vp][2] * (float)(m_nViewX - 1);
 			h = viewports[m_nViewportMode].dim[vp][3] * (float)(m_nViewY - 1);
 
-			float Verts[4][2] =
-			{
-				{ x, y }, { x+w, y }, { x+w, y+h }, { x, y+h }
-			};
-
-			glVertexPointer(2, GL_FLOAT, 0, Verts);
-			glDrawArrays(GL_LINE_LOOP, 0, 4);
+			glBegin(GL_LINE_LOOP);
+			glVertex2f(x, y);
+			glVertex2f(x+w, y);
+			glVertex2f(x+w, y+h);
+			glVertex2f(x, y+h);
+			glEnd();
 		}
 
-		glDisableClientState(GL_VERTEX_ARRAY);
+		x = viewports[m_nViewportMode].dim[m_nActiveViewport][0] * (float)m_nViewX;
+		y = viewports[m_nViewportMode].dim[m_nActiveViewport][1] * (float)m_nViewY;
+		w = viewports[m_nViewportMode].dim[m_nActiveViewport][2] * (float)(m_nViewX - 1);
+		h = viewports[m_nViewportMode].dim[m_nActiveViewport][3] * (float)(m_nViewY - 1);
+
+		glColor3f(1.0f, 0, 0);
+		glBegin(GL_LINE_LOOP);
+		glVertex2f(x, y);
+		glVertex2f(x+w, y);
+		glVertex2f(x+w, y+h);
+		glVertex2f(x, y+h);
+		glEnd();
 
 		if (m_fLineWidth != 1.0f)
 			glLineWidth (m_fLineWidth);
@@ -3023,11 +2934,14 @@ void Project::RenderBoxes(bool bHilite)
 // Initialize OpenGL
 void Project::RenderInitialize()
 {
+	int i;
+	glLineStipple (1, 65280);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
 	glEnable(GL_POLYGON_OFFSET_FILL);
 	glPolygonOffset(0.5f, 0.1f);
 
+	glDrawBuffer(GL_BACK);
 	glCullFace(GL_BACK);
 	glDisable (GL_CULL_FACE);
 
@@ -3060,6 +2974,7 @@ void Project::RenderInitialize()
 	if (m_nDetail & LC_DET_LIGHTING)
 	{
 	    glEnable(GL_LIGHTING);
+            glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT);
             glEnable(GL_COLOR_MATERIAL);
 
             GLfloat mat_translucent[] = { (GLfloat)0.8, (GLfloat)0.8, (GLfloat)0.8, (GLfloat)1.0 };
@@ -3082,6 +2997,7 @@ void Project::RenderInitialize()
 	if (m_nScene & LC_SCENE_FOG)
 	{
 		glEnable(GL_FOG);
+		glFogi(GL_FOG_MODE, GL_EXP);
 		glFogf(GL_FOG_DENSITY, m_fFogDensity);
 		glFogfv(GL_FOG_COLOR, m_fFogColor);
 	}
@@ -3115,12 +3031,13 @@ void Project::RenderInitialize()
 
 	// Set the perspective correction hint to fastest or nicest...
 //	glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_FASTEST);
-}
 
-void Project::DrawGrid()
-{
+	// Grid display list
+	if (m_nGridList == 0)
+		m_nGridList = glGenLists(1);
+	glNewList (m_nGridList, GL_COMPILE);
 	glEnableClientState(GL_VERTEX_ARRAY);
-	int i = 2*(4*m_nGridSize+2); // verts needed (2*lines)
+	i = 2*(4*m_nGridSize+2); // verts needed (2*lines)
 	float *grid = (float*)malloc(i*sizeof(float[3]));
 	float x = m_nGridSize*0.8f;
 
@@ -3142,6 +3059,7 @@ void Project::DrawGrid()
 	}
 	glVertexPointer(3, GL_FLOAT, 0, grid);
 	glDrawArrays(GL_LINES, 0, i);
+	glEndList();
 	free(grid);
 }
 
@@ -3527,7 +3445,7 @@ void Project::CreateImages (Image* images, int width, int height, unsigned short
 	Sys_FinishMemoryRender (render);
 }
 
-void Project::CreateHTMLPieceList(FILE* f, int nStep, bool bImages, const char* ext)
+void Project::CreateHTMLPieceList(FILE* f, int nStep, bool bImages, char* ext)
 {
 	Piece* pPiece;
 	int col[LC_MAXCOLORS], ID = 0, c;
@@ -3898,8 +3816,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 			if (SystemDoDialog(LC_DLG_HTML, &opts))
 			{
 				FILE* f;
-				const char *ext, *htmlext;
-				char fn[LC_MAXPATH];
+				char *ext, *htmlext, fn[LC_MAXPATH];
 				int i;
 				unsigned short last = GetLastStep();
 
@@ -3976,11 +3893,6 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 					strcat (fn, m_strTitle);
           strcat (fn, htmlext);
 					f = fopen (fn, "wt");
-                                        if (f == NULL)
-                                        {
-                                                perror(fn);
-						return;
-                                        }
 					fprintf (f, "<HTML>\n<HEAD>\n<TITLE>Instructions for %s</TITLE>\n</HEAD>\n<BR>\n<CENTER>\n", m_strTitle);
 
 					for (i = 1; i <= last; i++)
@@ -4007,11 +3919,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 						strcat (fn, "-index");
             strcat (fn, htmlext);
 						f = fopen (fn, "wt");
-        	                                if (f == NULL)
-        	                                {
-        	                                        perror(fn);
-							return;
-        	                                }
+
 						fprintf(f, "<HTML>\n<HEAD>\n<TITLE>Instructions for %s</TITLE>\n</HEAD>\n<BR>\n<CENTER>\n", m_strTitle);
 
 						for (i = 1; i <= last; i++)
@@ -4029,11 +3937,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 					{
 						sprintf(fn, "%s%s-%02d%s", opts.path, m_strTitle, i, htmlext);
 						f = fopen(fn, "wt");
-	                                        if (f == NULL)
-	                                        {
-	                                                perror(fn);
-							return;
-	                                        }
+
 						fprintf(f, "<HTML>\n<HEAD>\n<TITLE>%s - Step %02d</TITLE>\n</HEAD>\n<BR>\n<CENTER>\n", m_strTitle, i);
 						fprintf(f, "<IMG SRC=\"%s-%02d%s\" ALT=\"Step %02d\" WIDTH=%d HEIGHT=%d><BR><BR>\n", 
 							m_strTitle, i, ext, i, opts.imdlg.width, opts.imdlg.height);
@@ -4065,11 +3969,6 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 						strcat (fn, "-pieces");
             strcat (fn, htmlext);
 						f = fopen (fn, "wt");
-	                                        if (f == NULL)
-	                                        {
-	                                                perror(fn);
-							return;
-	                                        }
 						fprintf (f, "<HTML>\n<HEAD>\n<TITLE>Pieces used by %s</TITLE>\n</HEAD>\n<BR>\n<CENTER>\n", m_strTitle);
 				
 						CreateHTMLPieceList(f, 0, opts.images, ext);
@@ -4134,6 +4033,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 						glDepthFunc(GL_LEQUAL);
 						glClearColor(1,1,1,1); 
 						glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+						glColorMaterial(GL_FRONT, GL_AMBIENT_AND_DIFFUSE);
 						glEnable(GL_COLOR_MATERIAL);
 						glDisable (GL_DITHER);
 						glShadeModel(GL_FLAT);
@@ -4346,14 +4246,27 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 								info++;
 
 								// skip if color only have lines
-								if (*info == 0)
+								if ((*info == 0) && (info[1] == 0))
 								{
-									info++;
+									info += 2;
 									info += *info + 1;
 									continue;
 								}
 
 								fputs(" mesh {\n", f);
+
+								for (count = *info, info++; count; count -= 4)
+								{
+									fprintf(f, "  triangle { <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f> }\n",
+										-pInfo->m_fVertexArray[info[0]*3+1], -pInfo->m_fVertexArray[info[0]*3], pInfo->m_fVertexArray[info[0]*3+2],
+										-pInfo->m_fVertexArray[info[1]*3+1], -pInfo->m_fVertexArray[info[1]*3], pInfo->m_fVertexArray[info[1]*3+2],
+										-pInfo->m_fVertexArray[info[2]*3+1], -pInfo->m_fVertexArray[info[2]*3], pInfo->m_fVertexArray[info[2]*3+2]);
+									fprintf(f, "  triangle { <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f> }\n",
+										-pInfo->m_fVertexArray[info[2]*3+1], -pInfo->m_fVertexArray[info[2]*3], pInfo->m_fVertexArray[info[2]*3+2],
+										-pInfo->m_fVertexArray[info[3]*3+1], -pInfo->m_fVertexArray[info[3]*3], pInfo->m_fVertexArray[info[3]*3+2],
+										-pInfo->m_fVertexArray[info[0]*3+1], -pInfo->m_fVertexArray[info[0]*3], pInfo->m_fVertexArray[info[0]*3+2]);
+									info += 4;
+								}
 
 								for (count = *info, info++; count; count -= 3)
 								{
@@ -4382,14 +4295,27 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 								info++;
 
 								// skip if color only have lines
-								if (*info == 0)
+								if ((*info == 0) && (info[1] == 0))
 								{
-									info++;
+									info += 2;
 									info += *info + 1;
 									continue;
 								}
 
 								fputs(" mesh {\n", f);
+
+								for (count = *info, info++; count; count -= 4)
+								{
+									fprintf(f, "  triangle { <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f> }\n",
+										-pInfo->m_fVertexArray[info[0]*3+1], -pInfo->m_fVertexArray[info[0]*3], pInfo->m_fVertexArray[info[0]*3+2],
+										-pInfo->m_fVertexArray[info[1]*3+1], -pInfo->m_fVertexArray[info[1]*3], pInfo->m_fVertexArray[info[1]*3+2],
+										-pInfo->m_fVertexArray[info[2]*3+1], -pInfo->m_fVertexArray[info[2]*3], pInfo->m_fVertexArray[info[2]*3+2]);
+									fprintf(f, "  triangle { <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f> }\n",
+										-pInfo->m_fVertexArray[info[2]*3+1], -pInfo->m_fVertexArray[info[2]*3], pInfo->m_fVertexArray[info[2]*3+2],
+										-pInfo->m_fVertexArray[info[3]*3+1], -pInfo->m_fVertexArray[info[3]*3], pInfo->m_fVertexArray[info[3]*3+2],
+										-pInfo->m_fVertexArray[info[0]*3+1], -pInfo->m_fVertexArray[info[0]*3], pInfo->m_fVertexArray[info[0]*3+2]);
+									info += 4;
+								}
 
 								for (count = *info, info++; count; count -= 3)
 								{
@@ -4507,27 +4433,6 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 				ShellExecute(::GetDesktopWindow(), "open", opts.povpath, buf, out, SW_SHOWNORMAL);
 #endif
 			}
-		} break;
-
-		// Export to VRML97, exchange x -> z, z -> y, y -> x, 
-		case LC_FILE_VRML97:
-		{
-			char filename[LC_MAXPATH];
-			if (!SystemDoDialog(LC_DLG_VRML97, filename))
-				break;
-
-			exportVRML97File(filename);
-		} break;
-
-		// Export to X3DV for rigid body component
-                // exchange x -> z, z -> y, y -> x, 
-		case LC_FILE_X3DV:
-		{
-			char filename[LC_MAXPATH];
-			if (!SystemDoDialog(LC_DLG_X3DV, filename))
-				break;
-
-			exportX3DVFile(filename);
 		} break;
 
 		case LC_FILE_WAVEFRONT:
@@ -5778,7 +5683,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 			if (m_pPieces == 0) break;
 			bool bControl = Sys_KeyDown (KEY_CONTROL);
 
-			GLfloat modelMatrix[16], projMatrix[16];
+			GLdouble modelMatrix[16], projMatrix[16];
 			float up[3], eye[3], target[3];
 			float bs[6] = { 10000, 10000, 10000, -10000, -10000, -10000 };
 			GLint viewport[4], out, x, y, w, h;
@@ -5847,7 +5752,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 				frontvec *= 0.25f;
 
 				glMatrixMode(GL_MODELVIEW);
-				glGetFloatv(GL_PROJECTION_MATRIX,projMatrix);
+				glGetDoublev(GL_PROJECTION_MATRIX,projMatrix);
 				glGetIntegerv(GL_VIEWPORT,viewport);
 
 				for (out = 0; out < 10000; out++) // Zoom in
@@ -5857,11 +5762,11 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 					eye[2] -= frontvec[2];
 					glLoadIdentity();
 					gluLookAt(eye[0], eye[1], eye[2], target[0], target[1], target[2], up[0], up[1], up[2]);
-					glGetFloatv(GL_MODELVIEW_MATRIX,modelMatrix);
+					glGetDoublev(GL_MODELVIEW_MATRIX,modelMatrix);
 
 					for (int i = 0; i < 24; i+=3)
 					{
-						GLfloat winx, winy, winz;
+						double winx, winy, winz;
 						gluProject (v[i], v[i+1], v[i+2], modelMatrix, projMatrix, viewport, &winx, &winy, &winz);
 						if ((winx < viewport[0] + 1) || (winy < viewport[1] + 1) || 
 							(winx > viewport[0] + viewport[2] - 1) || (winy > viewport[1] + viewport[3] - 1))
@@ -5881,11 +5786,11 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 					eye[2] += frontvec[2];
 					glLoadIdentity();
 					gluLookAt(eye[0], eye[1], eye[2], target[0], target[1], target[2], up[0], up[1], up[2]);
-					glGetFloatv(GL_MODELVIEW_MATRIX,modelMatrix);
+					glGetDoublev(GL_MODELVIEW_MATRIX,modelMatrix);
 
 					for (int i = 0; i < 24; i+=3)
 					{
-						GLfloat winx, winy, winz;
+						double winx, winy, winz;
 						gluProject (v[i], v[i+1], v[i+2], modelMatrix, projMatrix, viewport, &winx, &winy, &winz);
 						if ((winx < viewport[0] + 1) || (winy < viewport[1] + 1) || 
 							(winx > viewport[0] + viewport[2] - 1) || (winy > viewport[1] + viewport[3] - 1))
@@ -6808,21 +6713,21 @@ void Project::GetPieceInsertPosition(int MouseX, int MouseY, Vector3& Position, 
 
 void Project::FindObjectFromPoint(int x, int y, LC_CLICKLINE* pLine, bool PiecesOnly)
 {
-	GLfloat px, py, pz, rx, ry, rz;
-	GLfloat modelMatrix[16], projMatrix[16];
+	GLdouble px, py, pz, rx, ry, rz;
+	GLdouble modelMatrix[16], projMatrix[16];
 	GLint viewport[4];
 	Piece* pPiece;
 	Camera* pCamera;
 	Light* pLight;
 
 	LoadViewportProjection(m_nActiveViewport);
-	glGetFloatv(GL_MODELVIEW_MATRIX,modelMatrix);
-	glGetFloatv(GL_PROJECTION_MATRIX,projMatrix);
+	glGetDoublev(GL_MODELVIEW_MATRIX,modelMatrix);
+	glGetDoublev(GL_PROJECTION_MATRIX,projMatrix);
 	glGetIntegerv(GL_VIEWPORT,viewport);
 
 	// Unproject the selected point against both the front and the back clipping plane
-	gluUnProject(x, y, 0.0f, modelMatrix, projMatrix, viewport, &px, &py, &pz);
-	gluUnProject(x, y, 1.0f, modelMatrix, projMatrix, viewport, &rx, &ry, &rz);
+	gluUnProject(x, y, 0, modelMatrix, projMatrix, viewport, &px, &py, &pz);
+	gluUnProject(x, y, 1, modelMatrix, projMatrix, viewport, &rx, &ry, &rz);
 
 	pLine->a1 = (float)px;
 	pLine->b1 = (float)py;
@@ -7889,16 +7794,16 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
             } break;
           }
 
-  				GLfloat modelMatrix[16], projMatrix[16], p1[3], p2[3], p3[3];
+  				GLdouble modelMatrix[16], projMatrix[16], p1[3], p2[3], p3[3];
 	  			float ax, ay;
 		  		GLint viewport[4];
 
-          glGetFloatv(GL_MODELVIEW_MATRIX, modelMatrix);
-          glGetFloatv(GL_PROJECTION_MATRIX, projMatrix);
+          glGetDoublev(GL_MODELVIEW_MATRIX, modelMatrix);
+          glGetDoublev(GL_PROJECTION_MATRIX, projMatrix);
           glGetIntegerv(GL_VIEWPORT, viewport);
-          gluUnProject( 5, 5, 0.1f, modelMatrix,projMatrix,viewport,&p1[0],&p1[1],&p1[2]);
-          gluUnProject(10, 5, 0.1f, modelMatrix,projMatrix,viewport,&p2[0],&p2[1],&p2[2]);
-          gluUnProject( 5,10, 0.1f, modelMatrix,projMatrix,viewport,&p3[0],&p3[1],&p3[2]);
+          gluUnProject( 5, 5, 0.1, modelMatrix,projMatrix,viewport,&p1[0],&p1[1],&p1[2]);
+          gluUnProject(10, 5, 0.1, modelMatrix,projMatrix,viewport,&p2[0],&p2[1],&p2[2]);
+          gluUnProject( 5,10, 0.1, modelMatrix,projMatrix,viewport,&p3[0],&p3[1],&p3[2]);
 				
           Vector vx((float)(p2[0] - p1[0]), (float)(p2[1] - p1[1]), 0);//p2[2] - p1[2] };
           Vector x(1, 0, 0);
@@ -7970,7 +7875,7 @@ void Project::BeginPieceDrop(PieceInfo* Info)
 
 void Project::OnLeftButtonDown(int x, int y, bool bControl, bool bShift)
 {
-	GLfloat modelMatrix[16], projMatrix[16], point[3];
+	GLdouble modelMatrix[16], projMatrix[16], point[3];
 	GLint viewport[4];
 
 	if (IsDrawing())
@@ -7990,11 +7895,11 @@ void Project::OnLeftButtonDown(int x, int y, bool bControl, bool bShift)
 	m_MouseSnapLeftover = Vector3(0, 0, 0);
 
 	LoadViewportProjection(m_nActiveViewport);
-	glGetFloatv(GL_MODELVIEW_MATRIX, modelMatrix);
-	glGetFloatv(GL_PROJECTION_MATRIX, projMatrix);
+	glGetDoublev(GL_MODELVIEW_MATRIX, modelMatrix);
+	glGetDoublev(GL_PROJECTION_MATRIX, projMatrix);
 	glGetIntegerv(GL_VIEWPORT, viewport);
 
-	gluUnProject(x, y, 0.9f, modelMatrix, projMatrix, viewport, &point[0], &point[1], &point[2]);
+	gluUnProject(x, y, 0.9, modelMatrix, projMatrix, viewport, &point[0], &point[1], &point[2]);
 	m_fTrack[0] = (float)point[0]; m_fTrack[1] = (float)point[1]; m_fTrack[2] = (float)point[2];
 
 	switch (m_nCurAction)
@@ -8201,8 +8106,8 @@ void Project::OnLeftButtonDown(int x, int y, bool bControl, bool bShift)
       if (count == max)
         break;
 
-      GLfloat tmp[3];
-      gluUnProject(x+1, y-1, 0.9f, modelMatrix, projMatrix, viewport, &tmp[0], &tmp[1], &tmp[2]);
+      double tmp[3];
+      gluUnProject(x+1, y-1, 0.9, modelMatrix, projMatrix, viewport, &tmp[0], &tmp[1], &tmp[2]);
       SelectAndFocusNone(false);
       StartTracking(LC_TRACK_START_LEFT);
       pLight = new Light (m_fTrack[0], m_fTrack[1], m_fTrack[2], (float)tmp[0], (float)tmp[1], (float)tmp[2]);
@@ -8216,8 +8121,8 @@ void Project::OnLeftButtonDown(int x, int y, bool bControl, bool bShift)
 
     case LC_ACTION_CAMERA:
     {
-      GLfloat tmp[3];
-      gluUnProject(x+1, y-1, 0.9f, modelMatrix, projMatrix, viewport, &tmp[0], &tmp[1], &tmp[2]);
+      double tmp[3];
+      gluUnProject(x+1, y-1, 0.9, modelMatrix, projMatrix, viewport, &tmp[0], &tmp[1], &tmp[2]);
       SelectAndFocusNone(false);
       StartTracking(LC_TRACK_START_LEFT);
       Camera* pCamera = new Camera(m_fTrack[0], m_fTrack[1], m_fTrack[2], (float)tmp[0], (float)tmp[1], (float)tmp[2], m_pCameras);
@@ -8307,7 +8212,7 @@ void Project::OnLeftButtonDown(int x, int y, bool bControl, bool bShift)
 
 void Project::OnLeftButtonDoubleClick(int x, int y, bool bControl, bool bShift)
 {
-  GLfloat modelMatrix[16], projMatrix[16], point[3];
+  GLdouble modelMatrix[16], projMatrix[16], point[3];
   GLint viewport[4];
 
   if (IsDrawing())
@@ -8317,12 +8222,12 @@ void Project::OnLeftButtonDoubleClick(int x, int y, bool bControl, bool bShift)
     return;
 
   LoadViewportProjection(m_nActiveViewport);
-  glGetFloatv(GL_MODELVIEW_MATRIX, modelMatrix);
-  glGetFloatv(GL_PROJECTION_MATRIX, projMatrix);
-  glGetIntegerv(GL_VIEWPORT, viewport);
+  glGetDoublev (GL_MODELVIEW_MATRIX, modelMatrix);
+  glGetDoublev (GL_PROJECTION_MATRIX, projMatrix);
+  glGetIntegerv (GL_VIEWPORT, viewport);
 
   // why this is here ?
-  gluUnProject(x, y, 0.9f, modelMatrix, projMatrix, viewport, &point[0], &point[1], &point[2]);
+  gluUnProject(x, y, 0.9, modelMatrix, projMatrix, viewport, &point[0], &point[1], &point[2]);
   m_fTrack[0] = (float)point[0]; m_fTrack[1] = (float)point[1]; m_fTrack[2] = (float)point[2];
 
   LC_CLICKLINE ClickLine;
@@ -8417,7 +8322,7 @@ void Project::OnLeftButtonUp(int x, int y, bool bControl, bool bShift)
 
 void Project::OnRightButtonDown(int x, int y, bool bControl, bool bShift)
 {
-	GLfloat modelMatrix[16], projMatrix[16], point[3];
+	GLdouble modelMatrix[16], projMatrix[16], point[3];
 	GLint viewport[4];
 
 	if (StopTracking(false))
@@ -8430,11 +8335,11 @@ void Project::OnRightButtonDown(int x, int y, bool bControl, bool bShift)
 	m_bTrackCancel = false;
 
 	LoadViewportProjection(m_nActiveViewport);
-	glGetFloatv(GL_MODELVIEW_MATRIX, modelMatrix);
-	glGetFloatv(GL_PROJECTION_MATRIX, projMatrix);
+	glGetDoublev(GL_MODELVIEW_MATRIX, modelMatrix);
+	glGetDoublev(GL_PROJECTION_MATRIX, projMatrix);
 	glGetIntegerv(GL_VIEWPORT, viewport);
 
-	gluUnProject(x, y, 0.9f, modelMatrix, projMatrix, viewport, &point[0], &point[1], &point[2]);
+	gluUnProject(x, y, 0.9, modelMatrix, projMatrix, viewport, &point[0], &point[1], &point[2]);
 	m_fTrack[0] = (float)point[0]; m_fTrack[1] = (float)point[1]; m_fTrack[2] = (float)point[2];
 
 	switch (m_nCurAction)
@@ -8516,16 +8421,16 @@ void Project::OnMouseMove(int x, int y, bool bControl, bool bShift)
 	if (IsDrawing())
 		return;
 
-	GLfloat modelMatrix[16], projMatrix[16], tmp[3];
+	GLdouble modelMatrix[16], projMatrix[16], tmp[3];
 	GLint viewport[4];
 	float ptx, pty, ptz;
 
 	LoadViewportProjection(m_nActiveViewport);
-	glGetFloatv(GL_MODELVIEW_MATRIX, modelMatrix);
-	glGetFloatv(GL_PROJECTION_MATRIX, projMatrix);
+	glGetDoublev(GL_MODELVIEW_MATRIX, modelMatrix);
+	glGetDoublev(GL_PROJECTION_MATRIX, projMatrix);
 	glGetIntegerv(GL_VIEWPORT, viewport);
 
-	gluUnProject(x, y, 0.9f, modelMatrix, projMatrix, viewport, &tmp[0], &tmp[1], &tmp[2]);
+	gluUnProject(x, y, 0.9, modelMatrix, projMatrix, viewport, &tmp[0], &tmp[1], &tmp[2]);
 	ptx = (float)tmp[0]; pty = (float)tmp[1]; ptz = (float)tmp[2];
 
 	switch (m_nCurAction)
@@ -9180,13 +9085,13 @@ void Project::MouseUpdateOverlays(int x, int y)
 		const float OverlayRotateRadius = 2.0f;
 
 		// Calculate the distance from the mouse pointer to the center of the sphere.
-		GLfloat px, py, pz, rx, ry, rz;
-		GLfloat ModelMatrix[16], ProjMatrix[16];
+		GLdouble px, py, pz, rx, ry, rz;
+		GLdouble ModelMatrix[16], ProjMatrix[16];
 		GLint Viewport[4];
 
 		LoadViewportProjection(m_nActiveViewport);
-		glGetFloatv(GL_MODELVIEW_MATRIX, ModelMatrix);
-		glGetFloatv(GL_PROJECTION_MATRIX, ProjMatrix);
+		glGetDoublev(GL_MODELVIEW_MATRIX, ModelMatrix);
+		glGetDoublev(GL_PROJECTION_MATRIX, ProjMatrix);
 		glGetIntegerv(GL_VIEWPORT, Viewport);
 
 		// Unproject the mouse point against both the front and the back clipping planes.
@@ -9407,15 +9312,15 @@ void Project::UpdateOverlayScale()
 {
 	if (m_OverlayActive)
 	{
-		GLfloat ScreenX, ScreenY, ScreenZ, PointX, PointY, PointZ;
-		GLfloat ModelMatrix[16], ProjMatrix[16];
+		GLdouble ScreenX, ScreenY, ScreenZ, PointX, PointY, PointZ;
+		GLdouble ModelMatrix[16], ProjMatrix[16];
 		GLint Viewport[4];
 
 		for (int i = 0; i < viewports[m_nViewportMode].n; i++)
 		{
 			LoadViewportProjection(i);
-			glGetFloatv(GL_MODELVIEW_MATRIX, ModelMatrix);
-			glGetFloatv(GL_PROJECTION_MATRIX, ProjMatrix);
+			glGetDoublev(GL_MODELVIEW_MATRIX, ModelMatrix);
+			glGetDoublev(GL_PROJECTION_MATRIX, ProjMatrix);
 			glGetIntegerv(GL_VIEWPORT, Viewport);
 
 			// Calculate the scaling factor by projecting the center to the front plane then
@@ -9428,856 +9333,3 @@ void Project::UpdateOverlayScale()
 		}
 	}
 }
-
-// VRML97 and X3DV export is very similar, cause X3D is the successor of VRML97
-// therefore a lot of the export routines can be reused
-// the member variable VRMLdialect used with the following enum has this information
-
-enum 
-{
-	VRML97,
-	X3DV_WITH_RIGID_BODY_PHYSICS
-};
-
-void Project::exportVRML97File(char *filename)
-{
-	exportVRMLFile(filename, VRML97);
-}
-
-void Project::exportX3DVFile(char *filename)
-{
-	exportVRMLFile(filename, X3DV_WITH_RIGID_BODY_PHYSICS);
-}
-
-void Project::writeIndent(FILE* stream)
-{
-	for (int i = 0; i < indent; i++)
-		fprintf(stream, " ");
-}
-
-#define INDENT_INC 2
-
-// routines to write VRML/X3DV shape related commands
-// for details see 
-// http://www.web3d.org/x3d/specifications/vrml/ISO-IEC-14772-VRML97/part1/
-// http://www.web3d.org/x3d/specifications/ISO-IEC-19775-X3DAbstractSpecification/Part01/Architecture.html
-
-void Project::writeVRMLShapeBegin(FILE *stream, unsigned long currentColor, bool blackLines)
-{
-	// http://www.web3d.org/x3d/specifications/ISO-IEC-19775-X3DAbstractSpecification_Revision1_to_Part1/Part01/components/rigid_physics.html#CollidableShape
-
-	if (VRMLdialect == X3DV_WITH_RIGID_BODY_PHYSICS)
-	{
-		numFaceColors = 0;
-		faceColors = (int *) malloc(1);
-
-		writeIndent(stream);
-		fprintf(stream, "DEF CollidableShape%d CollidableShape {\n", numDEF++);
-		indent += INDENT_INC;
-		writeIndent(stream);
-		fprintf(stream, "shape ");
-	}
-	else
-		writeIndent(stream);
-
-	// http://www.web3d.org/x3d/specifications/vrml/ISO-IEC-14772-VRML97/part1/nodesRef.html#Shape
-
-	fprintf(stream, "Shape {\n");
-	indent += INDENT_INC;
-
-	// http://www.web3d.org/x3d/specifications/vrml/ISO-IEC-14772-VRML97/part1/nodesRef.html#Appearance
-	// http://www.web3d.org/x3d/specifications/vrml/ISO-IEC-14772-VRML97/part1/nodesRef.html#Material
-	writeIndent(stream);
-	fprintf(stream, "appearance Appearance {\n");
-	indent += INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "material Material {\n");
-	indent += INDENT_INC;
-	if (blackLines)
-	{
-		writeIndent(stream);
-		fprintf(stream, "diffuseColor 0 0 0\n");
-		writeIndent(stream);
-		fprintf(stream, "emissiveColor 0 0 0\n");
-	}
-	else
-	{
-		writeIndent(stream);
-		fprintf(stream, "diffuseColor %g %g %g\n", (float)(FlatColorArray[currentColor][0]) / 256.0, (float)(FlatColorArray[currentColor][1]) / 256.0, (float)(FlatColorArray[currentColor][2]) / 256.0);
-		if (currentColor > 13 && currentColor < 22) 
-		{
-			writeIndent(stream);
-			fprintf(stream, "transparency 0.5\n");
-		}
-	}
-	indent -= INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "}\n");                                
-	indent -= INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "}\n");                                
-	
-	if (blackLines)
-	{
-		// http://www.web3d.org/x3d/specifications/vrml/ISO-IEC-14772-VRML97/part1/nodesRef.html#IndexedLineSet
-		writeIndent(stream);
-		fprintf(stream, "geometry IndexedLineSet {\n");
-		indent += INDENT_INC;
-	}
-	else
-	{
-		// http://www.web3d.org/x3d/specifications/ISO-IEC-19775-X3DAbstractSpecification/Part01/components/rendering.html#TriangleSet
-		// http://www.web3d.org/x3d/specifications/vrml/ISO-IEC-14772-VRML97/part1/nodesRef.html#IndexedFaceSet
-		writeIndent(stream);
-		if (VRMLdialect == X3DV_WITH_RIGID_BODY_PHYSICS)
-			fprintf(stream, "geometry TriangleSet {\n");
-		else
-			fprintf(stream, "geometry IndexedFaceSet {\n");
-		indent += INDENT_INC;
-		writeIndent(stream);
-		fprintf(stream, "solid FALSE\n");
-		if (VRMLdialect != X3DV_WITH_RIGID_BODY_PHYSICS)
-		{
-			writeIndent(stream);
-			fprintf(stream, "creaseAngle 0.79\n");
-		}
-	}
-}
-
-void Project::writeVRMLShapeEnd(FILE *stream)
-{
-	indent -= INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "}\n");
-	indent -= INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "}\n");
-}
-
-// search for vertex (vertex[0], vertex[1], vertex[2]) in coords and give
-// back index (-1 if not found)
-
-int Project::searchForVertex(float* vertex) 
-{
-	for (int i = 0; i < numCoords; i++)
-		if (coords[i * 3] == vertex[0])
-			if (coords[i * 3 + 1] == vertex[1])
-				if (coords[i * 3 + 2] == vertex[2])
-					return i;
-	return -1;
-}
-
-// routines to collect VRML indexed polygon mesh data or X3DV triangle mesh data
-
-template<class type> void Project::generateMeshData(type* info, float *pos, Piece* pPiece, int numVertices, int currentColor)
-{
-	float rot[4];
-	Vector3 Pos = pPiece->GetPosition();
-	pPiece->GetRotation(rot);
-	Matrix matrix(rot, Pos);
-
-	bool rigidBody = (VRMLdialect == X3DV_WITH_RIGID_BODY_PHYSICS);
-
-	PieceInfo* pInfo = pPiece->GetPieceInfo();
-	if (rigidBody)
-	{
-		// IndexedLineSet not supported by xj3d RigidBody node
-		if (numVertices == 2)
-			return;
-
-		int maxJ = 1;
-		// write 2 triangles instead of 1 quad
-		if (numVertices == 4)
-			maxJ = 2;
-		for (int j = 0; j < maxJ; j++) 
-		{
-			for (int i = 0; i < 3; i++)
-			{
-				int index = i;
-				if (j == 1)
-				{
-					switch (i) {
-						case 0:
-							index = 2;
-							break;
-						case 1:
-							index = 0;
-							break;
-						case 2:
-							index = 3;
-							break;
-					}
-				}
-				float *localVertex = &pInfo->m_fVertexArray[info[index] * 3];
-				float vertex[3];
-				matrix.TransformPoint(vertex, localVertex);
-				coords = (float *) realloc(coords, (numCoords + 1) * 3 * sizeof(float));
-				coords[numCoords * 3 + 0] = vertex[1] - pos[1];
-				coords[numCoords * 3 + 1] = vertex[2] - pos[2];
-				coords[numCoords * 3 + 2] = vertex[0] - pos[0];
-				numCoords++;
-			}
-			faceColors = (int *) realloc(faceColors, (numFaceColors + 1) * sizeof(int));
-			faceColors[numFaceColors] = currentColor;
-			numFaceColors++;
-		}
-		return;
-	}			
-	for (int i = 0; i < numVertices; i++)
-	{
-		float *localVertex = &pInfo->m_fVertexArray[info[i] * 3];
-		int index = searchForVertex(localVertex);
-		if (index == -1)
-		{
-			float vertex[3];
-			if (rigidBody)
-				matrix.TransformPoint(vertex, localVertex);
-			else
-			{
-				vertex[0] = localVertex[0];
-				vertex[1] = localVertex[1];
-				vertex[2] = localVertex[2];
-			}
-			coords = (float *) realloc(coords, (numCoords + 1) * 3 * sizeof(float));
-			coords[numCoords * 3 + 0] = vertex[1] - (rigidBody ? pos[1] : 0);
-			coords[numCoords * 3 + 1] = vertex[2] - (rigidBody ? pos[2] : 0);
-			coords[numCoords * 3 + 2] = vertex[0] - (rigidBody ? pos[0] : 0);
-			index = numCoords;
-			numCoords++;
-		}
-		coordIndices = (int *) realloc(coordIndices, (numCoordIndices + 1) * sizeof(int));
-		coordIndices[numCoordIndices] = index;
-		numCoordIndices++;
-	}
-	coordIndices = (int *) realloc(coordIndices, (numCoordIndices + 1) * sizeof(int));
-	coordIndices[numCoordIndices] = -1;
-	numCoordIndices++;
-	faceColors = (int *) realloc(faceColors, (numFaceColors + 1) * sizeof(int));
-	faceColors[numFaceColors] = currentColor;
-	numFaceColors++;
-}
-
-// write collected mesh data
-
-void Project::writeVRMLShapeMeshBegin(FILE *stream)
-{
-	writeIndent(stream);
-
-	fprintf(stream, "coord Coordinate {\n");
-	indent += INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "point [\n");
-	indent += INDENT_INC;
-}
-
-void Project::writeVRMLShapeMeshData(FILE *stream)
-{
-	for (int i = 0; i < numCoords; i++) 
-	{
-		writeIndent(stream);
-		fprintf(stream, "%f %f %f\n", coords[i * 3] * VRMLScale, coords[i * 3 + 1] * VRMLScale, coords[i * 3 + 2] * VRMLScale);
-	}
-}
-
-void Project::writeVRMLShapeMeshEnd(FILE *stream)
-{
-	indent -= INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "]\n");
-	indent -= INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "}\n");
-
-	
-	if (VRMLdialect == X3DV_WITH_RIGID_BODY_PHYSICS)
-	{
-		writeIndent(stream);
-		fprintf(stream, "color ColorRGBA {\n"); 
-		indent += INDENT_INC;		
-		writeIndent(stream);
-		fprintf(stream, "color [\n"); 
-		indent += INDENT_INC;		
-
-		for (int i = 0; i < numFaceColors; i++)
-		{
-			int currentColor = faceColors[i];
-			writeIndent(stream);
-			fprintf(stream, "%g %g %g %g\n", (float)(FlatColorArray[currentColor][0]) / 256.0, (float)(FlatColorArray[currentColor][1]) / 256.0, (float)(FlatColorArray[currentColor][2]) / 256.0, (currentColor > 13 && currentColor < 22) ? 0.5 : 1);
-			writeIndent(stream);
-			fprintf(stream, "%g %g %g %g\n", (float)(FlatColorArray[currentColor][0]) / 256.0, (float)(FlatColorArray[currentColor][1]) / 256.0, (float)(FlatColorArray[currentColor][2]) / 256.0, (currentColor > 13 && currentColor < 22) ? 0.5 : 1);
-			writeIndent(stream);
-			fprintf(stream, "%g %g %g %g\n", (float)(FlatColorArray[currentColor][0]) / 256.0, (float)(FlatColorArray[currentColor][1]) / 256.0, (float)(FlatColorArray[currentColor][2]) / 256.0, (currentColor > 13 && currentColor < 22) ? 0.5 : 1);
-		}
-
-		indent -= INDENT_INC;		
-		writeIndent(stream);
-		fprintf(stream, "]\n"); 
-
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fprintf(stream, "}\n");
-	}
-	else
-	{
-		writeIndent(stream);
-		fprintf(stream, "coordIndex [\n"); 
-		indent += INDENT_INC;
-
-		for (int i = 0; i < numCoordIndices; i ++) 
-		{
-			writeIndent(stream);
-			fprintf(stream, "%d\n", coordIndices[i]);
-		}
-
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fprintf(stream, "]\n");
-	}
-}
-
-// routine to run through leoCADs internal data space, collect and write data
-
-template<class type> void Project::writeVRMLShapes(type color, FILE *stream, int coordinateCounter, Piece* pPiece, unsigned short group, float *pos, bool beginAndEnd)
-{ 
-	PieceInfo* pInfo = pPiece->GetPieceInfo();
-	const char* colname;
-	type* info = (type*)(pInfo->m_pGroups[group].drawinfo);
-	type currentColor = color;
-	type count, colors = *info;
-	type maxColors = colors;
-	info++;
-
-	while (colors--)
-	{
-		numCoords = 0;
-		coords = (float *) malloc(1);
-		numCoordIndices = 0;
-		coordIndices = (int *) malloc(1);
-
-		if ((*info == LC_COL_DEFAULT) || (*info == LC_COL_EDGES))
-		{
-			colname = altcolornames[color];
-			currentColor = color;
-		}
-		else
-		{
-			if ((*info >= LC_MAXCOLORS))
-			{
-				info++;
-				info += *info + 1;
-				info += *info + 1;
-
-				continue;
-			}
-			colname = altcolornames[*info];
-			currentColor = *info;
-		}
-		info++;
-		
-		if (*info)
-		{
-			for (count = *info, info++; count; count -= 3)
-			{
-				generateMeshData(info, pos, pPiece, 3, currentColor);
-				info += 3;
-			}
-			writeIndent(stream);
-			fprintf(stream, "# %s\n", colname);
-
-			bool rigidBody = (VRMLdialect == X3DV_WITH_RIGID_BODY_PHYSICS);
-
-			bool writeBegin = ((!rigidBody) || (beginAndEnd && (colors == (maxColors - 1)))); 
-			bool writeEnd = ((!rigidBody) || (beginAndEnd && (colors == 0)));
-
-			if (writeBegin) 
-			{
-				writeVRMLShapeBegin(stream, currentColor, false);
-				writeVRMLShapeMeshBegin(stream);
-			}
-
-			writeVRMLShapeMeshData(stream);
-
-			if (writeEnd)
-			{
-				writeVRMLShapeMeshEnd(stream);
-				writeVRMLShapeEnd(stream);
-			}
-		}
-		else
-			info++;
-
-		if (*info)
-		{
-			// IndexedLineSet not supported in RigidBody node for the xj3d browser 8-(
-			if (VRMLdialect != X3DV_WITH_RIGID_BODY_PHYSICS) 
-			{
-				writeIndent(stream);
-				fprintf(stream, "# lines of color %s\n", colname);
-			}
-
-			for (count = *info, info++; count; count -= 2)
-			{
-				generateMeshData(info, pos, pPiece, 2, currentColor);
-				info += 2;
-			}
-
-			// IndexedLineSet not supported in RigidBody node for the xj3d browser 8-(
-			if (VRMLdialect != X3DV_WITH_RIGID_BODY_PHYSICS) 
-			{
-				writeVRMLShapeBegin(stream, currentColor, true);
-				writeVRMLShapeMeshBegin(stream);
-				writeVRMLShapeMeshData(stream);
-				writeVRMLShapeMeshEnd(stream);
-				writeVRMLShapeEnd(stream);
-			}
-		}
-		else
-			info++;
-
-		free(coords);
-		free(coordIndices);
-	}
-}
-
-// The X3DV export need to "melt together" faces of different pieces into one triangleSet
-// based on the leocad "piece -> group" menupoint, otherwise the rigid body simulation would simulate all pieces seperatly
-// Additionally a center of mass is required for the X3DV export 
-// Unfortunalty, the origin of a piece in leocad is not usefull for use as center of mass
-// So the exporter use the mid of the boundingbox of all pieces in a group as center of mass
-// the needed information is stored in the following compound datatype
-
-class GroupInfo
-{
-public:
-	Group *group;
-	float minBoundingBox[3];
-	float maxBoundingBox[3];
-	char  groupname[65];
-	bool  firstData;
-	Piece *firstPiece; 
-	Piece *lastPiece; 
-};
-
-// routines to account a boundingbox 
-
-template<class type> void Project::getMinMaxData(type* info, Piece* pPiece, GroupInfo* groupInfo)
-{
-	float rot[4];
-	Vector3 Pos = pPiece->GetPosition();
-	pPiece->GetRotation(rot);
-	Matrix matrix(rot, Pos);
-
-	PieceInfo* pInfo = pPiece->GetPieceInfo();
-
-	for (int i = 0; i < 3; i++)
-	{
-		float vertex[3];
-		float *localVertex = &pInfo->m_fVertexArray[info[i] * 3];
-		matrix.TransformPoint(vertex, localVertex);
-
-		for (int j = 0; j < 3; j++)
-		{
-			if (groupInfo->firstData)
-			{
-				groupInfo->minBoundingBox[j] = vertex[j];
-				groupInfo->maxBoundingBox[j] = vertex[j];
-			}
-			if (vertex[j] < groupInfo->minBoundingBox[j])
-				groupInfo->minBoundingBox[j] = vertex[j];
-			if (vertex[j] > groupInfo->maxBoundingBox[j])
-				groupInfo->maxBoundingBox[j] = vertex[j];
-		}
-		groupInfo->firstData = false;
-	}
-}
-
-template<class type> void Project::getMinMax(type col, Piece* piece, unsigned short group, GroupInfo* groupInfo)
-{ 
-	PieceInfo *pInfo = piece->GetPieceInfo();
-	type* info = (type*)(pInfo->m_pGroups[group].drawinfo);
-	type colors = *info;
-	info++;
-
-	type count;
-
-	while (colors--)
-	{
-		if ((*info == LC_COL_DEFAULT) || (*info == LC_COL_EDGES))
-		{
-		}
-		else
-		{
-			if ((*info >= LC_MAXCOLORS))
-			{
-				info++;
-				info += *info + 1;
-				info += *info + 1;
-
-				continue;
-			}
-		}
-		info++;
-		
-		bool skipNext = (info[0] < 1);
-		if (skipNext)
-			skipNext = (info[1] < 1);
-		if (skipNext)
-			info += 2;                
-		else
-		{
-			for (count = *info, info++; count; count -= 3)
-			{
-				getMinMaxData(info, piece, groupInfo);
-				info += 3;
-			}
-		}
-
-		info += *info + 1;
-	}
-}
-
-// Pieces without TopGroup represent Pieces without "Piece->Group" in LeoCAD
-// The handleAsGroup function is used with "if" in loops over pieces, 
-// to run the if/loop content for either only single pieces or all pieces part
-// of a LeoCAD "Piece->Group"
-
-bool Project::handleAsGroup(Piece* pPiece, GroupInfo groupInfo)
-{
-	if (pPiece->GetTopGroup() == NULL)
-	{
-		if (groupInfo.firstPiece == pPiece)
-			return true;
-	}
-	else
-	{
-		if (pPiece->GetTopGroup() == groupInfo.group)
-			return true;
-	}
-	return false;
-}
-
-// main routine to export VRML97 or X3DV files
-
-void Project::exportVRMLFile(char *filename, int dialect)
-{
-	numDEF = 0;
-	indent = 0;
-	int coordinateCounter = 1;
-	char buf[LC_MAXPATH], *ptr;
-	FILE* stream = fopen(filename, "wt");
-	Piece* pPiece;
-	bool rigidBody = (dialect == X3DV_WITH_RIGID_BODY_PHYSICS);
-	VRMLdialect = dialect;	
-	strcpy(buf, m_strPathName);
-	ptr = strrchr(buf, '\\');
-	if (ptr)
-		ptr++;
-	else
-	{
-		ptr = strrchr(buf, '/');
-		if (ptr)
-			ptr++;
-		else
-			ptr = buf;
-	}
-
-	// write header
-	switch (VRMLdialect)
-	{
-	case VRML97:
-		fputs("#VRML V2.0 utf8\n", stream);
-		break;
-	case X3DV_WITH_RIGID_BODY_PHYSICS:
-		fputs("#X3D V3.0 utf8\n", stream);
-		fputs("PROFILE Immersive\n", stream);
-		fputs("COMPONENT RigidBodyPhysics:2\n", stream);
-		break;
-	}
-
-	// write leading comments
-	fputs("# Model exported from LeoCAD\n", stream);
-	if (strlen(buf) != 0)
-		fprintf(stream,"# Original name: %s\n", ptr);
-	if (strlen(m_strAuthor))
-		fprintf(stream, "# Author: %s\n", m_strAuthor);
-
-	// write leading once needed X3DV commands
-	if (rigidBody)
-	{
-		fputs("\n", stream);
-		writeIndent(stream);
-		fputs("Group {\n", stream);
-		indent += INDENT_INC;
-		writeIndent(stream);
-		fputs("children [\n", stream);
-		indent += INDENT_INC;
-	}
-
-	// initalise "melt together" group information
-	ObjArray<GroupInfo> allGroups;
-	GroupInfo groupObject;
-	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
-	{
-		Group *topGroup = pPiece->GetTopGroup();
-		int foundGroup = false;;
-		if (topGroup != NULL)
-		{
-			for (int i = 0; i < allGroups.GetSize(); i++)
-				if (allGroups[i].group == topGroup)
-				{
-					allGroups[i].lastPiece = pPiece;
-					foundGroup = true;
-				} 
-		}
-		if (!foundGroup)
-		{
-			groupObject.group = topGroup;
-			groupObject.firstPiece = pPiece;
-			groupObject.lastPiece = pPiece;
-			groupObject.firstData = true;
-			if (topGroup != NULL)
-				snprintf(groupObject.groupname, 64, "%s", topGroup->m_strName);
-			else
-				snprintf(groupObject.groupname, 64, "%s", pPiece->GetName());
-			allGroups.Add(groupObject);
-		}
-	}
-
-	// account bounding box information
-	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
-	{
-		unsigned char color = pPiece->GetColor();
-		PieceInfo *pInfo = pPiece->GetPieceInfo();
-		for (int j = 0; j < allGroups.GetSize(); j++)
-		{
-			if (handleAsGroup(pPiece, allGroups[j]))
-			{
-				unsigned short group;
-
-				for (group = 0; group < pInfo->m_nGroupCount; group++)
-				{
-					if (pInfo->m_nFlags & LC_PIECE_LONGDATA)
-					{
-						unsigned long col = color;
-						getMinMax(col, pPiece, group, &(allGroups[j]));
-					}
-					else
-					{
-						unsigned short col = color;
-						getMinMax(col, pPiece, group, &(allGroups[j]));
-					}
-				}
-			}
-		}
-	}		
-
-	// write main VRML97/X3DV data
-	for (int j = 0; j < allGroups.GetSize(); j++)
-	{
-		for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
-		{
-			bool beginGroup = ((allGroups[j].group == NULL) || (allGroups[j].firstPiece == pPiece));
-			bool endGroup = ((allGroups[j].group == NULL) || (allGroups[j].lastPiece == pPiece));
-
-			if (handleAsGroup(pPiece, allGroups[j]))
-			{				
-				PieceInfo* pInfo = pPiece->GetPieceInfo();
-				unsigned char color = pPiece->GetColor();
-			
-				strcpy(buf, pPiece->GetName());
-				for (unsigned int i = 0; i < strlen(buf); i++)
-					if ((buf[i] == '#') || (buf[i] == ' '))
-						buf[i] = '_';
-
-				writeIndent(stream);
-				fprintf(stream, "# %s\n", buf);
-
-				float pos[3];
-				float rot[4];
-
-				switch (VRMLdialect)
-				{
-				case VRML97:
-					pPiece->GetPosition(pos);
-					pPiece->GetRotation(rot);
-					writeIndent(stream);
-					fprintf(stream, "Transform {\n");
-					indent += INDENT_INC;
-					writeIndent(stream);
-					fprintf(stream, "translation %g %g %g\n", pos[1] * VRMLScale, pos[2] * VRMLScale, pos[0] * VRMLScale);
-					writeIndent(stream);
-					fprintf(stream, "rotation %g %g %g %g\n", rot[1], rot[2], rot[0], rot[3] * M_PI / 180.0);
-					writeIndent(stream);
-					fprintf(stream, "children [\n");
-					indent += INDENT_INC;
-					break;
-                                case X3DV_WITH_RIGID_BODY_PHYSICS:
-					for (int k = 0; k < 3; k++)
-						pos[k] = allGroups[j].minBoundingBox[k] + (allGroups[j].maxBoundingBox[k] - allGroups[j].minBoundingBox[k]) / 2.0f;
-				}
-
-				unsigned short group;
-
-				if (pInfo->m_nGroupCount > 0)
-				{
-					if (beginGroup && rigidBody)
-					{
-						if (pInfo->m_nFlags & LC_PIECE_LONGDATA)
-						{
-							unsigned long col = color;
-							writeVRMLShapeBegin(stream, col, false);
-							writeVRMLShapeMeshBegin(stream);
-						}
-						else
-						{
-							unsigned short col = color;
-							writeVRMLShapeBegin(stream, col, false);
-							writeVRMLShapeMeshBegin(stream);
-						}
-					}
-
-					for (group = 0; group < pInfo->m_nGroupCount; group++)
-					{
-						writeIndent(stream);
-						fprintf(stream, "# group %d\n",(int)group);
-						if (pInfo->m_nFlags & LC_PIECE_LONGDATA)
-						{
-							unsigned long col = color;
-							writeVRMLShapes(col, stream, coordinateCounter, pPiece, group, pos, !rigidBody);
-						}
-						else
-						{
-							unsigned short col = color;
-							writeVRMLShapes(col, stream, coordinateCounter, pPiece, group, pos, !rigidBody);
-						}
-					}
-
-					if (endGroup && rigidBody)
-					{
-						writeVRMLShapeMeshEnd(stream);
-						writeVRMLShapeEnd(stream);
-					}
-				}
-
-				if (!rigidBody)
-				{
-					indent -= INDENT_INC;
-					writeIndent(stream);
-					fprintf(stream, "]\n");
-				}
-
-				if (endGroup || (!rigidBody))
-				{
-					indent -= INDENT_INC;
-					writeIndent(stream);
-					fprintf(stream, "} # endShape\n");
-				}
-
-				coordinateCounter++;
-			}
-
-		}
-	}
-
-	if (rigidBody)
-	{
-		// write trailing once needed X3DV commands
-        	// http://www.xj3d.org/extensions/rigid_physics.html
-        	// http://www.web3d.org/x3d/specifications/ISO-IEC-19775-X3DAbstractSpecification_Revision1_to_Part1/Part01/components/rigid_physics.html
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fputs("]\n", stream);
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fputs("}\n", stream);
-
-		writeIndent(stream);
-		fputs("DEF RigidBodyCollection1 RigidBodyCollection {\n", stream);
-		indent += INDENT_INC;
-		writeIndent(stream);
-		fputs("bodies [\n", stream);
-		indent += INDENT_INC;
-		coordinateCounter = 0;
-		for (int j = 0; j < allGroups.GetSize(); j++)
-		{
-			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
-			{
-				bool beginGroup = ((allGroups[j].group == NULL) || (allGroups[j].firstPiece == pPiece));
-				bool endGroup = ((allGroups[j].group == NULL) || (allGroups[j].lastPiece == pPiece));
-
-				if (handleAsGroup(pPiece, allGroups[j]))
-				{				
-					float pos[3];
-
-					if (VRMLdialect == X3DV_WITH_RIGID_BODY_PHYSICS)
-					{
-						if (beginGroup)
-						{
-							for (int k = 0; k < 3; k++)
-								pos[k] = allGroups[j].minBoundingBox[k] + (allGroups[j].maxBoundingBox[k] - allGroups[j].minBoundingBox[k]) / 2.0f;
-							writeIndent(stream);
-							fprintf(stream, "# %s\n", allGroups[j].groupname);
-							writeIndent(stream);
-							fprintf(stream, "RigidBody {\n");
-							indent += INDENT_INC;
-							writeIndent(stream);
-							fprintf(stream, "position %g %g %g\n", pos[1] * VRMLScale, pos[2] * VRMLScale, pos[0] * VRMLScale);
-							writeIndent(stream);
-							fprintf(stream, "geometry USE CollidableShape%d\n", coordinateCounter);
-						}
-						if (endGroup)
-						{
-							indent -= INDENT_INC;
-							writeIndent(stream);
-							fprintf(stream, "}\n");
-						}
-					}
-				}
-
-			}
-			coordinateCounter++;
-		}
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fputs("]\n", stream);
-
-		writeIndent(stream);
-		fputs("collider DEF CollisionCollection1 CollisionCollection", stream);
-		fputs(" {\n", stream);
-		indent += INDENT_INC;                
-		writeIndent(stream);
-		fputs("collidables [\n", stream);  
-		indent += INDENT_INC;                
-		for (int i = 0; i < numDEF; i++)
-		{
-			writeIndent(stream);
-			fprintf(stream, "USE CollidableShape%d\n", i);
-		}
-		indent -= INDENT_INC;                
-		writeIndent(stream);
-		fputs("]\n", stream);
-		indent -= INDENT_INC;                
-		writeIndent(stream);
-		fputs("}\n", stream);
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fputs("}\n", stream);
-
-		writeIndent(stream);
-		fputs("DEF CollisionSensor1 CollisionSensor {\n", stream);
-		indent += INDENT_INC;
-		writeIndent(stream);
-		fputs("collidables USE CollisionCollection1\n", stream);
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fputs("}\n", stream);
-		fputs("\n", stream);
-		fputs("ROUTE CollisionSensor1.contacts TO RigidBodyCollection1.set_contacts\n", stream);
-	}
-	
-	if (indent != 0)
-		fprintf(stderr, "internal error: indent %d\n", indent);
-	fclose(stream);
-}
-
-

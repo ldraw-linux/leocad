@@ -250,10 +250,7 @@ void Object::CalculateKeys (unsigned short nTime, bool bAnimation)
   int i, empty = m_nKeyInfoCount;
 
   for (i = 0; i < m_nKeyInfoCount; i++)
-  {
     next[i] = NULL;
-    prev[i] = NULL;
-  }
 
   if (bAnimation)
     node = m_pAnimationKeys;
@@ -283,8 +280,6 @@ void Object::CalculateKeys (unsigned short nTime, bool bAnimation)
   for (i = 0; i < m_nKeyInfoCount; i++)
   {
     LC_OBJECT_KEY *n = next[i], *p = prev[i];
-
-    if (p == NULL) continue;
 
     if (bAnimation && (n != NULL) && (p->time != nTime))
     {

@@ -14,6 +14,8 @@
 
 #define LC_CAMERA_SAVE_VERSION 6 // LeoCAD 0.73
 
+GLuint Camera::m_nTargetList = 0;
+
 static LC_OBJECT_KEY_INFO camera_key_info[LC_CK_COUNT] =
 {
   { "Camera Position", 3, LC_CK_EYE },
@@ -192,6 +194,9 @@ Camera::Camera (float ex, float ey, float ez, float tx, float ty, float tz, Came
 
 Camera::~Camera()
 {
+  if (m_nList != 0)
+    glDeleteLists (m_nList, 1);
+
   delete m_pTarget;
 }
 
@@ -203,7 +208,9 @@ void Camera::Initialize()
 
   m_pNext = NULL;
   m_nState = 0;
+  m_nList = 0;
   m_nType = LC_CAMERA_USER;
+  m_nList = 0;
 
   m_pTR = NULL;
   for (unsigned char i = 0 ; i < sizeof(m_strName) ; i++ )
@@ -528,6 +535,8 @@ void Camera::UpdateBoundingBox()
   upvec.Normalize();
   upvec.ToFloat(m_fUp);
 
+  float len = frontvec.Length();
+
   Matrix mat;
   mat.CreateLookat (m_fEye, m_fTarget, m_fUp);
   mat.Invert ();
@@ -537,29 +546,11 @@ void Camera::UpdateBoundingBox()
   mat.SetTranslation (m_fTarget[0], m_fTarget[1], m_fTarget[2]);
   m_pTarget->BoundingBoxCalculate (&mat);
   mat.SetTranslation (0, 0, 0);
-}
 
-void Camera::Render(float fLineWidth)
-{
-  // Fix the up vector
-  Vector frontvec(m_fEye[0]-m_fTarget[0], m_fEye[1]-m_fTarget[1], m_fEye[2]-m_fTarget[2]);
-  float len = frontvec.Length();
+	if (!m_nList)
+		return;
 
-  Matrix mat;
-  mat.CreateLookat (m_fEye, m_fTarget, m_fUp);
-  mat.Invert ();
-  mat.SetTranslation (0, 0, 0);
-
-  if (IsEyeSelected())
-  {
-    glLineWidth(fLineWidth*2);
-	int Color = (m_nState & LC_CAMERA_FOCUSED) != 0 ? LC_COL_FOCUSED : LC_COL_SELECTED;
-    glColor4ub(FlatColorArray[Color][0], FlatColorArray[Color][1], FlatColorArray[Color][2], 255);
-  }
-  else
-  {
-    glColor4f(0.5f, 0.8f, 0.5f, 1.0f);
-  }
+  glNewList(m_nList, GL_COMPILE);
 
   glPushMatrix();
   glTranslatef(m_fEye[0], m_fEye[1], m_fEye[2]);
@@ -587,52 +578,82 @@ void Camera::Render(float fLineWidth)
   glVertexPointer (3, GL_FLOAT, 0, verts);
   glDrawArrays(GL_LINES, 0, 24);
   glDrawArrays(GL_LINE_STRIP, 24, 10);
-  glLineWidth(fLineWidth);
+
+//	glBegin(GL_LINES);
+//	glVertex3f(0,0,0);
+//	glVertex3f(0,0,len);
+//	glEnd();
 
   glTranslatef(0, 0, -len);
+
+  glEndList();
+
+  if (m_nTargetList == 0)
+  {
+    m_nTargetList = glGenLists(1);
+    glNewList (m_nTargetList, GL_COMPILE);
+
+    glEnableClientState(GL_VERTEX_ARRAY);
+    float box[24][3] = { 
+      {  0.2f,  0.2f,  0.2f }, { -0.2f,  0.2f,  0.2f },
+      { -0.2f,  0.2f,  0.2f }, { -0.2f, -0.2f,  0.2f },
+      { -0.2f, -0.2f,  0.2f }, {  0.2f, -0.2f,  0.2f },
+      {  0.2f, -0.2f,  0.2f }, {  0.2f,  0.2f,  0.2f },
+      {  0.2f,  0.2f, -0.2f }, { -0.2f,  0.2f, -0.2f },
+      { -0.2f,  0.2f, -0.2f }, { -0.2f, -0.2f, -0.2f },
+      { -0.2f, -0.2f, -0.2f }, {  0.2f, -0.2f, -0.2f },
+      {  0.2f, -0.2f, -0.2f }, {  0.2f,  0.2f, -0.2f },
+      {  0.2f,  0.2f,  0.2f }, {  0.2f,  0.2f, -0.2f },
+      { -0.2f,  0.2f,  0.2f }, { -0.2f,  0.2f, -0.2f },
+      { -0.2f, -0.2f,  0.2f }, { -0.2f, -0.2f, -0.2f },
+      {  0.2f, -0.2f,  0.2f }, {  0.2f, -0.2f, -0.2f } };
+    glVertexPointer (3, GL_FLOAT, 0, box);
+    glDrawArrays(GL_LINES, 0, 24);
+    glPopMatrix();
+    glEndList();
+  }
+}
+
+void Camera::Render(float fLineWidth)
+{
+	// Create the display lists if this is the first time we're rendered.
+	if (!m_nList)
+	{
+    m_nList = glGenLists(1);
+		UpdateBoundingBox();
+	}
+
+  if (IsEyeSelected())
+  {
+    glLineWidth(fLineWidth*2);
+    glColor3ubv(FlatColorArray[(m_nState & LC_CAMERA_FOCUSED) != 0 ? LC_COL_FOCUSED : LC_COL_SELECTED]);
+    glCallList(m_nList);
+    glLineWidth(fLineWidth);
+  }
+  else
+  {
+    glColor3f(0.5f, 0.8f, 0.5f);
+    glCallList(m_nList);
+  }
 
   if (IsTargetSelected())
   {
     glLineWidth(fLineWidth*2);
-	int Color = (m_nState & LC_CAMERA_TARGET_FOCUSED) != 0 ? LC_COL_FOCUSED : LC_COL_SELECTED;
-    glColor4ub(FlatColorArray[Color][0], FlatColorArray[Color][1], FlatColorArray[Color][2], 255);
+    glColor3ubv(FlatColorArray[(m_nState & LC_CAMERA_TARGET_FOCUSED) != 0 ? LC_COL_FOCUSED : LC_COL_SELECTED]);
+    glCallList(m_nTargetList);
+    glLineWidth(fLineWidth);
   }
   else
   {
-    glColor4f(0.5f, 0.8f, 0.5f, 1.0f);
+    glColor3f(0.5f, 0.8f, 0.5f);
+    glCallList(m_nTargetList);
   }
 
-  glEnableClientState(GL_VERTEX_ARRAY);
-  float box[24][3] =
-  { 
-	  {  0.2f,  0.2f,  0.2f }, { -0.2f,  0.2f,  0.2f },
-	  { -0.2f,  0.2f,  0.2f }, { -0.2f, -0.2f,  0.2f },
-	  { -0.2f, -0.2f,  0.2f }, {  0.2f, -0.2f,  0.2f },
-	  {  0.2f, -0.2f,  0.2f }, {  0.2f,  0.2f,  0.2f },
-	  {  0.2f,  0.2f, -0.2f }, { -0.2f,  0.2f, -0.2f },
-	  { -0.2f,  0.2f, -0.2f }, { -0.2f, -0.2f, -0.2f },
-	  { -0.2f, -0.2f, -0.2f }, {  0.2f, -0.2f, -0.2f },
-	  {  0.2f, -0.2f, -0.2f }, {  0.2f,  0.2f, -0.2f },
-	  {  0.2f,  0.2f,  0.2f }, {  0.2f,  0.2f, -0.2f },
-	  { -0.2f,  0.2f,  0.2f }, { -0.2f,  0.2f, -0.2f },
-	  { -0.2f, -0.2f,  0.2f }, { -0.2f, -0.2f, -0.2f },
-	  {  0.2f, -0.2f,  0.2f }, {  0.2f, -0.2f, -0.2f }
-  };
-  glVertexPointer (3, GL_FLOAT, 0, box);
-  glDrawArrays(GL_LINES, 0, 24);
-  glPopMatrix();
-
-  glLineWidth(fLineWidth);
-
-  float Line[2][3] =
-  {
-	  { m_fEye[0], m_fEye[1], m_fEye[2] },
-	  { m_fTarget[0], m_fTarget[1], m_fTarget[2] },
-  };
-
-  glVertexPointer(3, GL_FLOAT, 0, Line);
-  glColor4f(0.5f, 0.8f, 0.5f, 1.0f);
-  glDrawArrays(GL_LINES, 0, 2);
+  glColor3f(0.5f, 0.8f, 0.5f);
+  glBegin(GL_LINES);
+  glVertex3fv(m_fEye);
+  glVertex3fv(m_fTarget);
+  glEnd();
 
   if (IsSelected())
   {
@@ -650,26 +671,27 @@ void Camera::Render(float fLineWidth)
     projection.Invert ();
     glMultMatrixf (projection.m);
 
-	// Draw the view frustum.
-	float verts[16][3] =
-	{
-		{  1,  1,  1 }, { -1,  1, 1 },
-		{ -1,  1,  1 }, { -1, -1, 1 },
-		{ -1, -1,  1 }, {  1, -1, 1 },
-		{  1, -1,  1 }, {  1,  1, 1 },
-		{  1,  1, -1 }, {  1,  1, 1 },
-		{ -1,  1, -1 }, { -1,  1, 1 },
-		{ -1, -1, -1 }, { -1, -1, 1 },
-		{  1, -1, -1 }, {  1, -1, 1 },
-	};
+    // draw the viewing frustum
+    glBegin(GL_LINE_LOOP);
+    glVertex3i(1, 1, 1);
+    glVertex3i(-1, 1, 1);
+    glVertex3i(-1, -1, 1);
+    glVertex3i(1, -1, 1);
+    glEnd();
 
-	glVertexPointer(3, GL_FLOAT, 0, verts);
-	glDrawArrays(GL_LINES, 0, 16);
+    glBegin(GL_LINES);
+    glVertex3i(1, 1, -1);
+    glVertex3i(1, 1, 1);
+    glVertex3i(-1, 1, -1);
+    glVertex3i(-1, 1, 1);
+    glVertex3i(-1, -1, -1);
+    glVertex3i(-1, -1, 1);
+    glVertex3i(1, -1, -1);
+    glVertex3i(1, -1, 1);
+    glEnd();
 
     glPopMatrix();
   }
-
-  glDisableClientState(GL_VERTEX_ARRAY);
 }
 
 void Camera::MinIntersectDist(LC_CLICKLINE* pLine)

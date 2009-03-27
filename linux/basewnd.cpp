@@ -11,7 +11,6 @@
 BaseWnd::BaseWnd (BaseWnd *parent, int menu_count)
 {
   m_pMenuItems = new BaseMenuItem[menu_count];
-  memset(m_pMenuItems, 0, sizeof(BaseMenuItem[menu_count]));
   m_pParent = parent;
 
   m_pXID = gtk_window_new (GTK_WINDOW_TOPLEVEL);
@@ -169,9 +168,6 @@ int BaseWnd::MessageBox (const char* text, const char* caption, int flags)
 
 void BaseWnd::ShowMenuItem (int id, bool show)
 {
-  if (!m_pMenuItems[id].widget)
-    return;
-
   if (show)
     gtk_widget_show (m_pMenuItems[id].widget);
   else
@@ -180,17 +176,11 @@ void BaseWnd::ShowMenuItem (int id, bool show)
 
 void BaseWnd::EnableMenuItem (int id, bool enable)
 {
-  if (!m_pMenuItems[id].widget)
-    return;
-
   gtk_widget_set_sensitive (m_pMenuItems[id].widget, enable);
 }
 
 void BaseWnd::CheckMenuItem (int id, bool check)
 {
-  if (!m_pMenuItems[id].widget)
-    return;
-
   ignore_commands = true;
   gtk_check_menu_item_set_state (GTK_CHECK_MENU_ITEM (m_pMenuItems[id].widget), check);  
   ignore_commands = false;
@@ -204,9 +194,6 @@ void BaseWnd::SetMenuItemText (int id, const char *text)
   const char *p;
   gchar *pattern;
   gint length;
-
-  if (!m_pMenuItems[id].widget)
-    return;
 
   length = strlen (text);
   pattern = g_new (gchar, length+1);

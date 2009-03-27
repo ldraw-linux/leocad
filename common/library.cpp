@@ -114,7 +114,7 @@ bool PiecesLibrary::Load (const char *libpath)
 	// Load moved files reference.
 	if (m_pMovedReference != NULL)
 		free(m_pMovedReference);
-	m_pMovedReference = (char*)malloc(18*(movedcount+1));
+	m_pMovedReference = (char*)malloc(18*movedcount);
 	memset (m_pMovedReference, 0, 18*movedcount);
 	m_nMovedCount = movedcount;
 
@@ -1205,11 +1205,7 @@ bool PiecesLibrary::ImportTexture (const char* Name)
 		p = strrchr(file1, '/');
 	if (!p)
 		p = file1;
-#ifdef LC_WINDOWS
 	strupr(p);
-#else
-	strlwr(p);
-#endif
 	p++;
 
 	memset(NewTexName, 0, 9);
@@ -1365,16 +1361,10 @@ bool PiecesLibrary::ImportLDrawPiece (const char* Filename)
 		if (SaveLDrawPiece (&piece))
 			Sys_MessageBox ("Piece successfully imported.");
 		else
-		{
-			fprintf(stderr, "Error saving library after importing %s.\n", Filename);
 			Sys_MessageBox ("Error saving library.");
-		}
 	}
 	else
-	{
-		fprintf(stderr, "Error reading file %s\n", Filename);
 		Sys_MessageBox ("Error reading file.");
-	}
 
 	FreeLDrawPiece(&piece);
 
@@ -1854,14 +1844,7 @@ static void decodefile(FILE *F, Matrix *mat, unsigned char defcolor, lineinfo_t*
 			strcat (fn, "p/");
 			strcat (fn, filename);
 
-#ifdef LC_WINDOWS
 			strupr(filename);
-#else
-			strlwr(filename);
-			for (unsigned int i = 0; i < strlen(filename); i++)
-				if (filename[i] == '\\')
-					filename[i] = '/';
-#endif
 			for (val = 0; val < numvalid; val++)
 				if (strcmp(filename, valid[val]) == 0)
 					break;
@@ -1899,8 +1882,6 @@ static void decodefile(FILE *F, Matrix *mat, unsigned char defcolor, lineinfo_t*
 					info = info->next;
 				fclose(tf);
 			}
-			else
-				fprintf(stderr, "failed to load file %s (last attempt %s)\n", filename, fn);
 		} break;
 
 		case 2:
@@ -1999,11 +1980,6 @@ static void decodeconnections(FILE *F, Matrix *mat, unsigned char defcolor, char
 		strcat (fn, "P/");
 		strcat (fn, filename);
 
-#ifdef LC_WINDOWS
-		strupr(filename);
-#else
-		strlwr(filename);
-#endif
 		if (color == 16) color = defcolor;
 
 		strupr(filename);
@@ -2622,7 +2598,7 @@ bool SaveLDrawPiece(LC_LDRAW_PIECE* piece)
 		bt |= LC_PIECE_MEDIUM;
 
 	if (piece->long_info)
-		bt |= LC_PIECE_LONGDATA_FILE;
+		bt |= LC_PIECE_LONGDATA;
 
 	newidx.WriteByte(&bt, 1);
 

@@ -4,51 +4,54 @@ include config.mk
 ### Module directories
 MODULES := $(OSDIR) common
 
-### Look for include files in each of the modules
+### look for include files in
+###   each of the modules
 CPPFLAGS += $(patsubst %,-I%,$(MODULES)) $(OS)
 CPPFLAGS += -g
 
-### Extra libraries if required
-LIBS := 
+### extra libraries if required
+LIBS :=
 
-### Each module will add to this
+### each module will add to this
 SRC :=
 
 BIN := bin/leocad
 
 -include $(OSDIR)/config.mk
 
-### Include the description for each module
+### include the description for
+###   each module
 include $(patsubst %,%/module.mk,$(MODULES))
 
-### Determine the object files
+### determine the object files
 OBJ := \
   $(patsubst %.c,%.o,$(filter %.c,$(SRC))) \
   $(patsubst %.cpp,%.o,$(filter %.cpp,$(SRC)))
 
-### Link the program
+### link the program
 .PHONY: all static
 
 all: $(BIN)
 
 static: bin/leocad.static
 
-bin/leocad: $(OBJ) bin Makefile
-	@echo Linking $@
-	@$(CXX) -o $@ $(OBJ) $(LIBS) $(LDFLAGS)
+bin/leocad: $(OBJ) bin
+	$(CXX) -o $@ $(OBJ) $(LIBS) $(LDFLAGS)
 
-bin/leocad.static: $(OBJ) bin Makefile
+bin/leocad.static: $(OBJ) bin
 	$(CXX) -static -o $@ $(OBJ) $(LIBS) $(LDFLAGS)
 
 bin:
 	mkdir bin
 
-### Include the C/C++ include dependencies
+### include the C/C++ include
+###   dependencies
 ifeq ($(findstring $(MAKECMDGOALS), help config-help config clean veryclean spotless), )
 -include $(OBJ:.o=.d)
 endif
 
-### Calculate C/C++ include dependencies
+### calculate C/C++ include
+###   dependencies
 %.d: %.c
 	@[ -s $(OSDIR)/config.h ] || $(MAKE) config
 	@$(CC) -MM -MT '$(patsubst %.d,%.o, $@)' $(CFLAGS) $(CPPFLAGS) -w $< > $@
@@ -57,13 +60,6 @@ endif
 %.d: %.cpp
 	@[ -s $(OSDIR)/config.h ] || $(MAKE) config
 	@$(CXX) -MM -MT '$(patsubst %.d,%.o, $@)' $(CXXFLAGS) $(CPPFLAGS) -w $< > $@
-	@[ -s $@ ] || rm -f $@
-
-### Main compiler rule
-%.o: %.cpp
-	@echo $<
-	@[ -s $(OSDIR)/config.h ] || $(MAKE) config
-	@$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c -o '$(patsubst %.cpp,%.o, $@)' $<
 	@[ -s $@ ] || rm -f $@
 
 ### Various cleaning functions
@@ -80,7 +76,7 @@ spotless: veryclean
 	rm -rf arch $(OSDIR)/config.mk $(OSDIR)/config.h
 
 
-### Dependency stuff is done automatically, so these do nothing.
+### dependency stuff is done automatically, so these do nothing.
 .PHONY: dep depend
 
 

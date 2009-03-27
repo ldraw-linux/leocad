@@ -12,8 +12,6 @@ void Sys_GLCloseLibrary ();
 void* Sys_GLGetProc (const char *symbol);
 void* Sys_GLGetExtension (const char *symbol);
 
-#ifdef LC_OPENGL_DYNAMIC
-
 // =============================================================================
 // OpenGL Function pointers
 
@@ -354,8 +352,6 @@ PFNGLLOADNAME pfnglLoadName;
 PFNGLPUSHNAME pfnglPushName;
 PFNGLPOPNAME pfnglPopName;
 
-#endif // LC_OPENGL_DYNAMIC
-
 PFNGLACTIVETEXTUREARB pfnglActiveTextureARB;
 PFNGLCLIENTACTIVETEXTUREARB pfnglClientActiveTextureARB;
 PFNGLMULTITEXCOORD1DARB pfnglMultiTexCoord1dARB;
@@ -402,7 +398,6 @@ void GL_Shutdown ()
 {
   Sys_GLCloseLibrary ();
 
-#ifdef LC_OPENGL_DYNAMIC
   pfnglClearIndex = NULL;
   pfnglClearColor = NULL;
   pfnglClear = NULL;
@@ -740,8 +735,6 @@ void GL_Shutdown ()
   pfnglPushName = NULL;
   pfnglPopName = NULL;
 
-#endif // LC_OPENGL_DYNAMIC
-	
   pfnglActiveTextureARB = NULL;
   pfnglClientActiveTextureARB = NULL;
   pfnglMultiTexCoord1dARB = NULL;
@@ -790,8 +783,6 @@ bool GL_Initialize (const char* libname)
     return false;
   }
 
-#ifdef LC_OPENGL_DYNAMIC
-	
   pfnglClearIndex = (PFNGLCLEARINDEX) Sys_GLGetProc ("glClearIndex");
   pfnglClearColor = (PFNGLCLEARCOLOR) Sys_GLGetProc ("glClearColor");
   pfnglClear = (PFNGLCLEAR) Sys_GLGetProc ("glClear");
@@ -1129,8 +1120,6 @@ bool GL_Initialize (const char* libname)
   pfnglPushName = (PFNGLPUSHNAME) Sys_GLGetProc ("glPushName");
   pfnglPopName = (PFNGLPOPNAME) Sys_GLGetProc ("glPopName");
 
-#endif // LC_OPENGL_DYNAMIC
-	
   return true;
 }
 
@@ -1268,19 +1257,19 @@ bool GL_InitializeExtensions ()
 #include <math.h>
 
 #ifndef M_PI
-#define M_PI  3.14159265f
+#define M_PI  3.14159265
 #endif
 
-void gluLookAt(GLfloat ex, GLfloat ey, GLfloat ez, GLfloat cx, GLfloat cy, GLfloat cz,
-               GLfloat ux, GLfloat uy, GLfloat uz)
+void gluLookAt (GLdouble ex, GLdouble ey, GLdouble ez, GLdouble cx, GLdouble cy, GLdouble cz,
+			 GLdouble ux, GLdouble uy, GLdouble uz)
 {
-   GLfloat x[3], y[3], z[3] = { ex-cx, ey-cy, ez-cz };
-   GLfloat inv;
+   GLdouble x[3], y[3], z[3] = { ex-cx, ey-cy, ez-cz };
+   GLdouble inv;
 
    inv = sqrt (z[0]*z[0] + z[1]*z[1] + z[2]*z[2]);
    if (inv)
    {
-     inv = 1.0f/inv;
+     inv = 1.0/inv;
      z[0] *= inv;
      z[1] *= inv;
      z[2] *= inv;
@@ -1311,15 +1300,15 @@ void gluLookAt(GLfloat ex, GLfloat ey, GLfloat ez, GLfloat cx, GLfloat cy, GLflo
    }
 
    {
-   GLfloat m[16] = { x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, 0, 0, 0, 1 };
-   glMultMatrixf(m);
-   glTranslatef(-ex, -ey, -ez);
+   GLdouble m[16] = { x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, 0, 0, 0, 1 };
+   glMultMatrixd(m);
+   glTranslated(-ex, -ey, -ez);
    }
 }
 
-void gluPerspective(GLfloat fovy, GLfloat aspect, GLfloat zNear, GLfloat zFar)
+void gluPerspective (GLdouble fovy, GLdouble aspect, GLdouble zNear, GLdouble zFar)
 {
-   GLfloat y = zNear * tan (fovy * M_PI / 360.0f);
+   GLdouble y = zNear * tan (fovy * M_PI / 360.0);
    glFrustum (-y*aspect, y*aspect, -y, y, zNear, zFar);
 }
 
@@ -1329,7 +1318,8 @@ void gluPerspective(GLfloat fovy, GLfloat aspect, GLfloat zNear, GLfloat zFar)
  *         in - the 4x1 vector
  * Output:  out - the resulting 4x1 vector.
  */
-static void transform_point(GLfloat out[4], const GLfloat m[16], const GLfloat in[4])
+static void transform_point( GLdouble out[4], const GLdouble m[16],
+			     const GLdouble in[4] )
 {
 #define M(row,col)  m[col*4+row]
    out[0] = M(0,0) * in[0] + M(0,1) * in[1] + M(0,2) * in[2] + M(0,3) * in[3];
@@ -1347,10 +1337,10 @@ static void transform_point(GLfloat out[4], const GLfloat m[16], const GLfloat i
  * Input:  a, b - matrices to multiply
  * Output:  product - product of a and b
  */
-static void matmul(GLfloat *product, const GLfloat *a, const GLfloat *b)
+static void matmul( GLdouble *product, const GLdouble *a, const GLdouble *b )
 {
    /* This matmul was contributed by Thomas Malik */
-   GLfloat temp[16];
+   GLdouble temp[16];
    GLint i;
 
 #define A(row,col)  a[(col<<2)+row]
@@ -1369,7 +1359,7 @@ static void matmul(GLfloat *product, const GLfloat *a, const GLfloat *b)
 #undef A
 #undef B
 #undef T
-   memcpy( product, temp, 16*sizeof(GLfloat) );
+   memcpy( product, temp, 16*sizeof(GLdouble) );
 }
 
 
@@ -1379,15 +1369,15 @@ static void matmul(GLfloat *product, const GLfloat *a, const GLfloat *b)
  * Code contributed by Jacques Leroy jle@star.be
  * Return GL_TRUE for success, GL_FALSE for failure (singular matrix)
  */
-static GLboolean invert_matrix(const GLfloat *m, GLfloat *out)
+static GLboolean invert_matrix( const GLdouble *m, GLdouble *out )
 {
 /* NB. OpenGL Matrices are COLUMN major. */
-#define SWAP_ROWS(a, b) { GLfloat *_tmp = a; (a)=(b); (b)=_tmp; }
+#define SWAP_ROWS(a, b) { GLdouble *_tmp = a; (a)=(b); (b)=_tmp; }
 #define MAT(m,r,c) (m)[(c)*4+(r)]
 
- GLfloat wtmp[4][8];
- GLfloat m0, m1, m2, m3, s;
- GLfloat *r0, *r1, *r2, *r3;
+ GLdouble wtmp[4][8];
+ GLdouble m0, m1, m2, m3, s;
+ GLdouble *r0, *r1, *r2, *r3;
 
  r0 = wtmp[0], r1 = wtmp[1], r2 = wtmp[2], r3 = wtmp[3];
 
@@ -1454,11 +1444,11 @@ static GLboolean invert_matrix(const GLfloat *m, GLfloat *out)
  /* last check */
  if (0.0 == r3[3]) return GL_FALSE;
 
- s = 1.0f/r3[3];              /* now back substitute row 3 */
+ s = 1.0/r3[3];              /* now back substitute row 3 */
  r3[4] *= s; r3[5] *= s; r3[6] *= s; r3[7] *= s;
 
  m2 = r2[3];                 /* now back substitute row 2 */
- s  = 1.0f/r2[2];
+ s  = 1.0/r2[2];
  r2[4] = s * (r2[4] - r3[4] * m2), r2[5] = s * (r2[5] - r3[5] * m2),
  r2[6] = s * (r2[6] - r3[6] * m2), r2[7] = s * (r2[7] - r3[7] * m2);
  m1 = r1[3];
@@ -1469,7 +1459,7 @@ static GLboolean invert_matrix(const GLfloat *m, GLfloat *out)
  r0[6] -= r3[6] * m0, r0[7] -= r3[7] * m0;
 
  m1 = r1[2];                 /* now back substitute row 1 */
- s  = 1.0f/r1[1];
+ s  = 1.0/r1[1];
  r1[4] = s * (r1[4] - r2[4] * m1), r1[5] = s * (r1[5] - r2[5] * m1),
  r1[6] = s * (r1[6] - r2[6] * m1), r1[7] = s * (r1[7] - r2[7] * m1);
  m0 = r0[2];
@@ -1477,7 +1467,7 @@ static GLboolean invert_matrix(const GLfloat *m, GLfloat *out)
  r0[6] -= r2[6] * m0, r0[7] -= r2[7] * m0;
 
  m0 = r0[1];                 /* now back substitute row 0 */
- s  = 1.0f/r0[0];
+ s  = 1.0/r0[0];
  r0[4] = s * (r0[4] - r1[4] * m0), r0[5] = s * (r0[5] - r1[5] * m0),
  r0[6] = s * (r0[6] - r1[6] * m0), r0[7] = s * (r0[7] - r1[7] * m0);
 
@@ -1499,12 +1489,13 @@ static GLboolean invert_matrix(const GLfloat *m, GLfloat *out)
 
 
 /* projection du point (objx,objy,obz) sur l'ecran (winx,winy,winz) */
-GLint gluProject(GLfloat objx, GLfloat objy, GLfloat objz,
-                 const GLfloat model[16],const GLfloat proj[16], const GLint viewport[4],
-                 GLfloat *winx, GLfloat *winy, GLfloat *winz)
+GLint gluProject(GLdouble objx,GLdouble objy,GLdouble objz,
+                          const GLdouble model[16],const GLdouble proj[16],
+                          const GLint viewport[4],
+                          GLdouble *winx,GLdouble *winy,GLdouble *winz)
 {
     /* matrice de transformation */
-    GLfloat in[4],out[4];
+    GLdouble in[4],out[4];
 
     /* initilise la matrice et le vecteur a transformer */
     in[0]=objx; in[1]=objy; in[2]=objz; in[3]=1.0;
@@ -1528,18 +1519,19 @@ GLint gluProject(GLfloat objx, GLfloat objy, GLfloat objz,
 
 
 /* transformation du point ecran (winx,winy,winz) en point objet */
-GLint gluUnProject(GLfloat winx, GLfloat winy, GLfloat winz,
-                   const GLfloat model[16],const GLfloat proj[16], const GLint viewport[4],
-                   GLfloat *objx, GLfloat *objy, GLfloat *objz)
+GLint gluUnProject(GLdouble winx,GLdouble winy,GLdouble winz,
+                            const GLdouble model[16],const GLdouble proj[16],
+                            const GLint viewport[4],
+                            GLdouble *objx,GLdouble *objy,GLdouble *objz)
 {
     /* matrice de transformation */
-    GLfloat m[16], A[16];
-    GLfloat in[4],out[4];
+    GLdouble m[16], A[16];
+    GLdouble in[4],out[4];
 
     /* transformation coordonnees normalisees entre -1 et 1 */
-    in[0]=(winx-viewport[0])*2/viewport[2] - 1.0f;
-    in[1]=(winy-viewport[1])*2/viewport[3] - 1.0f;
-    in[2]=2*winz - 1.0f;
+    in[0]=(winx-viewport[0])*2/viewport[2] - 1.0;
+    in[1]=(winy-viewport[1])*2/viewport[3] - 1.0;
+    in[2]=2*winz - 1.0;
     in[3]=1.0;
 
     /* calcul transformation inverse */

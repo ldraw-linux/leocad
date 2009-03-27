@@ -328,16 +328,6 @@ static gint key_press_event(GtkWidget* widget, GdkEventKey* event, gpointer data
     }
   }
 
-  if ((code >= '0') && (code <= '9') && ((event->state & GDK_CONTROL_MASK) == 0))
-  {
-    if (event->state & GDK_SHIFT_MASK)
-      lcGetActiveProject()->HandleCommand((LC_COMMANDS)(LC_EDIT_MOVEZ_SNAP_0 + code - '0'), 0);
-    else
-      lcGetActiveProject()->HandleCommand((LC_COMMANDS)(LC_EDIT_MOVEXY_SNAP_0 + code - '0'), 0);
-
-    return TRUE;
-  }
-
   if (code != 0)
   {
     if (lcGetActiveProject()->OnKeyDown(code, (event->state & GDK_CONTROL_MASK) != 0, 
@@ -674,8 +664,8 @@ int main (int argc, char* argv[])
   GdkPixmap *gdkpixmap;
   GdkBitmap *mask;
 
-  gdkpixmap = gdk_pixmap_create_from_xpm_d(((GtkWidget*)(*main_window))->window, &mask,
-                                           &((GtkWidget*)(*main_window))->style->bg[GTK_STATE_NORMAL], (gchar**)icon32);
+  gdkpixmap = gdk_pixmap_create_from_xpm_d (((GtkWidget*)(*main_window))->window, &mask,
+                 &((GtkWidget*)(*main_window))->style->bg[GTK_STATE_NORMAL], icon32);
   gdk_window_set_icon (((GtkWidget*)(*main_window))->window, NULL, gdkpixmap, mask);
 
   gtk_widget_show (GTK_WIDGET (((GtkWidget*)(*main_window))));

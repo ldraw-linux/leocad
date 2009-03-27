@@ -11,12 +11,12 @@
 #endif
 #include "algebra.h"
 
-#define LC_PIECE_COUNT              0x01 // Count this piece in the totals ?
-#define LC_PIECE_LONGDATA_FILE      0x02 // unsigned long/short index
-#define LC_PIECE_CCW                0x04 // Use back-face culling
-#define LC_PIECE_SMALL              0x10 // scale = 10000
-#define LC_PIECE_MEDIUM             0x20 // scale = 1000 (otherwise = 100)
-#define LC_PIECE_LONGDATA           0x40 // If the original data is 16 bits but we expanded to 32 bits
+#define LC_PIECE_COUNT						0x01 // Count this piece in the totals ?
+#define LC_PIECE_LONGDATA					0x02 // unsigned long/short index
+#define LC_PIECE_CCW							0x04 // Use back-face culling
+#define LC_PIECE_SMALL						0x10 // scale = 10000
+#define LC_PIECE_MEDIUM						0x20 // scale = 1000 (otherwise = 100)
+#define LC_PIECE_LONGDATA_RUNTIME	0x40 // If the original data is 16 bits but we expanded to 32 bits
 
 class File;
 class Texture;
@@ -84,10 +84,15 @@ class PieceInfo
 	void ZoomExtents(float Fov, float Aspect, float* EyePos = NULL) const;
 	void RenderOnce(int nColor);
 	void RenderPiece(int nColor);
-	void RenderBox();
 	void WriteWavefront(FILE* file, unsigned char color, unsigned long* start);
 
 	// Implementation
+	GLuint GetBoxDisplayList()
+	{
+		if (!m_nBoxList)
+			CreateBoxDisplayList();
+		return m_nBoxList;
+	};
 	void LoadIndex(File& file);
 	void AddRef();
 	void DeRef();
@@ -113,9 +118,11 @@ public:
 
 protected:
 	int m_nRef;
+	GLuint m_nBoxList;
 
 	void LoadInformation();
 	void FreeInformation();
+	void CreateBoxDisplayList();
 };
 
 #endif // _PIECEINF_H_

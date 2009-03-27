@@ -15,8 +15,6 @@
 GLuint CurvePoint::m_nArrowList = 0;
 GLuint CurvePoint::m_nSphereList = 0;
 
-#if 0
-
 static LC_OBJECT_KEY_INFO curve_point_key_info[LC_CURVE_POINT_KEY_COUNT] =
 {
   { "Control Point Position", 3, LC_CURVE_POINT_KEY_POSITION },
@@ -73,7 +71,6 @@ CurvePoint::CurvePoint (Curve *pParent, const float *pos, const float *dir)
 
 void CurvePoint::Initialize ()
 {
-#ifndef LC_OPENGLES
   if (m_nSphereList == 0)
   {
     m_nSphereList = glGenLists (1);
@@ -137,8 +134,7 @@ void CurvePoint::Initialize ()
     glEnd();
     glEndList();
   }
-#endif
-	
+
   m_nState = LC_CURVE_POINT_CONTINUOUS;
 
   float *values[] = { m_fPos, m_fDir1, m_fDir2, &m_fAngle };
@@ -327,7 +323,6 @@ void Curve::UpdatePosition (unsigned short nTime, bool bAnimation)
   for (int i = 0; i < m_Points.GetSize (); i++)
     m_Points[i]->UpdatePosition (nTime, bAnimation);
 
-#ifndef LC_OPENGLES
   glNewList (m_nDisplayList, GL_COMPILE);
 
   switch (m_nCurveType)
@@ -338,7 +333,6 @@ void Curve::UpdatePosition (unsigned short nTime, bool bAnimation)
   }
 
   glEndList ();
-#endif
 }
 
 void Curve::Move (unsigned short nTime, bool bAnimation, bool bAddKey, float dx, float dy, float dz)
@@ -590,7 +584,7 @@ void Curve::TesselateHose ()
       }
     }
 
-    GLushort *index = (GLushort*)malloc (2 * (steps2+1) * sizeof (GLushort));
+    GLuint *index = (GLuint*)malloc (2 * (steps2+1) * sizeof (GLuint));
     for (j = 0; j < steps1; j++)
     {
       for (k = 0; k < steps2; k++)
@@ -600,7 +594,7 @@ void Curve::TesselateHose ()
       }
       index[k*2] = index[0];
       index[k*2+1] = index[1];
-      glDrawElements (GL_TRIANGLE_STRIP, 2*(steps2+1), GL_UNSIGNED_SHORT, index);
+      glDrawElements (GL_TRIANGLE_STRIP, 2*(steps2+1), GL_UNSIGNED_INT, index);
     }
 
     free (index);
@@ -709,8 +703,6 @@ void Curve::Render (LC_RENDER_INFO* pInfo)
 	}
 	*/
 }
-
-#endif
 
 
 

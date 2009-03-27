@@ -30,7 +30,6 @@ class Piece;
 class Camera;
 class Light;
 class Group;
-class GroupInfo;
 class Texture;
 class Terrain;
 class PieceInfo;
@@ -190,8 +189,7 @@ protected:
 	void RenderOverlays(int Viewport);
 	void RenderBoxes(bool bHilite);
 	void RenderInitialize();
-	void DrawGrid();
-	void CreateHTMLPieceList(FILE* f, int nStep, bool bImages, const char* ext);
+	void CreateHTMLPieceList(FILE* f, int nStep, bool bImages, char* ext);
 
 	inline bool IsDrawing()
 	{
@@ -278,6 +276,7 @@ protected:
 	char m_strFooter[256];
 	char m_strHeader[256];
 
+	GLuint m_nGridList;
 	unsigned long m_nAutosave;
 	unsigned long m_nSaveTimer;
 	char m_strModelsPath[LC_MAXPATH];
@@ -309,35 +308,6 @@ protected:
 	friend class CCADView;
 	friend void PrintPiecesThread(void* pv);
 	friend void Export3DStudio();
-
-	// VRML/X3DV export
-	void exportVRML97File(char *filename);
-	void exportX3DVFile(char *filename);
-	void exportVRMLFile(char *filename, int dialect);
-	template<class type> void writeVRMLShapes(type color, FILE *stream, int coordinateCounter, Piece* pPiece, unsigned short group, float *pos, bool beginAndEnd);
-	void writeVRMLShapeBegin(FILE *stream, unsigned long currentColor, bool blackLines);
-	void writeVRMLShapeMeshBegin(FILE *stream);
-	void writeVRMLShapeMeshData(FILE *stream);
-	void writeVRMLShapeMeshEnd(FILE *stream);
-	void writeVRMLShapeEnd(FILE *stream);
-	void writeIndent(FILE *stream);
-	int indent;
-	int numDEF;
-	bool VRMLdialect;
-	bool firstData;
-	int searchForVertex(float *vertex);
-	template<class type> void generateMeshData(type* info, float *pos, Piece* pPiece, int numVertices, int currentColor);
-	template<class type> void getMinMaxData(type* info, Piece* pPiece, GroupInfo* groupInfo);
-	template<class type> void getMinMax(type col, Piece* pPiece, unsigned short group, GroupInfo* groupInfo);
-	bool handleAsGroup(Piece* piece, GroupInfo groupInfo);
-	int numCoords;
-	float *coords;
-	int numCoordIndices;
-	int *coordIndices;
-	float centerOfMass[3];
-	int numFaceColors;
-	int *faceColors;
-	float VRMLScale;
 };
 
 #endif // _PROJECT_H_
