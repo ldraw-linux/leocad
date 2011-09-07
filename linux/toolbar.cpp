@@ -11,11 +11,11 @@
 #include "project.h"
 #include "pieceinf.h"
 #include "toolbar.h"
-#include "lc_message.h"
+#include "message.h"
 #include "preview.h"
 #include "library.h"
 #include "lc_application.h"
-#include "lc_colors.h"
+#include "gtkmisc.h"
 
 // =============================================================================
 // Variables
@@ -30,6 +30,9 @@ PiecePreview *preview;
 TOOL_TOOLBAR tool_toolbar;
 MAIN_TOOLBAR main_toolbar;
 ANIM_TOOLBAR anim_toolbar;
+
+extern GtkWidget* create_snap_menu();
+extern GtkWidget* create_lock_menu();
 
 // =========================================================
 
@@ -60,100 +63,138 @@ void create_toolbars(GtkWidget *window, GtkWidget *vbox)
 #include "pixmaps/an-last.xpm"
 #include "pixmaps/an-play.xpm"
 #include "pixmaps/an-stop.xpm"
-#include "pixmaps/st-about.xpm"
+//#include "pixmaps/st-about.xpm"
 #include "pixmaps/st-fast.xpm"
-#include "pixmaps/st-paste.xpm"
-#include "pixmaps/st-save.xpm"
-#include "pixmaps/st-help.xpm"
-#include "pixmaps/st-prev.xpm"
+//#include "pixmaps/st-paste.xpm"
+//#include "pixmaps/st-save.xpm"
+//#include "pixmaps/st-help.xpm"
+//#include "pixmaps/st-prev.xpm"
 #include "pixmaps/st-snap.xpm"
-#include "pixmaps/st-copy.xpm"
-#include "pixmaps/st-new.xpm"
-#include "pixmaps/st-print.xpm"
+#include "pixmaps/st-lock.xpm"
+//#include "pixmaps/st-copy.xpm"
+//#include "pixmaps/st-new.xpm"
+//#include "pixmaps/st-print.xpm"
 #include "pixmaps/st-snapa.xpm"
-#include "pixmaps/st-cut.xpm"
-#include "pixmaps/st-open.xpm"
-#include "pixmaps/st-redo.xpm"
-#include "pixmaps/st-undo.xpm"
+//#include "pixmaps/st-cut.xpm"
+//#include "pixmaps/st-open.xpm"
+//#include "pixmaps/st-redo.xpm"
+//#include "pixmaps/st-undo.xpm"
+
+	GtkToolItem* item;
+
+	// Main Toolbar
+	main_toolbar.handle_box = gtk_handle_box_new();
+	gtk_box_pack_start(GTK_BOX(vbox), main_toolbar.handle_box, FALSE, FALSE, 0);
+	gtk_widget_show(main_toolbar.handle_box);
+
+	main_toolbar.toolbar = gtk_toolbar_new();
+	gtk_toolbar_set_orientation(GTK_TOOLBAR(main_toolbar.toolbar), GTK_ORIENTATION_HORIZONTAL);
+	gtk_toolbar_set_style(GTK_TOOLBAR(main_toolbar.toolbar), GTK_TOOLBAR_ICONS);
+	gtk_container_add(GTK_CONTAINER(main_toolbar.handle_box), main_toolbar.toolbar);
+
+	item = gtk_tool_button_new_from_stock(GTK_STOCK_NEW);
+	gtk_tool_item_set_tooltip_text(item, "Create a new project");
+	g_signal_connect(item, "clicked", G_CALLBACK(OnCommandDirect), GINT_TO_POINTER(LC_FILE_NEW));
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+
+	item = gtk_tool_button_new_from_stock(GTK_STOCK_OPEN);
+	gtk_tool_item_set_tooltip_text(item, "Open an existing project");
+	g_signal_connect(item, "clicked", G_CALLBACK(OnCommandDirect), GINT_TO_POINTER(LC_FILE_OPEN));
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+
+	item = gtk_tool_button_new_from_stock(GTK_STOCK_SAVE);
+	gtk_tool_item_set_tooltip_text(item, "Save the current project");
+	g_signal_connect(item, "clicked", G_CALLBACK(OnCommandDirect), GINT_TO_POINTER(LC_FILE_SAVE));
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+
+	item = gtk_separator_tool_item_new();
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+
+	item = gtk_tool_button_new_from_stock(GTK_STOCK_UNDO);
+	gtk_tool_item_set_tooltip_text(item, "Undo the last action");
+	g_signal_connect(item, "clicked", G_CALLBACK(OnCommandDirect), GINT_TO_POINTER(LC_EDIT_UNDO));
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+	main_toolbar.undo = (GtkWidget*)item;
+
+	item = gtk_tool_button_new_from_stock(GTK_STOCK_REDO);
+	gtk_tool_item_set_tooltip_text(item, "Redo the last undone action");
+	g_signal_connect(item, "clicked", G_CALLBACK(OnCommandDirect), GINT_TO_POINTER(LC_EDIT_REDO));
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+	main_toolbar.redo = (GtkWidget*)item;
+
+	item = gtk_separator_tool_item_new();
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+
+	item = gtk_tool_button_new_from_stock(GTK_STOCK_CUT);
+	gtk_tool_item_set_tooltip_text(item, "Cut the selection");
+	g_signal_connect(item, "clicked", G_CALLBACK(OnCommandDirect), GINT_TO_POINTER(LC_EDIT_CUT));
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+	main_toolbar.cut = (GtkWidget*)item;
+
+	item = gtk_tool_button_new_from_stock(GTK_STOCK_COPY);
+	gtk_tool_item_set_tooltip_text(item, "Copy the selection");
+	g_signal_connect(item, "clicked", G_CALLBACK(OnCommandDirect), GINT_TO_POINTER(LC_EDIT_COPY));
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+	main_toolbar.copy = (GtkWidget*)item;
+
+	item = gtk_tool_button_new_from_stock(GTK_STOCK_PASTE);
+	gtk_tool_item_set_tooltip_text(item, "Insert the clipboard contents");
+	g_signal_connect(item, "clicked", G_CALLBACK(OnCommandDirect), GINT_TO_POINTER(LC_EDIT_PASTE));
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+	main_toolbar.paste = (GtkWidget*)item;
+
+	item = gtk_separator_tool_item_new();
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+
+	item = gtk_menu_tool_button_new(new_pixmap(window, st_lock), "3D lock");
+	gtk_tool_item_set_tooltip_text(item, "Toggle 3D lock");
+	g_signal_connect(item, "clicked", G_CALLBACK(OnCommand), GINT_TO_POINTER(ID_LOCK_ON));
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+	main_toolbar.lock = (GtkWidget*)item;
+
+	main_toolbar.lock_menu = create_lock_menu();
+	gtk_menu_tool_button_set_menu(GTK_MENU_TOOL_BUTTON(item), main_toolbar.lock_menu);
+
+	item = gtk_menu_tool_button_new(new_pixmap(window, st_snap), "3D snap");
+	gtk_tool_item_set_tooltip_text(item, "Toggle 3D snap");
+	g_signal_connect(item, "clicked", G_CALLBACK(OnCommand), GINT_TO_POINTER(ID_SNAP_ON));
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+	main_toolbar.snap = (GtkWidget*)item;
+
+	main_toolbar.snap_menu = create_snap_menu();
+	gtk_menu_tool_button_set_menu(GTK_MENU_TOOL_BUTTON(item), main_toolbar.snap_menu);
+
+	item = gtk_toggle_tool_button_new();
+	gtk_tool_item_set_tooltip_text(item, "Toggle angle snap");
+	gtk_tool_button_set_label(GTK_TOOL_BUTTON(item), "Angle snap");
+	gtk_tool_button_set_icon_widget(GTK_TOOL_BUTTON(item), new_pixmap(window, st_snapa));
+	g_signal_connect(item, "clicked", G_CALLBACK(OnCommand), GINT_TO_POINTER(ID_SNAP_A));
+	gtk_toolbar_insert(GTK_TOOLBAR(main_toolbar.toolbar), item, -1);
+	main_toolbar.angle = (GtkWidget*)item;
+
+	item = gtk_toggle_tool_button_new();
+	gtk_tool_item_set_tooltip_text(item, "Toggle fast rendering");
+	gtk_tool_button_set_label(GTK_TOOL_BUTTON(item), "Fast render");
+	gtk_tool_button_set_icon_widget(GTK_TOOL_BUTTON(item), new_pixmap(window, st_fast));
+	g_signal_connect(item, "clicked", G_CALLBACK(OnCommandDirect), GINT_TO_POINTER(LC_TOOLBAR_FASTRENDER));
+	gtk_toolbar_insert (GTK_TOOLBAR (main_toolbar.toolbar), item, -1);
+	main_toolbar.fast = (GtkWidget*)item;
+
+	gtk_widget_show_all(main_toolbar.handle_box);
+
 
   GtkWidget *button;
-
-  // Main Toolbar
-  main_toolbar.handle_box = gtk_handle_box_new ();
-  gtk_box_pack_start (GTK_BOX (vbox), main_toolbar.handle_box, FALSE, FALSE, 0);
-  //  if (user_rc.view_main_toolbar)
-    gtk_widget_show (main_toolbar.handle_box);
-  main_toolbar.toolbar = gtk_toolbar_new ();
-  gtk_toolbar_set_orientation(GTK_TOOLBAR(main_toolbar.toolbar), GTK_ORIENTATION_HORIZONTAL);
-  gtk_toolbar_set_style(GTK_TOOLBAR(main_toolbar.toolbar), GTK_TOOLBAR_ICONS);
-  //  gtk_toolbar_set_style (GTK_TOOLBAR (main_toolbar.toolbar), user_rc.toolbar_style);
-  gtk_container_add (GTK_CONTAINER (main_toolbar.handle_box), main_toolbar.toolbar);
-  gtk_widget_show (main_toolbar.toolbar);
-
-  gtk_container_border_width (GTK_CONTAINER (main_toolbar.toolbar), 2);
-  //  gtk_toolbar_set_button_relief (GTK_TOOLBAR (main_toolbar.toolbar), GTK_RELIEF_NONE);
-  //  gtk_toolbar_set_space_style (GTK_TOOLBAR (main_toolbar.toolbar), GTK_TOOLBAR_SPACE_LINE);
-  //  gtk_toolbar_set_space_size (GTK_TOOLBAR (main_toolbar.toolbar), 10);
-
-  gtk_toolbar_append_item (GTK_TOOLBAR (main_toolbar.toolbar), "New",
-     "Create a new project", "", new_pixmap (window, st_new),
-     GTK_SIGNAL_FUNC (OnCommandDirect), (void*)LC_FILE_NEW);
-  gtk_toolbar_append_item (GTK_TOOLBAR (main_toolbar.toolbar), "Open",
-     "Open an existing project", "", new_pixmap (window, st_open),
-     GTK_SIGNAL_FUNC (OnCommandDirect), (void*)LC_FILE_OPEN);
-  gtk_toolbar_append_item (GTK_TOOLBAR (main_toolbar.toolbar), "Save",
-     "Save the active project", "", new_pixmap (window, st_save), 
-     GTK_SIGNAL_FUNC (OnCommandDirect), (void*)LC_FILE_SAVE);
-  button = gtk_toolbar_append_item (GTK_TOOLBAR (main_toolbar.toolbar), "Print",
-     " ", "", new_pixmap (window, st_print), GTK_SIGNAL_FUNC (OnCommand), NULL);
-  gtk_widget_set_sensitive (button, FALSE);
-  button = gtk_toolbar_append_item (GTK_TOOLBAR (main_toolbar.toolbar), "Preview",
-     " ", "", new_pixmap (window, st_prev), GTK_SIGNAL_FUNC (OnCommand), NULL);
-  gtk_widget_set_sensitive (button, FALSE);
-  main_toolbar.cut = gtk_toolbar_append_item (GTK_TOOLBAR (main_toolbar.toolbar), "Cut",
-     "Cut the selection", "", new_pixmap (window, st_cut), 
-     GTK_SIGNAL_FUNC (OnCommandDirect), (void*)LC_EDIT_CUT);
-  main_toolbar.copy = gtk_toolbar_append_item (GTK_TOOLBAR (main_toolbar.toolbar), "Copy",
-     "Copy the selection", "", new_pixmap (window, st_copy),
-     GTK_SIGNAL_FUNC (OnCommandDirect), (void*)LC_EDIT_COPY);
-  main_toolbar.paste = gtk_toolbar_append_item (GTK_TOOLBAR (main_toolbar.toolbar), "Paste",
-     "Insert Clipboard contents", "", new_pixmap (window, st_paste),
-      GTK_SIGNAL_FUNC (OnCommandDirect), (void*)LC_EDIT_PASTE);
-  main_toolbar.undo = gtk_toolbar_append_item (GTK_TOOLBAR (main_toolbar.toolbar), "Undo",
-     "Undo last action", "", new_pixmap (window, st_undo),
-     GTK_SIGNAL_FUNC (OnCommandDirect), (void*)LC_EDIT_UNDO);
-  main_toolbar.redo = gtk_toolbar_append_item (GTK_TOOLBAR (main_toolbar.toolbar), "Redo",
-     "Redo the last undone action", "", new_pixmap (window, st_redo),
-      GTK_SIGNAL_FUNC (OnCommandDirect), (void*)LC_EDIT_REDO);
-  main_toolbar.snap = gtk_toolbar_append_item (GTK_TOOLBAR (main_toolbar.toolbar), "Snap",
-     "Toggle 3D snap", "", new_pixmap (window, st_snap), GTK_SIGNAL_FUNC (OnCommand), NULL);
-  main_toolbar.angle = gtk_toolbar_append_element (GTK_TOOLBAR (main_toolbar.toolbar), 
-     GTK_TOOLBAR_CHILD_TOGGLEBUTTON, NULL, "Angle", "Toggle angle snap", "", 
-     new_pixmap (window, st_snapa), GTK_SIGNAL_FUNC (OnCommand), (void*)ID_SNAP_A);
-  main_toolbar.fast = gtk_toolbar_append_element (GTK_TOOLBAR (main_toolbar.toolbar), 
-     GTK_TOOLBAR_CHILD_TOGGLEBUTTON, NULL, "Fast", "Fast rendering", "", 
-     new_pixmap (window, st_fast), GTK_SIGNAL_FUNC (OnCommandDirect), (void*)LC_TOOLBAR_FASTRENDER);
-  gtk_toolbar_append_item (GTK_TOOLBAR (main_toolbar.toolbar), "About", "About LeoCAD", "", 
-     new_pixmap (window, st_about), GTK_SIGNAL_FUNC (OnCommandDirect), (void*)LC_HELP_ABOUT);
-  gtk_toolbar_append_item (GTK_TOOLBAR (main_toolbar.toolbar), "Help", "Help", "",
-     new_pixmap (window, st_help), GTK_SIGNAL_FUNC (OnCommand), NULL);
-  gtk_widget_set_sensitive (button, FALSE);
 
   // Tools Toolbar
   tool_toolbar.handle_box = gtk_handle_box_new ();
   gtk_box_pack_start (GTK_BOX (vbox),tool_toolbar. handle_box, FALSE, FALSE, 0);
-  //  if (user_rc.view_tool_toolbar)
-    gtk_widget_show (tool_toolbar.handle_box);
+  gtk_widget_show (tool_toolbar.handle_box);
 
   tool_toolbar.toolbar = gtk_toolbar_new();
   gtk_toolbar_set_orientation(GTK_TOOLBAR(tool_toolbar.toolbar), GTK_ORIENTATION_HORIZONTAL);
   gtk_toolbar_set_style(GTK_TOOLBAR(tool_toolbar.toolbar), GTK_TOOLBAR_ICONS);
-  //  gtk_toolbar_set_style (GTK_TOOLBAR (tool_toolbar.toolbar), user_rc.toolbar_style);
   gtk_container_add (GTK_CONTAINER (tool_toolbar.handle_box), tool_toolbar.toolbar);
   gtk_widget_show (tool_toolbar.toolbar);
-
-  gtk_container_border_width (GTK_CONTAINER (tool_toolbar.toolbar), 2);
-  //  gtk_toolbar_set_button_relief (GTK_TOOLBAR (tool_toolbar.toolbar), GTK_RELIEF_NONE);
 
   tool_toolbar.brick = button = gtk_toolbar_append_element (GTK_TOOLBAR (tool_toolbar.toolbar), 
      GTK_TOOLBAR_CHILD_RADIOBUTTON, NULL, "Piece", "Insert Piece", "",
@@ -207,18 +248,13 @@ void create_toolbars(GtkWidget *window, GtkWidget *vbox)
   // Animation Toolbar
   anim_toolbar.handle_box = gtk_handle_box_new ();
   gtk_box_pack_start (GTK_BOX (vbox), anim_toolbar.handle_box, FALSE, FALSE, 0);
-  //  if (user_rc.view_anim_toolbar)
-    gtk_widget_show (anim_toolbar.handle_box);
+  gtk_widget_show (anim_toolbar.handle_box);
 
   anim_toolbar.toolbar = gtk_toolbar_new();
   gtk_toolbar_set_orientation(GTK_TOOLBAR(anim_toolbar.toolbar), GTK_ORIENTATION_HORIZONTAL);
   gtk_toolbar_set_style(GTK_TOOLBAR(anim_toolbar.toolbar), GTK_TOOLBAR_ICONS);
-//  gtk_toolbar_set_style (GTK_TOOLBAR (toolbar), user_rc.toolbar_style);
   gtk_container_add (GTK_CONTAINER (anim_toolbar.handle_box), anim_toolbar.toolbar);
   gtk_widget_show (anim_toolbar.toolbar);
-
-  gtk_container_border_width (GTK_CONTAINER (anim_toolbar.toolbar), 2);
-  //  gtk_toolbar_set_button_relief (GTK_TOOLBAR (anim_toolbar.toolbar), GTK_RELIEF_NONE);
 
   anim_toolbar.first = gtk_toolbar_append_item (GTK_TOOLBAR (anim_toolbar.toolbar),
      "First", "Go to the Start", "", new_pixmap (window, an_first), 
@@ -292,7 +328,7 @@ void fill_piecetree()
     gtk_tree_store_append(model, &iter, NULL);
     gtk_tree_store_set(model, &iter, 0, (const char*)Lib->GetCategoryName(i), 1, NULL, -1);
 
-    lcPtrArray<PieceInfo> SinglePieces, GroupedPieces;
+    PtrArray<PieceInfo> SinglePieces, GroupedPieces;
 
     Lib->GetCategoryEntries(i, true, SinglePieces, GroupedPieces);
 
@@ -310,7 +346,7 @@ void fill_piecetree()
 
       if (GroupedPieces.FindIndex(Info) != -1)
       {
-	lcPtrArray<PieceInfo> Patterns;
+	PtrArray<PieceInfo> Patterns;
 	Lib->GetPatternedPieces(Info, Patterns);
 
 	for (int k = 0; k < Patterns.GetSize(); k++)
@@ -356,7 +392,7 @@ static void piecetree_changed(GtkTreeSelection* selection, gpointer data)
     gtk_tree_model_get(model, &iter, 1, &sel, -1);
 
     if (sel)
-      g_App->m_PiecePreview->SetSelection(sel);
+      preview->SetCurrentPiece((PieceInfo*)sel);
   }
 }
 
@@ -469,7 +505,7 @@ static gint piececombo_key(GtkWidget* widget, GdkEventKey* event)
 	gtk_tree_store_remove(GTK_TREE_STORE(model), &child);	
 
       // Perform search.
-      lcPtrArray<PieceInfo> SinglePieces, GroupedPieces;
+      PtrArray<PieceInfo> SinglePieces, GroupedPieces;
       Lib->GetCategoryEntries(Index, true, SinglePieces, GroupedPieces);
 
       // Merge and sort the arrays.
@@ -553,9 +589,9 @@ static void colorlist_draw_pixmap(GtkWidget *widget)
     else
       rect.x = widget->allocation.width * (i-14) / 14;
 
-    c.red = (gushort)(lcColorList[i].Value[0]*0xFFFF);
-    c.green = (gushort)(lcColorList[i].Value[1]*0xFFFF);
-    c.blue = (gushort)(lcColorList[i].Value[2]*0xFFFF);
+    c.red = (gushort)(FlatColorArray[i][0]*0xFF);
+    c.green = (gushort)(FlatColorArray[i][1]*0xFF);
+    c.blue = (gushort)(FlatColorArray[i][2]*0xFF);
     gdk_color_alloc(gtk_widget_get_colormap(widget), &c);
     gdk_gc_set_foreground(gc, &c);
 
@@ -659,8 +695,7 @@ static gint colorlist_key_press(GtkWidget* widget, GdkEventKey* event, gpointer 
   {
     cur_color = x;
     colorlist_draw_pixmap(widget);
-    g_App->m_SelectedColor = x;
-    lcPostMessage(LC_MSG_COLOR_CHANGED, GINT_TO_POINTER(x));
+    lcGetActiveProject()->HandleNotify(LC_COLOR_CHANGED, x);
     gtk_widget_draw(widget, NULL);
     preview->Redraw ();
   }
@@ -681,8 +716,7 @@ static gint colorlist_button_press(GtkWidget *widget, GdkEventButton *event)
     {
       cur_color = x;
       colorlist_draw_pixmap(widget);
-      g_App->m_SelectedColor = x;
-      lcPostMessage(LC_MSG_COLOR_CHANGED, GINT_TO_POINTER(x));
+      lcGetActiveProject()->HandleNotify(LC_COLOR_CHANGED, x);
       gtk_widget_draw(widget, NULL);
       preview->Redraw ();
     }
@@ -792,6 +826,15 @@ GtkWidget* create_piecebar (GtkWidget *window, GLWindow *share)
 
   fill_piecetree();
 
+  PieceInfo* Info = lcGetPiecesLibrary()->FindPieceInfo("3005");
+  if (!Info)
+    Info = lcGetPiecesLibrary()->GetPieceInfo(0);
+  if (Info)
+  {
+    lcGetActiveProject()->SetCurrentPiece(Info);
+    //    preview->SetCurrentPiece(Info);
+  }
+
   return frame;
 }
 
@@ -802,7 +845,7 @@ GtkWidget *label_message, *label_position, *label_snap, *label_step;
 
 static void statusbar_listener (int message, void *data, void *user)
 {
-  if (message == LC_MSG_FOCUS_OBJECT_CHANGED)
+  if (message == LC_MSG_FOCUS_CHANGED)
   {
     char text[32];
     Vector3 pos;
@@ -815,13 +858,35 @@ static void statusbar_listener (int message, void *data, void *user)
   }
 }
 
+static gint statusbar_popup(GtkWidget *widget, GdkEvent *event,
+                            GtkWidget *menu_widget)
+{
+	GtkMenu *menu;
+	GdkEventButton *event_button;
+	g_return_val_if_fail(widget != NULL, FALSE);
+	g_return_val_if_fail(event != NULL, FALSE);
+	g_return_val_if_fail(menu_widget != NULL, FALSE);
+	g_return_val_if_fail(GTK_IS_MENU(menu_widget), FALSE);
+	menu = GTK_MENU(menu_widget);
+	if (event->type == GDK_BUTTON_PRESS)
+	{
+		event_button = (GdkEventButton *) event;
+		if (event_button->button == 3)
+		{
+			gtk_menu_popup(menu, NULL, NULL, NULL, NULL,
+			               event_button->button, event_button->time);
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
 void create_statusbar(GtkWidget *window, GtkWidget *vbox)
 {
-  GtkWidget *hbox, *hbox1, *frame;
+  GtkWidget *hbox, *hbox1, *frame, *ebox_snap;
 
   hbox = gtk_hbox_new (FALSE, 0);
   gtk_widget_show (hbox);
-  gtk_widget_set_usize (hbox, -1, 24);
   gtk_container_border_width (GTK_CONTAINER (hbox), 1);
   gtk_box_pack_start (GTK_BOX (vbox), hbox, FALSE, TRUE, 2);
 
@@ -845,7 +910,6 @@ void create_statusbar(GtkWidget *window, GtkWidget *vbox)
   gtk_widget_show (frame);
   gtk_box_pack_start (GTK_BOX (hbox), frame, FALSE, TRUE, 0);
   gtk_frame_set_shadow_type (GTK_FRAME (frame), GTK_SHADOW_IN);
-  gtk_widget_set_usize (frame, 150, -1);
 
   hbox1 = gtk_hbox_new (FALSE, 0);
   gtk_container_add (GTK_CONTAINER (frame), hbox1);
@@ -860,22 +924,24 @@ void create_statusbar(GtkWidget *window, GtkWidget *vbox)
   gtk_widget_show (frame);
   gtk_box_pack_start (GTK_BOX (hbox), frame, FALSE, TRUE, 0);
   gtk_frame_set_shadow_type (GTK_FRAME (frame), GTK_SHADOW_IN);
-  gtk_widget_set_usize (frame, 70, -1);
 
   hbox1 = gtk_hbox_new (FALSE, 0);
   gtk_container_add (GTK_CONTAINER (frame), hbox1);
   gtk_container_border_width (GTK_CONTAINER (hbox1), 0);
   gtk_widget_show (hbox1);
 
+	ebox_snap = gtk_event_box_new();
+	gtk_widget_show(ebox_snap);
+	gtk_box_pack_start(GTK_BOX(hbox1), ebox_snap, TRUE, TRUE, 0);
+
   label_snap = gtk_label_new (" ");
   gtk_widget_show (label_snap);
-  gtk_box_pack_start (GTK_BOX (hbox1), label_snap, TRUE, TRUE, 0);
+	gtk_container_add(GTK_CONTAINER(ebox_snap), label_snap);
 
   frame = gtk_frame_new (NULL);
   gtk_widget_show (frame);
   gtk_box_pack_start (GTK_BOX (hbox), frame, FALSE, TRUE, 0);
   gtk_frame_set_shadow_type (GTK_FRAME (frame), GTK_SHADOW_IN);
-  gtk_widget_set_usize (frame, 70, -1);
 
   hbox1 = gtk_hbox_new (FALSE, 0);
   gtk_container_add (GTK_CONTAINER (frame), hbox1);
@@ -886,6 +952,59 @@ void create_statusbar(GtkWidget *window, GtkWidget *vbox)
   gtk_widget_show (label_step);
   gtk_box_pack_start (GTK_BOX (hbox1), label_step, TRUE, TRUE, 0);
 
-// FIXME: linux status bar listener
-//  messenger->Listen (&statusbar_listener, NULL);
+  messenger->Listen (&statusbar_listener, NULL);
+
+	// Add snap popup menu
+	GtkWidget *menu, *item;
+	menu = gtk_menu_new();
+	item = gtk_menu_item_new_with_label("XY Snap");
+	gtk_widget_set_sensitive(item, FALSE);
+	gtk_menu_append(menu, item);
+	create_menu_item(menu, "None", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEXY_SNAP_0, NULL);
+	create_menu_item(menu, "1/20 Stud", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEXY_SNAP_1, NULL);
+	create_menu_item(menu, "1/4 Stud", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEXY_SNAP_2, NULL);
+	create_menu_item(menu, "1 Flat", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEXY_SNAP_3, NULL);
+	create_menu_item(menu, "1/2 Stud", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEXY_SNAP_4, NULL);
+	create_menu_item(menu, "1 Stud", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEXY_SNAP_5, NULL);
+	create_menu_item(menu, "2 Studs", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEXY_SNAP_6, NULL);
+	create_menu_item(menu, "3 Studs", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEXY_SNAP_7, NULL);
+	create_menu_item(menu, "4 Studs", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEXY_SNAP_8, NULL);
+	create_menu_item(menu, "8 Studs", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEXY_SNAP_9, NULL);
+	menu_separator(menu);
+	item = gtk_menu_item_new_with_label("Z Snap");
+	gtk_widget_set_sensitive(item, FALSE);
+	gtk_menu_append(menu, item);
+	create_menu_item(menu, "None", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEZ_SNAP_0, NULL);
+	create_menu_item(menu, "1/20 Stud", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEZ_SNAP_1, NULL);
+	create_menu_item(menu, "1/4 Stud", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEZ_SNAP_2, NULL);
+	create_menu_item(menu, "1 Flat", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEZ_SNAP_3, NULL);
+	create_menu_item(menu, "1/2 Stud", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEZ_SNAP_4, NULL);
+	create_menu_item(menu, "1 Stud", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEZ_SNAP_5, NULL);
+	create_menu_item(menu, "1 Brick", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEZ_SNAP_6, NULL);
+	create_menu_item(menu, "2 Bricks", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEZ_SNAP_7, NULL);
+	create_menu_item(menu, "4 Bricks", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEZ_SNAP_8, NULL);
+	create_menu_item(menu, "8 Bricks", NULL, GTK_SIGNAL_FUNC(OnCommandDirect),
+	                 NULL, LC_EDIT_MOVEZ_SNAP_9, NULL);
+	gtk_widget_show_all(menu);
+	gtk_signal_connect(GTK_OBJECT(ebox_snap), "button_press_event",
+	                   GTK_SIGNAL_FUNC(statusbar_popup), menu);
 }

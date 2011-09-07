@@ -54,20 +54,19 @@ void create_main_menu (GtkObject *window, GtkWidget *vbox)
   create_pixmap_menu_item (menu, "Save Pic_ture...", photo, accel, GTK_SIGNAL_FUNC (OnCommandDirect),
                            window, LC_FILE_PICTURE, "menu_file_picture");
 
-	menu_in_menu = create_menu_in_menu (menu, "Ex_port", accel);
-	create_menu_item (menu_in_menu, "_HTML...", accel, GTK_SIGNAL_FUNC (OnCommandDirect), window, LC_FILE_HTML, "menu_file_html");
-	create_menu_item (menu_in_menu, "_POV-Ray...", accel, GTK_SIGNAL_FUNC (OnCommandDirect), window, LC_FILE_POVRAY, "menu_file_povray");
-	create_menu_item (menu_in_menu, "_Wavefront...", accel, GTK_SIGNAL_FUNC (OnCommandDirect), window, LC_FILE_WAVEFRONT, "menu_file_wavefront");
-	create_menu_item (menu_in_menu, "_VRML97...", accel, GTK_SIGNAL_FUNC (OnCommandDirect), window, LC_FILE_VRML, "menu_file_vrml");
-	create_menu_item (menu_in_menu, "_X3DV...", accel, GTK_SIGNAL_FUNC (OnCommandDirect), window, LC_FILE_X3DV, "menu_file_x3dv");
-	menu_separator (menu);
+  menu_in_menu = create_menu_in_menu (menu, "Ex_port", accel);
+  create_menu_item (menu_in_menu, "_HTML...", accel, GTK_SIGNAL_FUNC (OnCommandDirect),
+		    window, LC_FILE_HTML, "menu_file_html");
+  create_menu_item (menu_in_menu, "_POV-Ray...", accel, GTK_SIGNAL_FUNC (OnCommandDirect),
+		    window, LC_FILE_POVRAY, "menu_file_povray");
+  create_menu_item (menu_in_menu, "_Wavefront...", accel, GTK_SIGNAL_FUNC (OnCommandDirect),
+		    window, LC_FILE_WAVEFRONT, "menu_file_wavefront");
+  menu_separator (menu);
 
   create_pixmap_menu_item (menu, "Propert_ies...", info, accel, GTK_SIGNAL_FUNC (OnCommandDirect),
-                           window, LC_MODEL_PROPERTIES, "menu_model_properties");
+                           window, LC_FILE_PROPERTIES, "menu_file_properties");
   create_menu_item (menu, "Pieces _Library Manager...", accel, GTK_SIGNAL_FUNC (OnCommandDirect),
 		    window, LC_FILE_LIBRARY, "menu_file_library");
-  create_menu_item (menu, "Terrain _Editor...", accel, GTK_SIGNAL_FUNC (OnCommandDirect),
-		    window, LC_FILE_TERRAIN, "menu_file_terrain");
   menu_separator (menu);
 
   BaseMenuItem base;
@@ -130,6 +129,8 @@ void create_main_menu (GtkObject *window, GtkWidget *vbox)
 		    window, LC_PIECE_MINIFIG, "menu_piece_minifig");
   create_menu_item (menu, "Ar_ray...", accel, GTK_SIGNAL_FUNC (OnCommandDirect),
 		    window, LC_PIECE_ARRAY, "menu_piece_array");
+  create_menu_item (menu, "_Copy Keys", accel, GTK_SIGNAL_FUNC (OnCommandDirect),
+		    window, LC_PIECE_COPYKEYS, "menu_piece_copykeys");
   menu_separator (menu);
 
   create_menu_item (menu, "_Group", accel, GTK_SIGNAL_FUNC (OnCommandDirect),
@@ -292,3 +293,84 @@ void create_main_menu (GtkObject *window, GtkWidget *vbox)
   item = GTK_WIDGET (gtk_object_get_data (window, "menu_piece_group_add"));
   gtk_widget_add_accelerator (item, "activate", accel, 'D', GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
 }
+
+GtkWidget* create_snap_menu()
+{
+	GtkWidget* menu;
+	GtkWidget* menu_item;
+
+	menu = gtk_menu_new();
+
+	menu_item = gtk_check_menu_item_new_with_mnemonic("Snap _X");
+	gtk_object_set_data(GTK_OBJECT(menu), "snap_x", menu_item);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), menu_item);
+	gtk_signal_connect(GTK_OBJECT(menu_item), "activate", GTK_SIGNAL_FUNC(OnCommand),
+	                   GINT_TO_POINTER(ID_SNAP_X));
+	gtk_widget_show(menu_item);
+
+	menu_item = gtk_check_menu_item_new_with_mnemonic("Snap _Y");
+	gtk_object_set_data(GTK_OBJECT(menu), "snap_y", menu_item);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), menu_item);
+	gtk_signal_connect(GTK_OBJECT(menu_item), "activate", GTK_SIGNAL_FUNC(OnCommand),
+	                   GINT_TO_POINTER(ID_SNAP_Y));
+	gtk_widget_show(menu_item);
+
+	menu_item = gtk_check_menu_item_new_with_mnemonic("Snap _Z");
+	gtk_object_set_data(GTK_OBJECT(menu), "snap_z", menu_item);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), menu_item);
+	gtk_signal_connect(GTK_OBJECT(menu_item), "activate", GTK_SIGNAL_FUNC(OnCommand),
+	                   GINT_TO_POINTER(ID_SNAP_Z));
+	gtk_widget_show(menu_item);
+
+	menu_item = gtk_menu_item_new_with_mnemonic("Snap _None");
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), menu_item);
+	gtk_signal_connect(GTK_OBJECT(menu_item), "activate", GTK_SIGNAL_FUNC(OnCommand),
+	                   GINT_TO_POINTER(ID_SNAP_NONE));
+	gtk_widget_show(menu_item);
+
+	menu_item = gtk_menu_item_new_with_mnemonic("Snap _All");
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), menu_item);
+	gtk_signal_connect(GTK_OBJECT(menu_item), "activate", GTK_SIGNAL_FUNC(OnCommand),
+	                   GINT_TO_POINTER(ID_SNAP_ALL));
+	gtk_widget_show(menu_item);
+
+	return menu;
+}
+
+GtkWidget* create_lock_menu()
+{
+	GtkWidget* menu;
+	GtkWidget* menu_item;
+
+	menu = gtk_menu_new();
+
+	menu_item = gtk_check_menu_item_new_with_mnemonic("Lock _X");
+	gtk_object_set_data(GTK_OBJECT(menu), "lock_x", menu_item);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), menu_item);
+	gtk_signal_connect(GTK_OBJECT(menu_item), "activate", GTK_SIGNAL_FUNC(OnCommand),
+	                   GINT_TO_POINTER(ID_LOCK_X));
+	gtk_widget_show(menu_item);
+
+	menu_item = gtk_check_menu_item_new_with_mnemonic("Lock _Y");
+	gtk_object_set_data(GTK_OBJECT(menu), "lock_y", menu_item);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), menu_item);
+	gtk_signal_connect(GTK_OBJECT(menu_item), "activate", GTK_SIGNAL_FUNC(OnCommand),
+	                   GINT_TO_POINTER(ID_LOCK_Y));
+	gtk_widget_show(menu_item);
+
+	menu_item = gtk_check_menu_item_new_with_mnemonic("Lock _Z");
+	gtk_object_set_data(GTK_OBJECT(menu), "lock_z", menu_item);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), menu_item);
+	gtk_signal_connect(GTK_OBJECT(menu_item), "activate", GTK_SIGNAL_FUNC(OnCommand),
+	                   GINT_TO_POINTER(ID_LOCK_Z));
+	gtk_widget_show(menu_item);
+
+	menu_item = gtk_menu_item_new_with_mnemonic("Unlock All");
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), menu_item);
+	gtk_signal_connect(GTK_OBJECT(menu_item), "activate", GTK_SIGNAL_FUNC(OnCommand),
+	                   GINT_TO_POINTER(ID_LOCK_NONE));
+	gtk_widget_show(menu_item);
+
+	return menu;
+}
+
