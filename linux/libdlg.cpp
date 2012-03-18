@@ -2,7 +2,7 @@
 //
 
 #include <limits.h>
-#include "lc_global.h"
+//#include "lc_global.h"
 //#include "leocad.h"
 #include "libdlg.h"
 //#include "GroupDlg.h"
@@ -84,7 +84,7 @@ bool LibraryDialog::HandleCommand(int id)
 				}
 				free (opts.filenames);
 */
-				lcFileDisk newbin, newidx, oldbin, oldidx;
+				FileDisk newbin, newidx, oldbin, oldidx;
 				char file1[LC_MAXPATH], file2[LC_MAXPATH];
 
 				strcpy(file1, lcGetPiecesLibrary()->GetLibraryPath());

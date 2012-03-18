@@ -4,35 +4,15 @@
 #ifndef _DEFINES_H_
 #define _DEFINES_H_
 
-// Assert macros.
-#ifdef LC_DEBUG
-
-extern bool lcAssert(const char* FileName, int Line, const char* Expression, const char* Description);
-
-#define LC_ASSERT(Expr, Desc) \
-do \
-{ \
-	static bool Ignore = false; \
-	if (!(Expr) && !Ignore) \
-		Ignore = lcAssert(__FILE__, __LINE__, #Expr, Desc); \
-} while (0)
-
-#define LC_ASSERT_FALSE(Desc) LC_ASSERT(0, Desc)
-
-#else
-
-#define LC_ASSERT(expr, desc) do { } while(0)
-
-#define LC_ASSERT_FALSE(Desc) LC_ASSERT(0, Desc)
-
+// Check for supported platforms.
+#if !(defined(LC_WINDOWS) || defined(LC_LINUX) || defined(LC_MACOSX))
+#error  YOU NEED TO DEFINE YOUR OS
 #endif
-
-#define LC_CASSERT(x) extern int LC_CASSERT_CHECK[(x) ? 1 : -1]
 
 // ============================================================================
 // Old defines (mostly deprecated).
 
-#if LC_WINDOWS
+#ifdef LC_WINDOWS
 #define LC_MAXPATH 260 //_MAX_PATH
 #define KEY_SHIFT	VK_SHIFT
 #define KEY_CONTROL	VK_CONTROL
@@ -51,11 +31,13 @@ do \
 #define KEY_MINUS	VK_SUBTRACT
 #endif
 
-#if LC_LINUX
+#ifdef LC_LINUX
+#include <unistd.h>
+
 #define LC_MAXPATH 1024 //FILENAME_MAX
 #define KEY_SHIFT	0x01
 #define KEY_CONTROL	0x02
-#define KEY_ALT     0x03
+#define KEY_ALT		0x03
 #define KEY_ESCAPE	0x04
 #define KEY_TAB	        0x05
 #define KEY_INSERT	0x06
@@ -73,16 +55,11 @@ char* strupr(char* string);
 char* strlwr(char* string);
 int stricmp(const char* str1, const char* str2);
 
-#define _strlwr strlwr
-#define _strupr strupr
-#define _stricmp stricmp
-#define _strdup strdup
-
 #endif
 
-#if LC_MACOSX || LC_IPHONE 
+#ifdef LC_MACOSX
 #include <sys/param.h>
-#define LC_MAXPATH MAXPATHLEN
+#define LC_MAXPATH MAXPATHLEN //FILENAME_MAX
 
 #define KEY_SHIFT       0x01
 #define KEY_CONTROL     0x02
@@ -99,9 +76,9 @@ int stricmp(const char* str1, const char* str2);
 #define KEY_PLUS        '+'
 #define KEY_MINUS       '-'
 
-char* _strupr(char* string);
-char* _strlwr(char* string);
-int _stricmp(const char* str1, const char* str2);
+char* strupr(char* string);
+char* strlwr(char* string);
+int stricmp(const char* str1, const char* str2);
 
 #endif
 
@@ -121,29 +98,6 @@ int _stricmp(const char* str1, const char* str2);
 #define PI  3.14159265
 #define PI2 6.28318530
 
-template <typename T, typename U>
-inline T lcMin(const T& a, const U& b)
-{
-	return a < b ? a : b;
-}
-
-template <typename T, typename U>
-inline T lcMax(const T& a, const U& b)
-{
-	return a > b ? a : b;
-}
-
-template <typename T, typename U, typename V>
-inline T lcClamp(const T& Value, const U& Min, const V& Max)
-{
-	if (Value > Max)
-		return Max;
-	else if (Value < Min)
-		return Min;
-	else
-		return Value;
-}
-
 #ifndef min
 #define min(a, b)  (((a) < (b)) ? (a) : (b))
 #endif
@@ -156,7 +110,7 @@ inline T lcClamp(const T& Value, const U& Min, const V& Max)
 #define ABS(a)	(((a) > 0) ? (a) : -(a))
 #endif
 
-#if !LC_WINDOWS
+#ifndef LC_WINDOWS
 #define RGB(r, g, b) ((unsigned long)(((unsigned char) (r) | ((unsigned short) (g) << 8))|(((unsigned long) (unsigned char) (b)) << 16))) 
 #endif 
 
@@ -166,15 +120,20 @@ inline T lcClamp(const T& Value, const U& Min, const V& Max)
 #define M_PI  3.14159265
 #endif
 
-#define LC_MAX_TIME 0xffffffff
-
-#define LC_FOURCC(ch0, ch1, ch2, ch3) (u32)((u32)(u8)(ch0) | ((u32)(u8)(ch1) << 8) | \
-                                      ((u32)(u8)(ch2) << 16) | ((u32)(u8)(ch3) << 24 ))
+#define LC_FOURCC(ch0, ch1, ch2, ch3) (lcuint32)((lcuint32)(lcuint8)(ch0) | ((lcuint32)(lcuint8)(ch1) << 8) | \
+                                                ((lcuint32)(lcuint8)(ch2) << 16) | ((lcuint32)(lcuint8)(ch3) << 24 ))
 
 #define LC_FILE_ID LC_FOURCC('L','C','D', 0)
 
 #define LC_CONNECTIONS	2		// Different piece connections
 #define LC_STR_VERSION	"LeoCAD 0.7 Project\0\0" // char[20]
+
+#define LC_MAXCOLORS	28	// Number of colors supported
+#define LC_COL_EDGES	28	// Piece edges
+#define LC_COL_SELECTED	29	// Selected object
+#define LC_COL_FOCUSED	30	// Focused object
+#define LC_COL_DEFAULT	31	// Default piece color
+
 
 //	#define	DET_BACKFACES	0x00001	// Draw backfaces
 //	#define	DET_DEPTH		0x00002	// Enable depth test
@@ -221,6 +180,10 @@ inline T lcClamp(const T& Value, const U& Min, const V& Max)
 #define LC_SCENE_BG_TILE		0x040	// Tile bg image
 #define LC_SCENE_FLOOR			0x080	// Render floor
 #define LC_SCENE_GRADIENT		0x100	// Draw gradient
+
+#define LC_TERRAIN_FLAT			0x01	// Flat terrain
+#define LC_TERRAIN_TEXTURE		0x02	// Use texture
+#define LC_TERRAIN_SMOOTH		0x04	// Smooth shading
 
 #define LC_AUTOSAVE_FLAG		0x100000 // Enable auto-saving
 

@@ -2,7 +2,7 @@
 // OpenGL window
 //
 
-#include "lc_global.h"
+#include "stdafx.h"
 #include "glwindow.h"
 #include "tools.h"
 
@@ -11,12 +11,12 @@ struct GLWindowPrivate
 	HGLRC m_hrc;
 	CDC* m_pDC;
 	CPalette* m_pPal;
-	HWND m_hWnd;
+  HWND m_hWnd;
 };
 
 // ============================================================================
 
-BOOL GLWindowPreTranslateMessage(GLWindow *wnd, MSG *pMsg)
+BOOL GLWindowPreTranslateMessage (GLWindow *wnd, MSG *pMsg)
 {
 	switch (pMsg->message)
 	{
@@ -25,11 +25,11 @@ BOOL GLWindowPreTranslateMessage(GLWindow *wnd, MSG *pMsg)
 			GLWindowPrivate* prv = (GLWindowPrivate*)wnd->GetData();
 			PAINTSTRUCT ps;
 			BeginPaint(prv->m_hWnd, &ps);
-			wnd->OnDraw();
+			wnd->OnDraw ();
 			EndPaint(prv->m_hWnd, &ps);
 		} break;
 		case WM_SIZE:
-			wnd->OnSize(LOWORD(pMsg->lParam), HIWORD(pMsg->lParam));
+			wnd->OnSize (LOWORD (pMsg->lParam), HIWORD (pMsg->lParam));
 			break;
 		case WM_LBUTTONDOWN:
 			wnd->OnLeftButtonDown((SHORT)LOWORD(pMsg->lParam), wnd->GetHeight() - (SHORT)HIWORD(pMsg->lParam) - 1,
@@ -66,10 +66,10 @@ BOOL GLWindowPreTranslateMessage(GLWindow *wnd, MSG *pMsg)
 		case WM_ERASEBKGND:
 			return TRUE;
 		case WM_CREATE:
-			wnd->OnInitialUpdate();
+			wnd->OnInitialUpdate ();
 			break;
 		case WM_DESTROY:
-			wnd->DestroyContext();
+			wnd->DestroyContext ();
 			return FALSE;
 			break;
 		case WM_PALETTECHANGED:
@@ -77,16 +77,16 @@ BOOL GLWindowPreTranslateMessage(GLWindow *wnd, MSG *pMsg)
 				break;
 		case WM_QUERYNEWPALETTE:
 		{
-			GLWindowPrivate *prv = (GLWindowPrivate*)wnd->GetData();
+			GLWindowPrivate *prv = (GLWindowPrivate*)wnd->GetData ();
 
 			if (prv->m_pPal)
 			{
-				prv->m_pDC->SelectPalette(prv->m_pPal, FALSE);
-				if (prv->m_pDC->RealizePalette() != 0)
-				{
-					// Some colors changed, so we need to do a repaint.
-					InvalidateRect(prv->m_hWnd, NULL, TRUE);
-				}
+				prv->m_pDC->SelectPalette (prv->m_pPal, FALSE);
+					if (prv->m_pDC->RealizePalette () != 0)
+					{
+						// Some colors changed, so we need to do a repaint.
+						InvalidateRect (prv->m_hWnd, NULL, TRUE);
+					}
 			}
 		} break;
 

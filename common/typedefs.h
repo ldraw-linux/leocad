@@ -4,21 +4,19 @@
 #ifndef _TYPEDEF_H_
 #define _TYPEDEF_H_
 
-class lcGroup;
-class lcObject;
-class lcPiece;
-class lcCamera;
-class lcLight;
+class Group;
+class Piece;
 class PieceInfo;
-struct lcPiecesUsedEntry;
+class Camera;
 
 #include "defines.h"
 #include "str.h"
 #include "algebra.h"
-#include "lc_array.h"
 
 typedef enum
 {
+	LC_COLOR_CHANGED,
+	LC_CAPTURE_LOST,
 	LC_ACTIVATE,
 	LC_PIECE_MODIFIED,
 	LC_CAMERA_MODIFIED,
@@ -37,8 +35,8 @@ typedef enum
 	LC_FILE_HTML,
 	LC_FILE_POVRAY,
 	LC_FILE_WAVEFRONT,
-	LC_FILE_VRML97,
-	LC_FILE_X3DV,
+	LC_FILE_PROPERTIES,
+	LC_FILE_TERRAIN,
 	LC_FILE_LIBRARY,
 	LC_FILE_RECENT,
 	LC_EDIT_UNDO,
@@ -50,11 +48,11 @@ typedef enum
 	LC_EDIT_SELECT_NONE,
 	LC_EDIT_SELECT_INVERT,
 	LC_EDIT_SELECT_BYNAME,
-	LC_EDIT_SELECT_BYCOLOR,
 	LC_PIECE_INSERT,
 	LC_PIECE_DELETE,
 	LC_PIECE_MINIFIG,
 	LC_PIECE_ARRAY,
+	LC_PIECE_COPYKEYS,
 	LC_PIECE_GROUP,
 	LC_PIECE_UNGROUP,
 	LC_PIECE_GROUP_ADD,
@@ -65,21 +63,11 @@ typedef enum
 	LC_PIECE_UNHIDE_ALL,
 	LC_PIECE_PREVIOUS,
 	LC_PIECE_NEXT,
-	LC_PIECE_FIND_NEXT,
-	LC_PIECE_FIND_PREVIOUS,
-	LC_PIECE_FIND_NEXT_IN_STEP,
-	LC_PIECE_FIND_PREVIOUS_IN_STEP,
-	LC_MODEL_NEW,
-	LC_MODEL_DELETE,
-	LC_MODEL_PROPERTIES,
-	LC_MODEL_SET_ACTIVE,
-	LC_MODEL_LIST,
 	LC_VIEW_PREFERENCES,
 	LC_VIEW_ZOOM,
 	LC_VIEW_ZOOMIN,
 	LC_VIEW_ZOOMOUT,
 	LC_VIEW_ZOOMEXTENTS,
-	LC_VIEW_VIEWPORTS,
 	LC_VIEW_STEP_NEXT,
 	LC_VIEW_STEP_PREVIOUS,
 	LC_VIEW_STEP_FIRST,
@@ -99,7 +87,6 @@ typedef enum
 	LC_VIEW_CAMERA_MAIN,
 	LC_VIEW_CAMERA_MENU,
 	LC_VIEW_CAMERA_RESET,
-	LC_VIEW_AUTOPAN,
 	LC_HELP_ABOUT,
 	LC_TOOLBAR_ANIMATION,
 	LC_TOOLBAR_ADDKEYS,
@@ -149,32 +136,7 @@ typedef enum
 	LC_EDIT_ACTION_ZOOM_REGION,
 	LC_EDIT_ACTION_PAN,
 	LC_EDIT_ACTION_ROTATE_VIEW,
-	LC_EDIT_ACTION_ORBIT,
 	LC_EDIT_ACTION_ROLL,
-
-	LC_NUM_COMMANDS,
-
-	LC_LIBDLG_FILE_RESET,
-	LC_LIBDLG_FILE_OPEN,
-	LC_LIBDLG_FILE_SAVE,
-	LC_LIBDLG_FILE_SAVEAS,
-	LC_LIBDLG_FILE_PRINTCATALOG,
-	LC_LIBDLG_FILE_MERGEUPDATE,
-	LC_LIBDLG_FILE_IMPORTPIECE,
-	LC_LIBDLG_FILE_RETURN,
-	LC_LIBDLG_FILE_CANCEL,
-	LC_LIBDLG_CATEGORY_NEW,
-	LC_LIBDLG_CATEGORY_REMOVE,
-	LC_LIBDLG_CATEGORY_EDIT,
-	LC_LIBDLG_CATEGORY_RESET,
-	LC_LIBDLG_GROUP_INSERT,
-	LC_LIBDLG_GROUP_DELETE,
-	LC_LIBDLG_GROUP_EDIT,
-	LC_LIBDLG_GROUP_MOVEUP,
-	LC_LIBDLG_GROUP_MOVEDOWN,
-	LC_LIBDLG_PIECE_NEW,
-	LC_LIBDLG_PIECE_EDIT,
-	LC_LIBDLG_PIECE_DELETE,
 } LC_COMMANDS;
 
 typedef enum
@@ -192,7 +154,6 @@ typedef enum
 	LC_ACTION_ZOOM_REGION,
 	LC_ACTION_PAN,
 	LC_ACTION_ROTATE_VIEW,
-	LC_ACTION_ORBIT,
 	LC_ACTION_ROLL,
 	LC_ACTION_CURVE
 } LC_ACTIONS;
@@ -217,7 +178,6 @@ typedef enum
 	LC_CURSOR_PAN,
 	LC_CURSOR_ROLL,
 	LC_CURSOR_ROTATE_VIEW,
-	LC_CURSOR_ORBIT,
 	LC_CURSOR_COUNT
 } LC_CURSOR_TYPE;
 
@@ -225,15 +185,15 @@ typedef enum
 struct CONNECTION
 {
 	unsigned char type;
-	Vector3 center;
-	Vector3 normal;
+	float center[3];
+	float normal[3];
 	CONNECTION* link;
-	lcPiece* owner;
+	Piece* owner;
 };
 
 struct CONNECTION_ENTRY
 {
-	lcPiece* owner;
+	Piece* owner;
 	CONNECTION** cons; // pointers to the structures in each piece
 	unsigned short numcons;
 };
@@ -263,7 +223,7 @@ struct LC_SEL_DATA
 
 struct LC_PIECE_MODIFY
 {
-	lcObject* piece;
+	Piece* piece;
 	Vector3 Position;
 	Vector3 Rotation;
 	char name[81];
@@ -275,34 +235,15 @@ struct LC_PIECE_MODIFY
 
 struct LC_CAMERA_MODIFY
 {
-	lcObject* camera;
+	Camera* camera;
 	Vector3 Eye;
 	Vector3 Target;
-	float Roll;
+	Vector3 Up;
 	char name[81];
 	float fovy;
 	float znear;
 	float zfar;
-	bool ortho;
 	bool hidden;
-	bool cone;
-};
-
-struct LC_LIGHT_MODIFY
-{
-	lcObject* light;
-	Vector3 Position;
-	Vector3 Target;
-	Vector4 AmbientColor;
-	Vector4 DiffuseColor;
-	Vector4 SpecularColor;
-	float ConstantAttenuation;
-	float LinearAttenuation;
-	float QuadraticAttenuation;
-	float SpotCutoff;
-	float SpotExponent;
-	bool Hidden;
-	char name[81];
 };
 
 // Image
@@ -349,19 +290,17 @@ typedef enum {
 	LC_DLG_HTML,
 	LC_DLG_POVRAY,
 	LC_DLG_WAVEFRONT,
-	LC_DLG_VRML97,
-	LC_DLG_X3DV,
 	LC_DLG_MINIFIG,
 	LC_DLG_ARRAY,
 	LC_DLG_PREFERENCES,
 	LC_DLG_PROPERTIES,
+	LC_DLG_TERRAIN,
 	LC_DLG_LIBRARY,
 	LC_DLG_SELECTBYNAME,
 	LC_DLG_STEPCHOOSE,
 	LC_DLG_EDITGROUPS,
 	LC_DLG_GROUP,
 	LC_DLG_EDITCATEGORY,
-	LC_DLG_MODEL_LIST,
 	LC_DLG_ABOUT
 } LC_DIALOGS;
 
@@ -414,7 +353,7 @@ struct LC_HTMLDLG_OPTS
 	bool listend;
 	bool liststep;
 	bool highlight;
-	bool htmlext;
+  bool htmlext;
 	LC_IMAGEDLG_OPTS imdlg;
 };
 
@@ -432,31 +371,24 @@ struct LC_ARRAYDLG_OPTS
 
 struct LC_PROPERTIESDLG_OPTS
 {
-	String Name;
-	String Author;
-	String Description;
-	String Comments;
-
-	u32 SceneFlags;
-	float BackgroundColor[4];
-	float Gradient1[3];
-	float Gradient2[3];
-	String BackgroundImage;
-	float FogColor[4];
-	float FogDensity;
-	float AmbientColor[4];
-
-	lcObjArray<lcPiecesUsedEntry> PiecesUsed;
+	char strAuthor[101];
+	char strDescription[101];
+	char strComments[256];
+	char* strTitle;
+	char* strFilename;
+	char** names;
+	unsigned short* count;
+	int lines;
 };
 
 struct LC_GROUPEDITDLG_OPTS
 {
 	int piececount;
-	lcPiece** pieces;
-	lcGroup** piecesgroups;
+	Piece** pieces;
+	Group** piecesgroups;
 	int groupcount;
-	lcGroup** groups;
-	lcGroup** groupsgroups;
+	Group** groups;
+	Group** groupsgroups;
 };
 
 struct LC_PREFERENCESDLG_OPTS
@@ -469,6 +401,15 @@ struct LC_PREFERENCESDLG_OPTS
 	float fLineWidth;
 	unsigned long nSnap;
 	unsigned short nAngleSnap;
+	unsigned short nGridSize;
+	unsigned long nScene;
+	float fDensity;
+	char strBackground[LC_MAXPATH];
+	float fBackground[4];
+	float fFog[4];
+	float fAmbient[4];
+	float fGrad1[3];
+	float fGrad2[3];
 	char strFooter[256];
 	char strHeader[256];
 };

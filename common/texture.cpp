@@ -1,13 +1,13 @@
 // Texture object.
 //
 
-#include "lc_global.h"
 #include <string.h>
 #include <stdlib.h>
 #include "opengl.h"
 #include "file.h"
 #include "texture.h"
 #include "project.h"
+#include "globals.h"
 #include "image.h"
 #include "library.h"
 #include "lc_application.h"
@@ -68,10 +68,10 @@ Texture::~Texture()
 /////////////////////////////////////////////////////////////////////////////
 // Texture attributes
 
-void Texture::AddRef()
+void Texture::AddRef(bool bFilter)
 {
   if (m_nRef == 0)
-    Load();
+    Load(bFilter);
 
   m_nRef++;
 }
@@ -86,18 +86,18 @@ void Texture::DeRef()
 /////////////////////////////////////////////////////////////////////////////
 // Load methods
 
-void Texture::LoadIndex(lcFile* idx)
+void Texture::LoadIndex(File* idx)
 {
-  u8 bt;
+  unsigned char bt;
 
   // TODO: don't change ref. if reloading
   m_nRef = 0;
   m_nID = 0;
 
   idx->Read(m_strName, 8);
-  idx->ReadShorts(&m_nWidth, 1);
-  idx->ReadShorts(&m_nHeight, 1);
-  idx->ReadBytes(&bt, 1);
+  idx->ReadShort(&m_nWidth, 1);
+  idx->ReadShort(&m_nHeight, 1);
+  idx->ReadByte(&bt, 1);
 
   switch (bt)
   {
@@ -115,7 +115,7 @@ void Texture::LoadIndex(lcFile* idx)
     break;
   }
 
-  idx->ReadInts(&m_nOffset, 1);
+  idx->ReadLong(&m_nOffset, 1);
 }
 
 void Texture::Unload()
@@ -126,10 +126,10 @@ void Texture::Unload()
 }
 
 // Load from textures.bin file
-void Texture::Load()
+void Texture::Load(bool bFilter)
 {
   char filename[LC_MAXPATH];
-  lcFileDisk bin;
+  FileDisk bin;
   void* bits;
 
   strcpy(filename, lcGetPiecesLibrary()->GetLibraryPath());
@@ -142,16 +142,16 @@ void Texture::Load()
   else
     bits = malloc (m_nFileSize);
 
-  bin.Seek(m_nOffset, SEEK_SET);
-  bin.Read(bits, m_nFileSize);
-  bin.Close();
+  bin.Seek (m_nOffset, SEEK_SET);
+  bin.Read (bits, m_nFileSize);
+  bin.Close ();
 
-  FinishLoadImage(bits);
+  FinishLoadImage (bFilter, bits);
 
   free(bits);
 }
 
-bool Texture::LoadFromFile(const char* strFilename)
+bool Texture::LoadFromFile (char* strFilename, bool bFilter)
 {
   Image image;
   
@@ -167,7 +167,7 @@ bool Texture::LoadFromFile(const char* strFilename)
     else
       m_nFormat = GL_RGB;
 
-    if (FinishLoadImage(image.GetData ()) == true)
+    if (FinishLoadImage (bFilter, image.GetData ()) == true)
       return true;
   }
 
@@ -184,12 +184,11 @@ bool Texture::LoadFromFile(const char* strFilename)
   return false;
 }
 
-bool Texture::FinishLoadImage(void *data)
+bool Texture::FinishLoadImage (bool bFilter, void *data)
 {
-	GLint w, h, level, maxsize;
-	GLint i, j, k, pow2;
-	GLint components;
-	GLint InternalFormat;
+  GLint w, h, level, maxsize;
+  GLint i, j, k, pow2;
+  GLint components;
 
   if (data == NULL || m_nWidth < 1 || m_nHeight < 1)
     return false;
@@ -198,13 +197,13 @@ bool Texture::FinishLoadImage(void *data)
     glGenTextures(1, &m_nID);
 
   glBindTexture(GL_TEXTURE_2D, m_nID);
+  glDisable(GL_TEXTURE_GEN_S);
+  glDisable(GL_TEXTURE_GEN_T);
   //  glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-//  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST);
-//  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR_MIPMAP_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, bFilter ? GL_LINEAR_MIPMAP_NEAREST : GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, bFilter ? GL_LINEAR_MIPMAP_NEAREST : GL_NEAREST);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
   switch (m_nFormat)
@@ -215,12 +214,6 @@ bool Texture::FinishLoadImage(void *data)
   default: return false;
   }
 
-#if LC_OPENGLES
-	InternalFormat = m_nFormat;
-#else
-	InternalFormat = components;
-#endif
-	
   // create an alpha channel for the texture 
   if (m_nFormat == GL_LUMINANCE_ALPHA)
     for (i = m_nWidth*m_nHeight-1; i >= 0; i--)
@@ -252,25 +245,26 @@ bool Texture::FinishLoadImage(void *data)
     data = tmp;
   }
 
-  glTexImage2D (GL_TEXTURE_2D, 0, InternalFormat, w, h, 0, m_nFormat, GL_UNSIGNED_BYTE, data);
+  glTexImage2D (GL_TEXTURE_2D, 0, components, w, h, 0, m_nFormat, GL_UNSIGNED_BYTE, data);
 
-  for (level = 1; ((w != 1) || (h != 1)); level++)
-  {
-    GLubyte *out, *in;
-    int row;
+  if (bFilter)
+    for (level = 1; ((w != 1) || (h != 1)); level++)
+    {
+      GLubyte *out, *in;
+      int row;
 
-    row = w * components;
-    if (w != 1) w >>= 1;
-    if (h != 1) h >>= 1;
-    in = out = (GLubyte*)data;
+      row = w * components;
+      if (w != 1) w >>= 1;
+      if (h != 1) h >>= 1;
+      in = out = (GLubyte*)data;
 
-    for (i = 0; i < h; i++, in+=row)
-      for (j = 0; j < w; j++, out+=components, in+=2*components)
-        for (k = 0; k < components; k++)
-          out[k] = (in[k] + in[k+components] + in[row] + in[row+k+components])>>2;
+      for (i = 0; i < h; i++, in+=row)
+	for (j = 0; j < w; j++, out+=components, in+=2*components)
+	  for (k = 0; k < components; k++)
+	    out[k] = (in[k] + in[k+components] + in[row] + in[row+k+components])>>2;
 
-    glTexImage2D (GL_TEXTURE_2D, level, InternalFormat, w, h, 0, m_nFormat, GL_UNSIGNED_BYTE, data);
-  }
+      glTexImage2D (GL_TEXTURE_2D, level, components, w, h, 0, m_nFormat, GL_UNSIGNED_BYTE, data);
+    }
 
   free (data);
   return true;

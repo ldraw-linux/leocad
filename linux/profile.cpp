@@ -69,7 +69,7 @@ static bool read_var (const char *section, const char *key, char *value)
 static bool save_var (const char *section, const char *key, const char *value)
 {
   char line[1024], *ptr, filename[LC_MAXPATH];
-  lcFileMem old_rc;
+  FileMem old_rc;
   bool found;
   FILE *rc;
 

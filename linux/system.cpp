@@ -6,7 +6,6 @@
 #include <gtk/gtk.h>
 #include <X11/keysym.h>
 #include <sys/time.h>
-#include "lc_global.h"
 #include "opengl.h"
 #include "gtkmisc.h"
 #include "camera.h"
@@ -15,6 +14,7 @@
 #include "main.h"
 #include "toolbar.h"
 #include "dialogs.h"
+#include "globals.h"
 #include "lc_application.h"
 
 // =============================================================================
@@ -86,22 +86,35 @@ void Sys_FinishMemoryRender(void* param)
 // Misc stuff
 
 // FIXME: should have a table of LC_KEY_* defined
-bool Sys_KeyDown (int key)
+bool Sys_KeyDown(int Key)
 {
-  char keys[32];
-  int x;
+	char keys[32];
+	int x;
 
-  XQueryKeymap (GDK_DISPLAY (), keys);
+	XQueryKeymap(GDK_DISPLAY(), keys);
 
-  x = XKeysymToKeycode (GDK_DISPLAY (), XK_Control_L);
-  if (keys[x/8] & (1 << (x % 8)))
-    return true;
+	if (Key == KEY_CONTROL)
+	{
+		x = XKeysymToKeycode(GDK_DISPLAY(), XK_Control_L);
+		if (keys[x/8] & (1 << (x % 8)))
+			return true;
 
-  x = XKeysymToKeycode (GDK_DISPLAY (), XK_Control_R);
-  if (keys[x/8] & (1 << (x % 8)))
-    return true;
+		x = XKeysymToKeycode(GDK_DISPLAY(), XK_Control_R);
+		if (keys[x/8] & (1 << (x % 8)))
+			return true;
+	}
+	else if (Key == KEY_ALT)
+	{
+		x = XKeysymToKeycode(GDK_DISPLAY(), XK_Alt_L);
+		if (keys[x/8] & (1 << (x % 8)))
+			return true;
 
-  return false;
+		x = XKeysymToKeycode(GDK_DISPLAY(), XK_Alt_R);
+		if (keys[x/8] & (1 << (x % 8)))
+			return true;
+	}
+
+	return false;
 }
 
 
@@ -141,6 +154,12 @@ int stricmp(const char* str1, const char* str2)
 
 
 
+void SystemPumpMessages()
+{
+  while (gtk_events_pending ())
+    gtk_main_iteration ();
+}
+
 long SystemGetTicks()
 {
   static int basetime = 0;
@@ -155,36 +174,8 @@ long SystemGetTicks()
   return (tp.tv_sec-basetime)*1000 + tp.tv_usec/1000;
 }
 
-u64 SystemGetMilliseconds()
-{
-  struct timezone tzp;
-  struct timeval tp;
-
-  gettimeofday (&tp, &tzp);
-
-  return tp.tv_sec*1000 + tp.tv_usec/1000;
-}
-
 // User Interface
-void SystemUpdateViewport(int new_vp, int old_vp)
-{
-  char buf[64];
-  sprintf (buf, "menu_view_viewports_%02d", new_vp+1);
-  gpointer item = gtk_object_get_data (GTK_OBJECT (((GtkWidget*)(*main_window))), buf);
-
-  if (!item)
-    return;
-
-  ignore_commands = true;
-  gtk_check_menu_item_set_state (GTK_CHECK_MENU_ITEM (item), TRUE);  
-  ignore_commands = false;
-}
-
 void SystemUpdateCategories(bool SearchOnly)
-{
-}
-
-void SystemUpdateModelMenu(const lcPtrArray<lcModel>& ModelList, lcModel* ActiveModel)
 {
 }
 
@@ -299,17 +290,20 @@ void SystemUpdateAction(int new_action, int old_action)
   GdkColor white = {0, 0xffff, 0xffff, 0xffff};
   GdkColor black = {0, 0x0000, 0x0000, 0x0000};
 
-  if (xpm != NULL)
+  if (GDK_IS_WINDOW(drawing_area))
   {
-    create_bitmap_and_mask_from_xpm(&bitmap, &mask, xpm);
-    cursor = gdk_cursor_new_from_pixmap(bitmap, mask, &white, &black, x, y);
-    gdk_window_set_cursor(drawing_area->window, cursor);
-  }
-  else
-  {
-    cursor = gdk_cursor_new (GDK_LEFT_PTR);
-    gdk_window_set_cursor (drawing_area->window, cursor);
-    gdk_cursor_destroy (cursor);
+    if (xpm != NULL)
+    {
+      create_bitmap_and_mask_from_xpm (&bitmap, &mask, xpm);
+      cursor = gdk_cursor_new_from_pixmap (bitmap, mask, &white, &black, x, y);
+      gdk_window_set_cursor (drawing_area->window, cursor);
+    }
+    else
+    {
+      cursor = gdk_cursor_new (GDK_LEFT_PTR);
+      gdk_window_set_cursor (drawing_area->window, cursor);
+      gdk_cursor_destroy (cursor);
+    }
   }
 
   ignore_commands = true;
@@ -389,7 +383,7 @@ void SystemUpdateSnap(const unsigned long snap)
   ignore_commands = false;
 }
 
-void SystemUpdateCurrentCamera(lcCamera* pOld, lcCamera* pNew, lcCamera* pCamera)
+void SystemUpdateCurrentCamera(Camera* pOld, Camera* pNew, Camera* pCamera)
 {
   gpointer item = NULL;
   gpointer menu = gtk_object_get_data (GTK_OBJECT (((GtkWidget*)(*main_window))), "cameras_menu");
@@ -399,7 +393,7 @@ void SystemUpdateCurrentCamera(lcCamera* pOld, lcCamera* pNew, lcCamera* pCamera
 
   GList *lst = gtk_container_children (GTK_CONTAINER (menu));
 
-  for (int i = 0; pCamera; i++, pCamera = (lcCamera*)pCamera->m_Next)
+  for (int i = 0; pCamera; i++, pCamera = pCamera->m_pNext)
     if (pNew == pCamera)
     {
       if (i >= 7)
@@ -424,11 +418,11 @@ void SystemUpdateCurrentCamera(lcCamera* pOld, lcCamera* pNew, lcCamera* pCamera
   }
 }
 
-void SystemUpdateCameraMenu(lcCamera* pCamera)
+void SystemUpdateCameraMenu(Camera* pCamera)
 {
   GtkWidget *menu = GTK_WIDGET (gtk_object_get_data (GTK_OBJECT (((GtkWidget*)(*main_window))), "cameras_menu"));
   GtkWidget *item = NULL;
-  lcCamera* pFirst = pCamera;
+  Camera* pFirst = pCamera;
   GList *lst;
   int i;
 
@@ -440,11 +434,11 @@ void SystemUpdateCameraMenu(lcCamera* pCamera)
     gtk_container_remove (GTK_CONTAINER (menu), GTK_WIDGET (lst->data));
 
   // add user cameras
-  for (i = 0; pCamera; i++, pCamera = (lcCamera*)pCamera->m_Next)
+  for (i = 0; pCamera; i++, pCamera = pCamera->m_pNext)
     if (i > 6)
     {
       GSList* grp = item ? gtk_radio_menu_item_group (GTK_RADIO_MENU_ITEM (item)) : NULL;
-      item = gtk_radio_menu_item_new_with_label (grp, pCamera->m_Name);
+      item = gtk_radio_menu_item_new_with_label (grp, pCamera->GetName());
       gtk_menu_append (GTK_MENU (menu), item);
       gtk_widget_show (item);
       gtk_signal_connect (GTK_OBJECT (item), "activate", GTK_SIGNAL_FUNC (OnCommand),
@@ -455,10 +449,10 @@ void SystemUpdateCameraMenu(lcCamera* pCamera)
     menu_separator (menu);
 
   // add standard cameras
-  for (pCamera = pFirst, i = 0; pCamera && (i < 7); i++, pCamera = (lcCamera*)pCamera->m_Next)
+  for (pCamera = pFirst, i = 0; pCamera && (i < 7); i++, pCamera = pCamera->m_pNext)
   {
     GSList* grp = item ? gtk_radio_menu_item_group (GTK_RADIO_MENU_ITEM (item)) : NULL;
-    item = gtk_radio_menu_item_new_with_label (grp, pCamera->m_Name);
+    item = gtk_radio_menu_item_new_with_label (grp, pCamera->GetName());
     gtk_menu_append (GTK_MENU (menu), item);
     gtk_widget_show (item);
     gtk_signal_connect (GTK_OBJECT (item), "activate", GTK_SIGNAL_FUNC (OnCommand),
@@ -466,7 +460,7 @@ void SystemUpdateCameraMenu(lcCamera* pCamera)
   }
 }
 
-void SystemUpdateTime(bool bAnimation, u32 nTime, u32 nTotal)
+void SystemUpdateTime(bool bAnimation, int nTime, int nTotal)
 {
   GtkWidget *item;
 
@@ -506,24 +500,27 @@ void SystemUpdateAnimation(bool bAnimation, bool bAddKeys)
   gtk_widget_set_sensitive (anim_toolbar.stop, FALSE);
   gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON(anim_toolbar.anim), bAnimation);
   gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON(anim_toolbar.keys), bAddKeys);
+  gpointer item = gtk_object_get_data (GTK_OBJECT (((GtkWidget*)(*main_window))), "menu_piece_copykeys");
+  gtk_label_set_text (GTK_LABEL (GTK_BIN (item)->child), 
+      bAnimation ? "Copy Keys from Instructions" : "Copy Keys from Animation");
   ignore_commands = false;
 }
 
 void SystemUpdateSnap(unsigned short move_snap, unsigned short RotateSnap)
 {
-  if (!label_snap)
-    return;
+	if (!label_snap)
+		return;
 
-  char Text[256], xy[32], z[32];
+	char Text[256], xy[32], z[32];
 
-  lcGetActiveProject()->GetSnapDistanceText(xy, z);
+	lcGetActiveProject()->GetSnapDistanceText(xy, z);
 
-  sprintf(Text, " M: %s %s R: %d ", xy, z, RotateSnap);
+	sprintf(Text, " M: %s %s R: %d ", xy, z, RotateSnap);
 
-  gtk_label_set (GTK_LABEL (label_snap), Text);
+	gtk_label_set (GTK_LABEL (label_snap), Text);
 }
 
-void SystemUpdateSelected(unsigned long flags, int SelectedCount, lcObject* Focus)
+void SystemUpdateSelected(unsigned long flags, int SelectedCount, Object* Focus)
 {
   GtkWidget *item;
 
@@ -560,6 +557,8 @@ void SystemUpdateSelected(unsigned long flags, int SelectedCount, lcObject* Focu
   gtk_widget_set_sensitive (item, (flags & LC_SEL_UNSELECTED) != 0);
   item = GTK_WIDGET (gtk_object_get_data (GTK_OBJECT (((GtkWidget*)(*main_window))), "menu_piece_unhide_all"));
   gtk_widget_set_sensitive (item, (flags & LC_SEL_HIDDEN) != 0);
+  item = GTK_WIDGET (gtk_object_get_data (GTK_OBJECT (((GtkWidget*)(*main_window))), "menu_piece_copykeys"));
+  gtk_widget_set_sensitive (item, (flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT)) != 0);
 
   // groups (menu)
   item = GTK_WIDGET (gtk_object_get_data (GTK_OBJECT (((GtkWidget*)(*main_window))), "menu_piece_group"));
@@ -575,6 +574,38 @@ void SystemUpdateSelected(unsigned long flags, int SelectedCount, lcObject* Focu
 
   gtk_widget_set_sensitive (tool_toolbar.prev, (flags & LC_SEL_PIECE) != 0);
   gtk_widget_set_sensitive (tool_toolbar.next, (flags & LC_SEL_PIECE) != 0);
+}
+
+void SystemUpdateRecentMenu (String names[4])
+{
+  GtkWidget *item;
+  char buf[32];
+
+  for (int i = 0; i < 4; i++)
+  {
+    sprintf (buf, "menu_file_recent%d", i+1);
+    item = GTK_WIDGET (gtk_object_get_data (GTK_OBJECT (((GtkWidget*)(*main_window))), buf));
+
+    if (!names[i].IsEmpty ())
+    {
+      if (i == 0)
+      {
+	gtk_label_set_text (GTK_LABEL (GTK_BIN (item)->child), "Recent Files");
+	gtk_widget_set_sensitive (item, FALSE);
+      }
+      else
+	gtk_widget_hide (item);
+    }
+    else
+    {
+      char text[LC_MAXPATH+4];
+
+      sprintf (text, "_%d- %s", i+1, (char*)names[i]);
+      gtk_label_set_text_with_mnemonic(GTK_LABEL(GTK_BIN(item)->child), text);
+      gtk_widget_show(item);
+      gtk_widget_set_sensitive(item, TRUE);
+    }
+  }
 }
 
 void SystemUpdatePaste(bool enable)
@@ -601,7 +632,7 @@ void SystemFinish()
 // FIXME: remove 
 int SystemDoMessageBox(const char* prompt, int mode)
 {
-  return msgbox_execute(prompt, "LeoCAD", mode);
+  return msgbox_execute (prompt, "LeoCAD", mode);
 }
 
 bool SystemDoDialog(int mode, void* param)
@@ -632,14 +663,8 @@ bool SystemDoDialog(int mode, void* param)
     case LC_DLG_POVRAY:
       return povraydlg_execute(param) == LC_OK;
 
-    case LC_DLG_VRML97:
-      return filedlg_execute("Save File", (char*)param) == LC_OK;
-
-    case LC_DLG_X3DV:
-      return filedlg_execute("Save File", (char*)param) == LC_OK;
-
     case LC_DLG_WAVEFRONT:
-      return filedlg_execute("Save File", (char*)param) == LC_OK;
+      return wavefrontdlg_execute(param) == LC_OK;
 
     case LC_DLG_PREFERENCES:
       return preferencesdlg_execute(param) == LC_OK;
@@ -685,23 +710,23 @@ void SystemDoWaitCursor(int code)
 
   if (code == 1)
   {
-    GdkCursor *cursor = gdk_cursor_new(GDK_WATCH);
+    GdkCursor *cursor = gdk_cursor_new (GDK_WATCH);
     gdk_window_set_cursor(window, cursor);
-    gdk_cursor_destroy(cursor);
+    gdk_cursor_destroy (cursor);
   } 
   else
   {
-    GdkCursor *cursor = gdk_cursor_new(GDK_LEFT_PTR);
+    GdkCursor *cursor = gdk_cursor_new (GDK_LEFT_PTR);
     gdk_window_set_cursor(window, cursor);
-    gdk_cursor_destroy(cursor);
+    gdk_cursor_destroy (cursor);
   }
 }
 
-void SystemExportClipboard(lcFile* clip)
+void SystemExportClipboard(File* clip)
 {
 }
 
-lcFile* SystemImportClipboard()
+File* SystemImportClipboard()
 {
   return NULL;
 }
@@ -729,19 +754,10 @@ void SystemStartProgressBar(int nLower, int nUpper, int nStep, const char* Text)
 {
 }
 
-void SystemEndProgressBar()
+void SytemEndProgressBar()
 {
 }
 
-void SystemStepProgressBar()
+void SytemStepProgressBar()
 {
-}
-
-void SystemUpdateViewLayout()
-{
-}
-
-String SystemGetViewLayout()
-{
-	return String("V4|Main");
 }

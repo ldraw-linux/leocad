@@ -5,8 +5,6 @@
 #define __PREFPAGE_H__
 
 #include "keyedit.h"
-#include "lc_colors.h"
-#include "afxwin.h"
 
 /////////////////////////////////////////////////////////////////////////////
 // CPreferencesGeneral dialog
@@ -28,12 +26,11 @@ public:
 	CSliderCtrl	m_ctlMouse;
 	BOOL	m_bSubparts;
 	int		m_nSaveTime;
-	BOOL	m_bNumbers;
 	CString	m_strFolder;
 	BOOL	m_bAutoSave;
 	CString	m_bUser;
 	CString	m_strUser;
-	int		m_Updates;
+	BOOL	m_Updates;
 	//}}AFX_DATA
 
 
@@ -57,11 +54,6 @@ protected:
 	//}}AFX_MSG
 	DECLARE_MESSAGE_MAP()
 
-public:
-	afx_msg void OnBnClickedGendlgLibraryBrowse();
-	CString m_strLibrary;
-	CString m_strColor;
-	afx_msg void OnBnClickedColorBrowse();
 };
 
 
@@ -88,7 +80,6 @@ public:
 	BOOL	m_bSmooth;
 	float	m_fLineWidth;
 	BOOL	m_bFast;
-	BOOL	m_DisableExt;
 	//}}AFX_DATA
 
 
@@ -117,8 +108,8 @@ class CPreferencesDrawing : public CPropertyPage
 
 // Construction
 public:
-	void SetOptions(unsigned long dwSnap, unsigned short nAngle);
-	void GetOptions(unsigned long* dwSnap, unsigned short* nAngle);
+	void SetOptions(unsigned long dwSnap, unsigned short nAngle, unsigned short nGrid);
+	void GetOptions(unsigned long* dwSnap, unsigned short* nAngle, unsigned short* nGrid);
 	CPreferencesDrawing();
 	~CPreferencesDrawing();
 
@@ -130,6 +121,7 @@ public:
 	BOOL	m_bCentimeters;
 	BOOL	m_bFixed;
 	BOOL	m_bGrid;
+	int		m_nGridSize;
 	BOOL	m_bLockX;
 	BOOL	m_bLockY;
 	BOOL	m_bLockZ;
@@ -160,69 +152,62 @@ protected:
 
 
 /////////////////////////////////////////////////////////////////////////////
-// CPreferencesColors dialog
+// CPreferencesScene dialog
 
-class CPreferencesColors : public CPropertyPage
+class CPreferencesScene : public CPropertyPage
 {
-	DECLARE_DYNCREATE(CPreferencesColors)
+	DECLARE_DYNCREATE(CPreferencesScene)
 
 // Construction
 public:
-	void SetOptions();
-	void GetOptions();
-	CPreferencesColors();
-	~CPreferencesColors();
-
-	void LoadColorConfig(const CString& Path);
+	void SetOptions(unsigned long nScene, float fDensity, char* strBackground, float* fBackground, float* fFog, float* fAmbient, float* fGrad1, float* fGrad2);
+	void GetOptions(unsigned long* nScene, float* fDensity, char* strBackground, float* fBackground, float* fFog, float* fAmbient, float* fGrad1, float* fGrad2);
+	CPreferencesScene();
+	~CPreferencesScene();
+	COLORREF m_crBackground;
+	COLORREF m_crAmbient;
+	COLORREF m_crFog;
+	COLORREF m_crGrad1;
+	COLORREF m_crGrad2;
 
 // Dialog Data
-	//{{AFX_DATA(CPreferencesColors)
-	enum { IDD = IDD_PREFCOLORS };
+	//{{AFX_DATA(CPreferencesScene)
+	enum { IDD = IDD_PREFSCENE };
+	CButton	m_btnGrad1;
+	CButton	m_btnGrad2;
+	CButton	m_btnAmbient;
+	CButton	m_btnFog;
+	CButton	m_btnBackground;
+	CString	m_strBackground;
+	BOOL	m_bTile;
+	BOOL	m_bFog;
+	BYTE	m_nFogDensity;
+	BOOL	m_bFloor;
+	int		m_nBackground;
 	//}}AFX_DATA
 
 
 // Overrides
 	// ClassWizard generate virtual function overrides
-	//{{AFX_VIRTUAL(CPreferencesColors)
-	public:
+	//{{AFX_VIRTUAL(CPreferencesScene)
 	protected:
 	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV support
 	//}}AFX_VIRTUAL
 
 // Implementation
 protected:
-	lcColorConfig m_ColorConfig;
-
-	void UpdateTabs();
-	void UpdateTabControls();
-	void UpdateColors();
-	void UpdateColorControls();
-
 	// Generated message map functions
-	//{{AFX_MSG(CPreferencesColors)
+	//{{AFX_MSG(CPreferencesScene)
+	afx_msg void OnBackgroundBrowse();
+	afx_msg void OnBackgroundColor();
+	afx_msg void OnAmbientLight();
+	afx_msg void OnFogColor();
+	virtual BOOL OnInitDialog();
+	afx_msg void OnGradColor1();
+	afx_msg void OnGradColor2();
 	//}}AFX_MSG
 	DECLARE_MESSAGE_MAP()
 
-public:
-	virtual BOOL OnInitDialog();
-	CListBox m_AvailableList;
-	CListBox m_CurrentList;
-	CListBox m_TabList;
-	afx_msg void OnLbnSelchangeTabList();
-	afx_msg void OnBnClickedAddColor();
-	afx_msg void OnBnClickedRemoveColor();
-	afx_msg void OnBnClickedUpColor();
-	afx_msg void OnBnClickedDownColor();
-	afx_msg void OnLbnSelchangeAvailable();
-	afx_msg void OnLbnSelchangeCurrent();
-	afx_msg void OnBnClickedUpTab();
-	afx_msg void OnBnClickedDownTab();
-	afx_msg void OnBnClickedDeleteTab();
-	afx_msg void OnBnClickedNewTab();
-	afx_msg void OnBnClickedRenameTab();
-	CString m_TabName;
-	afx_msg void OnBnClickedImport();
-	afx_msg void OnBnClickedReset();
 };
 
 
@@ -248,17 +233,13 @@ public:
 	float	m_fRight;
 	float	m_fTop;
 	BOOL	m_bNumbers;
-	CString	m_strInstHeader;
-	CString	m_strInstFooter;
+	CString	m_strHeader;
+	CString	m_strFooter;
 	BOOL	m_bBorder;
 	int		m_nInstCols;
 	int		m_nInstRows;
 	int		m_nCatCols;
 	int		m_nCatRows;
-	CString	m_strCatHeader;
-	CString	m_strCatFooter;
-	BOOL	m_bCatNames;
-	int		m_nCatOrientation;
 	//}}AFX_DATA
 
 

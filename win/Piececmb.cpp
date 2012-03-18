@@ -1,12 +1,13 @@
 // PieceCmb.cpp : implementation file
 //
 
-#include "lc_global.h"
+#include "stdafx.h"
 #include "leocad.h"
 #include "PieceCmb.h"
 #include "PieceBar.h"
 #include "pieceinf.h"
 #include "project.h"
+#include "globals.h"
 #include "library.h"
 #include "lc_application.h"
 

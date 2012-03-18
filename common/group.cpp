@@ -1,7 +1,6 @@
 // Piece group
 //
 
-#include "lc_global.h"
 #include <stdlib.h>
 #include "group.h"
 #include "file.h"
@@ -9,72 +8,72 @@
 /////////////////////////////////////////////////////////////////////////////
 // Group construction/destruction
 
-lcGroup::lcGroup()
+Group::Group()
 {
-	m_Group = NULL;
-	m_Next = NULL;
+	m_pGroup = NULL;
+	m_pNext = NULL;
 }
 
-lcGroup::~lcGroup()
+Group::~Group()
 {
 
 }
 
-lcGroup* lcGroup::GetTopGroup()
+Group* Group::GetTopGroup()
 {
-	return m_Group ? m_Group->GetTopGroup() : this;
+	return m_pGroup ? m_pGroup->GetTopGroup() : this;
 }
 
-void lcGroup::SetGroup(lcGroup* Group)
+void Group::SetGroup(Group* pGroup)
 {
-	if (Group == this)
+	if (pGroup == this)
 		return;
 
-	if (m_Group != NULL && m_Group != (lcGroup*)-1)
-		m_Group->SetGroup(Group);
+	if (m_pGroup != NULL && m_pGroup != (Group*)-1)
+		m_pGroup->SetGroup(pGroup);
 	else
-		m_Group = Group;
+		m_pGroup = pGroup;
 }
 
-void lcGroup::UnGroup(lcGroup* Group)
+void Group::UnGroup(Group* pGroup)
 {
-	if (m_Group == Group)
-		m_Group = NULL;
+	if (m_pGroup == pGroup)
+		m_pGroup = NULL;
 	else
-		if (m_Group != NULL)
-			m_Group->UnGroup(Group);
+		if (m_pGroup != NULL)
+			m_pGroup->UnGroup(pGroup);
 }
 
-void lcGroup::FileLoad(lcFile* file)
+void Group::FileLoad(File* file)
 {
-	u8 version;
+	unsigned char version;
 	int i;
 
 	file->Read(&version, 1);
 	file->Read(m_strName, 65);
 	file->Read(m_fCenter, 12);
-	file->ReadInts(&i, 1);
-	m_Group = (lcGroup*)i;
+	file->ReadLong(&i, 1);
+	m_pGroup = (Group*)i;
 }
 
-void lcGroup::FileSave(lcFile* file, lcGroup* Groups)
+void Group::FileSave(File* file, Group* pGroups)
 {
-	u8 version = 1; // LeoCAD 0.60
+	unsigned char version = 1; // LeoCAD 0.60
 
 	file->Write(&version, 1);
 	file->Write(m_strName, 65);
 	file->Write(m_fCenter, 12);
 
 	int i = 0;
-	if (m_Group == NULL)
+	if (m_pGroup == NULL)
 		i = -1;
 	else
 	{
-		for (; Groups; Groups = Groups->m_Next)
-			if (Groups == m_Group)
+		for (; pGroups; pGroups = pGroups->m_pNext)
+			if (pGroups == m_pGroup)
 				break;
 			else
 				i++;
 	}
-	file->WriteInts(&i, 1);
+	file->WriteLong(&i, 1);
 }

@@ -2,14 +2,13 @@
 // Texture Font
 //
 
-#include "lc_global.h"
+#include "globals.h"
 #include "project.h"
 #include "texfont.h"
 #include "texture.h"
 #include "library.h"
 #include "file.h"
 #include "lc_application.h"
-#include "console.h"
 
 #define LC_TEXFONT_FILE_VERSION 1 // LeoCAD 0.74
 #define LC_TEXFONT_FILE_HEADER "LeoCAD Texture Font\0\0\0\0\0\0\0\0\0\0\0\0"
@@ -30,7 +29,7 @@ TexFont::~TexFont ()
     m_pTexture->DeRef ();
 }
 
-bool TexFont::FileLoad(lcFile& file)
+bool TexFont::FileLoad (File& file)
 {
   unsigned char version;
   char buf[64];
@@ -48,10 +47,10 @@ bool TexFont::FileLoad(lcFile& file)
     return false;
   }
 
-  file.ReadBytes(&version, 1);
+  file.ReadByte (&version, 1);
   if (version > LC_TEXFONT_FILE_VERSION)
   {
-    console.PrintError("Wrong version of texture font file.\n");
+    console.PrintError ("Wrong version of texture font file.\n");
     return false;
   }
 
@@ -64,24 +63,24 @@ bool TexFont::FileLoad(lcFile& file)
     console.PrintError ("Cannot find texture for font %s.\n", buf);
     return false;
   }
-  m_pTexture->AddRef();
+  m_pTexture->AddRef (false);
  
-  file.ReadBytes(&m_nFontHeight, 1);
+  file.ReadByte (&m_nFontHeight, 1);
 
   for (;;)
   {
-    u8 glyph;
+    unsigned char glyph;
 
-    file.ReadBytes(&glyph, 1);
+    file.ReadByte (&glyph, 1);
 
     if (glyph == 0)
       break;
 
-    file.ReadBytes(&m_Glyphs[glyph].width, 1);
-    file.ReadFloats(&m_Glyphs[glyph].left, 1);
-    file.ReadFloats(&m_Glyphs[glyph].right, 1);
-    file.ReadFloats(&m_Glyphs[glyph].top, 1);
-    file.ReadFloats(&m_Glyphs[glyph].bottom, 1);
+    file.ReadByte (&m_Glyphs[glyph].width, 1);
+    file.ReadFloat (&m_Glyphs[glyph].left, 1);
+    file.ReadFloat (&m_Glyphs[glyph].right, 1);
+    file.ReadFloat (&m_Glyphs[glyph].top, 1);
+    file.ReadFloat (&m_Glyphs[glyph].bottom, 1);
 
     m_Glyphs[glyph].left /= m_pTexture->m_nWidth;
     m_Glyphs[glyph].right /= m_pTexture->m_nWidth;
@@ -106,37 +105,56 @@ void TexFont::GetStringDimensions(int* cx, int* cy, const char* Text) const
   }
 }
 
+void TexFont::PrintText(float Left, float Top, float ScaleX, float ScaleY, const char* Text) const
+{
+	float Height = m_nFontHeight * ScaleY;
+
+  while (*Text != 0)
+  {
+    int ch = *Text;
+    glTexCoord2f(m_Glyphs[ch].left, m_Glyphs[ch].top);
+    glVertex2f(Left, Top);
+    glTexCoord2f(m_Glyphs[ch].left, m_Glyphs[ch].bottom);
+    glVertex2f(Left, Top - Height);
+    glTexCoord2f(m_Glyphs[ch].right, m_Glyphs[ch].bottom);
+    glVertex2f(Left + m_Glyphs[ch].width * ScaleX, Top - Height);
+    glTexCoord2f(m_Glyphs[ch].right, m_Glyphs[ch].top);
+    glVertex2f(Left + m_Glyphs[ch].width * ScaleX, Top);
+
+    Left += m_Glyphs[ch].width * ScaleX;
+    Text++;
+  }
+}
+
+// Old function, should probably be removed.
 void TexFont::PrintText(float Left, float Top, float Z, const char* Text) const
 {
-	float Height = m_nFontHeight;
-
-	float Verts[4][3];
-	float Coords[4][2];
-
-	glEnableClientState(GL_VERTEX_ARRAY);
-	glVertexPointer(3, GL_FLOAT, 0, Verts);
-	glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-	glTexCoordPointer(2, GL_FLOAT, 0, Coords);
-
 	while (*Text != 0)
 	{
-		int ch = *Text;
-
-		Coords[0][0] = m_Glyphs[ch].left; Coords[0][1] = m_Glyphs[ch].top;
-		Verts[0][0] = Left; Verts[0][1] = Top; Verts[0][2] = Z;
-		Coords[1][0] = m_Glyphs[ch].left; Coords[1][1] = m_Glyphs[ch].bottom;
-		Verts[1][0] = Left; Verts[1][1] = Top - Height; Verts[1][2] = Z;
-		Coords[2][0] = m_Glyphs[ch].right; Coords[2][1] = m_Glyphs[ch].top;
-		Verts[2][0] = Left + m_Glyphs[ch].width; Verts[2][1] = Top; Verts[2][2] = Z;
-		Coords[3][0] = m_Glyphs[ch].right; Coords[3][1] = m_Glyphs[ch].bottom;
-		Verts[3][0] = Left + m_Glyphs[ch].width; Verts[3][1] = Top - Height; Verts[3][2] = Z;
-
-		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	  int ch = *Text;
+		glTexCoord2f(m_Glyphs[ch].left, m_Glyphs[ch].top);
+		glVertex3f(Left, Top, Z);
+		glTexCoord2f(m_Glyphs[ch].left, m_Glyphs[ch].bottom);
+		glVertex3f(Left, Top - m_nFontHeight, Z);
+		glTexCoord2f(m_Glyphs[ch].right, m_Glyphs[ch].bottom);
+		glVertex3f(Left + m_Glyphs[ch].width, Top - m_nFontHeight, Z);
+		glTexCoord2f(m_Glyphs[ch].right, m_Glyphs[ch].top);
+		glVertex3f(Left + m_Glyphs[ch].width, Top, Z);
 
 		Left += m_Glyphs[ch].width;
 		Text++;
 	}
+}
 
-	glDisableClientState(GL_VERTEX_ARRAY);
-	glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+// Temporary function to draw the axis icon text
+void TexFont::PrintCharScaled (float scale, int ch) const
+{
+  glTexCoord2f (m_Glyphs[ch].left, m_Glyphs[ch].top);
+  glVertex2f (-scale * m_Glyphs[ch].width, scale * m_nFontHeight);
+  glTexCoord2f (m_Glyphs[ch].left, m_Glyphs[ch].bottom);
+  glVertex2f (-scale * m_Glyphs[ch].width, -scale * m_nFontHeight);
+  glTexCoord2f (m_Glyphs[ch].right, m_Glyphs[ch].bottom);
+  glVertex2f (scale * m_Glyphs[ch].width, -scale * m_nFontHeight);
+  glTexCoord2f (m_Glyphs[ch].right, m_Glyphs[ch].top);
+  glVertex2f (scale * m_Glyphs[ch].width, scale * m_nFontHeight);
 }

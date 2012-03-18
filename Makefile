@@ -9,7 +9,7 @@ CPPFLAGS += $(patsubst %,-I%,$(MODULES)) $(OS)
 CPPFLAGS += -g
 
 ### Extra libraries if required
-LIBS := 
+LIBS :=
 
 ### Each module will add to this
 SRC :=
@@ -51,10 +51,6 @@ ifeq ($(findstring $(MAKECMDGOALS), help config-help config clean veryclean), )
 endif
 
 ### Calculate C/C++ include dependencies
-%.d: %.c $(OSDIR)/config.h $(OSDIR)/config.mk
-	@$(CC) -MM -MT '$(patsubst %.d,%.o, $@)' $(CFLAGS) $(CPPFLAGS) -w $< > $@
-	@[ -s $@ ] || rm -f $@
-
 %.d: %.cpp $(OSDIR)/config.h $(OSDIR)/config.mk
 	@$(CXX) -MM -MT '$(patsubst %.d,%.o, $@)' $(CXXFLAGS) $(CPPFLAGS) -w $< > $@
 	@[ -s $@ ] || rm -f $@

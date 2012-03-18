@@ -1,23 +1,28 @@
+//
+//	group.h
+////////////////////////////////////////////////////
+
 #ifndef _GROUP_H
 #define _GROUP_H
 
-class lcFile;
+class File;
 
-class lcGroup
+class Group
 {
 public:
-	lcGroup();
-	~lcGroup();
+//	void DoSaveLoad(CArchive& ar, CCADDoc* pDoc);
+	Group();
+	~Group();
 
-	void SetGroup(lcGroup* Group);
-	void UnGroup(lcGroup* Group);
-	lcGroup* GetTopGroup();
+	void SetGroup(Group* pGroup);
+	void UnGroup(Group* pGroup);
+	Group* GetTopGroup();
 
-	lcGroup* m_Next;
-	lcGroup* m_Group;
+	Group* m_pNext;
+	Group* m_pGroup;
 
-	void FileLoad(lcFile* file);
-	void FileSave(lcFile* file, lcGroup* Groups);
+	void FileLoad(File* file);
+	void FileSave(File* file, Group* pGroups);
 
 	char m_strName[65];
 	float m_fCenter[3];

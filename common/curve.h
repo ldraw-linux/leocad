@@ -2,7 +2,8 @@
 #define _CURVE_H_
 
 #include "object.h"
-#include "lc_array.h"
+#include "opengl.h"
+#include "array.h"
 
 class Curve;
 class CurvePoint;
@@ -24,7 +25,7 @@ typedef enum
   LC_CURVE_POINT_KEY_COUNT
 } LC_CURVE_POINT_KEY_TYPES;
 
-class CurvePoint : public lcObject
+class CurvePoint : public Object
 {
  public:
   // constructors / destructor
@@ -33,11 +34,14 @@ class CurvePoint : public lcObject
   virtual ~CurvePoint ();
 
   // object functions
-  bool FileLoad (lcFile& file);
-  void FileSave (lcFile& file) const;
+  bool FileLoad (File& file);
+  void FileSave (File& file) const;
+  void MinIntersectDist (LC_CLICKLINE* pLine);
+	bool IntersectsVolume(const Vector4* Planes, int NumPlanes)
+	{ return false; }
   void UpdatePosition (unsigned short nTime, bool bAnimation);
   void Move (unsigned short nTime, bool bAnimation, bool bAddKey, float dx, float dy, float dz);
-  void Render ();
+  void Render (LC_RENDER_INFO* pInfo);
   void Select (bool bSelecting, bool bFocus, bool bMultiple);
 
   // query functions
@@ -84,7 +88,7 @@ typedef enum
   LC_CURVE_TYPE_HOSE
 } LC_CURVE_TYPE;
 
-class Curve : public lcObject
+class Curve : public Object
 {
  public:
   // constructors / destructor
@@ -93,11 +97,12 @@ class Curve : public lcObject
   virtual ~Curve ();
 
   // object functions
-  bool FileLoad (lcFile& file);
-  void FileSave (lcFile& file) const;
+  bool FileLoad (File& file);
+  void FileSave (File& file) const;
+  void MinIntersectDist (LC_CLICKLINE* pLine);
   void UpdatePosition (unsigned short nTime, bool bAnimation);
   void Move (unsigned short nTime, bool bAnimation, bool bAddKey, float dx, float dy, float dz);
-  void Render ();
+  void Render (LC_RENDER_INFO* pInfo);
   void Select (bool bSelecting, bool bFocus, bool bMultiple);
 
   // implementation
@@ -116,7 +121,7 @@ class Curve : public lcObject
 
   GLuint m_nDisplayList;
 
-  lcPtrArray<CurvePoint> m_Points;
+  PtrArray<CurvePoint> m_Points;
 };
 
 #endif // _CURVE_H_

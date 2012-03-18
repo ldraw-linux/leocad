@@ -1,7 +1,7 @@
 #ifndef _DYNSPLIT_H_
 #define _DYNSPLIT_H_
 
-class CDynamicSplitterWnd : public CSplitterWnd
+class CDynamicSplitterWnd : public CSplitterWndEx
 {
 public:
 	BOOL AttachWindow(CWnd* Wnd, int Row, int Col);

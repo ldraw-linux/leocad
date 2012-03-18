@@ -12,7 +12,6 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
-#include "lc_global.h"
 #include "system.h"
 #include "dialogs.h"
 #include "file.h"
@@ -36,7 +35,7 @@ static void openprojectdlg_select (GtkCList *clist, gint row, gint col, GdkEvent
   {
     float fv;
     char id[32];
-    lcFileDisk file;
+    FileDisk file;
     file.Open (filename, "rb");
     file.Read (id, 32);
     sscanf (strchr(id, ' '), "%f", &fv);
@@ -254,7 +253,7 @@ int saveprojectdlg_execute (char* filename)
 
 static void savepicturedlg_options (GtkWidget *widget, gpointer data)
 {
-  imageoptsdlg_execute (data, false);
+  imageoptsdlg_execute (gtk_widget_get_toplevel(widget), data, false);
 }
 
 int savepicturedlg_execute (void* param)
@@ -273,7 +272,7 @@ int savepicturedlg_execute (void* param)
   opts->imopts.pause = (float)Sys_ProfileLoadInt ("Default", "AVI Pause", 100)/100;
   opts->imopts.format = (unsigned char)(image & ~(LC_IMAGE_MASK));
 
-  dlg = gtk_file_selection_new ("Save Picture");
+  dlg = gtk_file_selection_new ("Save Picture"); // FIXME: use GtkFileChooserDialog
   gtk_window_set_transient_for (GTK_WINDOW (dlg), GTK_WINDOW (((GtkWidget*)(*main_window))));
   gtk_signal_connect (GTK_OBJECT (dlg), "delete_event",
                       GTK_SIGNAL_FUNC (dialog_delete_callback), NULL);

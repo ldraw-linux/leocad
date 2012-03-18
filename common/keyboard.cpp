@@ -2,7 +2,6 @@
 // Code to handle user-defined keyboard shortcuts.
 //
 
-#include "lc_global.h"
 #include <stdio.h>
 #include "system.h"
 #include "keyboard.h"
@@ -24,8 +23,8 @@ LC_KEYBOARD_COMMAND DefaultKeyboardShortcuts[] =
 	{ LC_FILE_HTML, "Export HTML", 0, 0, 0 },
 	{ LC_FILE_POVRAY, "Export POV-Ray", 0, 0, 0 },
 	{ LC_FILE_WAVEFRONT, "Export Wavefront", 0, 0, 0 },
-	{ LC_FILE_VRML97, "Export VRML", 0, 0, 0 },
-	{ LC_FILE_X3DV, "Export X3DV", 0, 0, 0 },
+	{ LC_FILE_PROPERTIES, "Project Properties", 0, 0, 0 },
+//	{ LC_FILE_TERRAIN, "Terrain Editor", 0, 0, 0 },
 	{ LC_FILE_LIBRARY, "Piece Library Manager", 0, 0, 0 },
 //	{ LC_FILE_RECENT, "Open Recent File", 0, 0, 0 },
 	{ LC_EDIT_UNDO, "Undo", LC_KEYMOD1_CONTROL, LC_KEY_Z, 0 },
@@ -35,13 +34,13 @@ LC_KEYBOARD_COMMAND DefaultKeyboardShortcuts[] =
 	{ LC_EDIT_PASTE, "Paste", LC_KEYMOD1_CONTROL, LC_KEY_V, 0 },
 	{ LC_EDIT_SELECT_ALL, "Select All", LC_KEYMOD1_CONTROL, LC_KEY_A, 0 },
 	{ LC_EDIT_SELECT_NONE, "Select None", 0, 0, 0 },
-	{ LC_EDIT_SELECT_INVERT, "Select Invert", LC_KEYMOD1_CONTROL, LC_KEY_I, 0 },
+	{ LC_EDIT_SELECT_INVERT, "Select Invert", 0, 0, 0 },
 	{ LC_EDIT_SELECT_BYNAME, "Select By Name", 0, 0, 0 },
-	{ LC_EDIT_SELECT_BYCOLOR, "Select By Color", 0, 0, 0 },
 	{ LC_PIECE_INSERT, "Piece Insert", 0, LC_KEY_INSERT, 0 },
 	{ LC_PIECE_DELETE, "Piece Delete", 0, LC_KEY_DELETE, 0 },
 //	{ LC_PIECE_MINIFIG, "Minifig Wizard", 0, 0, 0 },
 	{ LC_PIECE_ARRAY, "Piece Array", 0, 0, 0 },
+//	{ LC_PIECE_COPYKEYS, "", 0, 0, 0 },
 	{ LC_PIECE_GROUP, "Piece Group", LC_KEYMOD1_CONTROL, LC_KEY_G, 0 },
 	{ LC_PIECE_UNGROUP, "Piece Ungroup", LC_KEYMOD1_CONTROL, LC_KEY_U, 0 },
 	{ LC_PIECE_GROUP_ADD, "Group Add Piece", 0, 0, 0 },
@@ -52,37 +51,28 @@ LC_KEYBOARD_COMMAND DefaultKeyboardShortcuts[] =
 	{ LC_PIECE_UNHIDE_ALL, "Unhide All", 0, 0, 0 },
 	{ LC_PIECE_PREVIOUS, "Piece Previous Step", 0, 0, 0 },
 	{ LC_PIECE_NEXT, "Piece Next Step", 0, 0, 0 },
-	{ LC_PIECE_FIND_NEXT, "Find Piece", 0, LC_KEY_F3, 0 },
-	{ LC_PIECE_FIND_PREVIOUS, "Reverse Find Piece", LC_KEYMOD1_SHIFT, LC_KEY_F3, 0 },
-	{ LC_PIECE_FIND_NEXT_IN_STEP, "Find Piece in Step", LC_KEYMOD1_CONTROL, LC_KEY_F3, 0 },
-	{ LC_PIECE_FIND_PREVIOUS_IN_STEP, "Reverse Find Piece in Step", LC_KEYMOD1_SHIFT|LC_KEYMOD1_CONTROL, LC_KEY_F3, 0 },
 	{ LC_VIEW_PREFERENCES, "Preferences", 0, 0, 0 },
-	{ LC_MODEL_NEW, "New Model", 0, 0, 0 },
-	{ LC_MODEL_DELETE, "Delete Model", 0, 0, 0 },
-	{ LC_MODEL_PROPERTIES, "Model Properties", 0, 0, 0 },
 //	{ LC_VIEW_ZOOM, "", 0, 0, 0 },
 	{ LC_VIEW_ZOOMIN, "Zoom In", 0, 0, 0 },
 	{ LC_VIEW_ZOOMOUT, "Zoom Out", 0, 0, 0 },
 	{ LC_VIEW_ZOOMEXTENTS, "Zoom Extents", 0, 0, 0 },
-//	{ LC_VIEW_VIEWPORTS, "", 0, 0, 0 },
-	{ LC_VIEW_STEP_NEXT, "Step Next", LC_KEYMOD1_CONTROL, LC_KEY_ADD, 0 },
-	{ LC_VIEW_STEP_PREVIOUS, "Step Previous", LC_KEYMOD1_CONTROL, LC_KEY_SUBTRACT, 0 },
-	{ LC_VIEW_STEP_FIRST, "Step First", LC_KEYMOD1_CONTROL, LC_KEY_HOME, 0 },
-	{ LC_VIEW_STEP_LAST, "Step Last", LC_KEYMOD1_CONTROL, LC_KEY_END, 0 },
+	{ LC_VIEW_STEP_NEXT, "Step Next", 0, 0, 0 },
+	{ LC_VIEW_STEP_PREVIOUS, "Step Previous", 0, 0, 0 },
+	{ LC_VIEW_STEP_FIRST, "Step First", 0, 0, 0 },
+	{ LC_VIEW_STEP_LAST, "Step Last", 0, 0, 0 },
 //	{ LC_VIEW_STEP_CHOOSE, "", 0, 0, 0 },
 //	{ LC_VIEW_STEP_SET, "", 0, 0, 0 },
 //	{ LC_VIEW_STOP, "", 0, 0, 0 },
 //	{ LC_VIEW_PLAY, "", 0, 0, 0 },
 	{ LC_VIEW_CAMERA_FRONT, "Camera Front", LC_KEYMOD_VIEWONLY, LC_KEY_F, 0 },
-	{ LC_VIEW_CAMERA_BACK, "Camera Back", LC_KEYMOD_VIEWONLY, LC_KEY_B, 0 },
-	{ LC_VIEW_CAMERA_TOP, "Camera Top", LC_KEYMOD_VIEWONLY, LC_KEY_T, 0 },
-	{ LC_VIEW_CAMERA_BOTTOM, "Camera Bottom", LC_KEYMOD_VIEWONLY, LC_KEY_O, 0 },
-	{ LC_VIEW_CAMERA_LEFT, "Camera Left", LC_KEYMOD_VIEWONLY, LC_KEY_L, 0 },
-	{ LC_VIEW_CAMERA_RIGHT, "Camera Right", LC_KEYMOD_VIEWONLY, LC_KEY_R, 0 },
-	{ LC_VIEW_CAMERA_MAIN, "Camera Main", LC_KEYMOD_VIEWONLY, LC_KEY_M, 0 },
+	{	LC_VIEW_CAMERA_BACK, "Camera Back", LC_KEYMOD_VIEWONLY, LC_KEY_B, 0 },
+	{	LC_VIEW_CAMERA_TOP, "Camera Top", LC_KEYMOD_VIEWONLY, LC_KEY_T, 0 },
+	{	LC_VIEW_CAMERA_BOTTOM, "Camera Bottom", LC_KEYMOD_VIEWONLY, LC_KEY_U, 0 },
+	{	LC_VIEW_CAMERA_LEFT, "Camera Left", LC_KEYMOD_VIEWONLY, LC_KEY_L, 0 },
+	{	LC_VIEW_CAMERA_RIGHT, "Camera Right", LC_KEYMOD_VIEWONLY, LC_KEY_R, 0 },
+	{	LC_VIEW_CAMERA_MAIN, "Camera Main", LC_KEYMOD_VIEWONLY, LC_KEY_M, 0 },
 //	{ LC_VIEW_CAMERA_MENU, "", 0, 0, 0 },
 //	{ LC_VIEW_CAMERA_RESET, "", 0, 0, 0 },
-//	{ LC_VIEW_AUTOPAN, "", 0, 0, 0 },
 //	{ LC_HELP_ABOUT, "", 0, 0, 0 },
 //	{ LC_TOOLBAR_ANIMATION, "", 0, 0, 0 },
 //	{ LC_TOOLBAR_ADDKEYS, "", 0, 0, 0 },
@@ -111,20 +101,19 @@ LC_KEYBOARD_COMMAND DefaultKeyboardShortcuts[] =
 	{ LC_EDIT_MOVEZ_SNAP_7, "Move Z Snap 7", LC_KEYMOD1_SHIFT|LC_KEYMOD1_CONTROL, LC_KEY_7, 0 },
 	{ LC_EDIT_MOVEZ_SNAP_8, "Move Z Snap 8", LC_KEYMOD1_SHIFT|LC_KEYMOD1_CONTROL, LC_KEY_8, 0 },
 	{ LC_EDIT_MOVEZ_SNAP_9, "Move Z Snap 9", LC_KEYMOD1_SHIFT|LC_KEYMOD1_CONTROL, LC_KEY_9, 0 },
-	{ LC_EDIT_ANGLE_SNAP_0, "Angle Snap 0", LC_KEYMOD1_SHIFT, LC_KEY_0, 0 },
-	{ LC_EDIT_ANGLE_SNAP_1, "Angle Snap 1", LC_KEYMOD1_SHIFT, LC_KEY_1, 0 },
-	{ LC_EDIT_ANGLE_SNAP_2, "Angle Snap 5", LC_KEYMOD1_SHIFT, LC_KEY_2, 0 },
-	{ LC_EDIT_ANGLE_SNAP_3, "Angle Snap 10", LC_KEYMOD1_SHIFT, LC_KEY_3, 0 },
-	{ LC_EDIT_ANGLE_SNAP_4, "Angle Snap 15", LC_KEYMOD1_SHIFT, LC_KEY_4, 0 },
-	{ LC_EDIT_ANGLE_SNAP_5, "Angle Snap 30", LC_KEYMOD1_SHIFT, LC_KEY_5, 0 },
-	{ LC_EDIT_ANGLE_SNAP_6, "Angle Snap 45", LC_KEYMOD1_SHIFT, LC_KEY_6, 0 },
-	{ LC_EDIT_ANGLE_SNAP_7, "Angle Snap 60", LC_KEYMOD1_SHIFT, LC_KEY_7, 0 },
-	{ LC_EDIT_ANGLE_SNAP_8, "Angle Snap 90", LC_KEYMOD1_SHIFT, LC_KEY_8, 0 },
-	{ LC_EDIT_ANGLE_SNAP_9, "Angle Snap 180", LC_KEYMOD1_SHIFT, LC_KEY_9, 0 },
+	{ LC_EDIT_ANGLE_SNAP_0, "Angle Snap 1", LC_KEYMOD1_SHIFT, LC_KEY_0, 0 },
+	{ LC_EDIT_ANGLE_SNAP_1, "Angle Snap 5", LC_KEYMOD1_SHIFT, LC_KEY_1, 0 },
+	{ LC_EDIT_ANGLE_SNAP_2, "Angle Snap 10", LC_KEYMOD1_SHIFT, LC_KEY_2, 0 },
+	{ LC_EDIT_ANGLE_SNAP_3, "Angle Snap 15", LC_KEYMOD1_SHIFT, LC_KEY_3, 0 },
+	{ LC_EDIT_ANGLE_SNAP_4, "Angle Snap 30", LC_KEYMOD1_SHIFT, LC_KEY_4, 0 },
+	{ LC_EDIT_ANGLE_SNAP_5, "Angle Snap 45", LC_KEYMOD1_SHIFT, LC_KEY_5, 0 },
+	{ LC_EDIT_ANGLE_SNAP_6, "Angle Snap 60", LC_KEYMOD1_SHIFT, LC_KEY_6, 0 },
+	{ LC_EDIT_ANGLE_SNAP_7, "Angle Snap 90", LC_KEYMOD1_SHIFT, LC_KEY_7, 0 },
+	{ LC_EDIT_ANGLE_SNAP_8, "Angle Snap 180", LC_KEYMOD1_SHIFT, LC_KEY_8, 0 },
 	{ LC_EDIT_ACTION_SELECT, "Select Mode", 0, 0, 0 },
 	{ LC_EDIT_ACTION_INSERT, "Insert Mode", 0, 0, 0 },
-	{ LC_EDIT_ACTION_LIGHT, "Omni Light Mode", 0, 0, 0 },
-	{ LC_EDIT_ACTION_SPOTLIGHT, "Spot Light Mode", 0, 0, 0 },
+	{ LC_EDIT_ACTION_LIGHT, "Light Mode", 0, 0, 0 },
+	{ LC_EDIT_ACTION_SPOTLIGHT, "Spotlight Mode", 0, 0, 0 },
 	{ LC_EDIT_ACTION_CAMERA, "Camera Mode", 0, 0, 0 },
 	{ LC_EDIT_ACTION_MOVE, "Move Mode", LC_KEYMOD1_SHIFT, LC_KEY_M, 0 },
 	{ LC_EDIT_ACTION_ROTATE, "Rotate Mode", LC_KEYMOD1_SHIFT, LC_KEY_R, 0 },
@@ -134,7 +123,6 @@ LC_KEYBOARD_COMMAND DefaultKeyboardShortcuts[] =
 	{ LC_EDIT_ACTION_ZOOM_REGION, "Zoom Region Mode", 0, 0, 0 },
 	{ LC_EDIT_ACTION_PAN, "Pan Mode", LC_KEYMOD1_SHIFT, LC_KEY_P, 0 },
 	{ LC_EDIT_ACTION_ROTATE_VIEW, "Rotate View Mode", LC_KEYMOD1_SHIFT, LC_KEY_T, 0 },
-	{ LC_EDIT_ACTION_ORBIT, "Orbit Mode", LC_KEYMOD1_SHIFT, LC_KEY_O, 0 },
 	{ LC_EDIT_ACTION_ROLL, "Roll Camera Mode", LC_KEYMOD1_SHIFT, LC_KEY_L, 0 },
 };
 
@@ -147,7 +135,7 @@ LC_KEYBOARD_COMMAND KeyboardShortcuts[KeyboardShortcutsCount];
 
 bool SaveKeyboardShortcuts(const char* FileName)
 {
-	lcFileDisk f;
+	FileDisk f;
 
 	if (!f.Open(FileName, "wt"))
 		return false;
@@ -198,7 +186,7 @@ bool SaveKeyboardShortcuts(const char* FileName)
 
 bool LoadKeyboardShortcuts(const char* FileName)
 {
-	lcFileDisk f;
+	FileDisk f;
 	int i;
 
 	if (!f.Open(FileName, "rt"))
@@ -307,11 +295,12 @@ void InitKeyboardShortcuts()
 	LoadKeyboardShortcuts(FileName);
 }
 
-struct LC_KEYNAME_ENTRY
+typedef struct
 {
 	int Key;
 	const char* Name;
-};
+
+} LC_KEYNAME_ENTRY;
 
 static LC_KEYNAME_ENTRY KeyNames[] =
 {

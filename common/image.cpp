@@ -1,16 +1,18 @@
 // Image I/O routines
 //
 
-#include "lc_global.h"
 #include "opengl.h"
-#if LC_WINDOWS
+#ifdef LC_WINDOWS
+#include <windows.h>
 #include <windowsx.h>
+//#include <mmsystem.h>
 #include <vfw.h>
 #endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "config.h"
 #include "image.h"
 #include "file.h"
 
@@ -126,7 +128,7 @@ void Image::FromOpenGL (int width, int height)
   free (buf);
 }
 
-bool Image::FileLoad(lcFile& file)
+bool Image::FileLoad (File& file)
 {
   unsigned char buf[8];
 
@@ -144,7 +146,7 @@ bool Image::FileLoad(lcFile& file)
     return true;
   }
 
-#if LC_HAVE_JPEGLIB
+#ifdef LC_HAVE_JPEGLIB
   if ((buf[0] == 0xFF) && (buf[1] == 0xD8))
   {
     if (!LoadJPG (file))
@@ -154,7 +156,7 @@ bool Image::FileLoad(lcFile& file)
   }
 #endif
 
-#if LC_HAVE_PNGLIB
+#ifdef LC_HAVE_PNGLIB
   const unsigned char png_signature[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
 
   // Check for the PNG header
@@ -184,7 +186,7 @@ bool Image::FileLoad(lcFile& file)
 
 bool Image::FileLoad (const char* filename)
 {
-  lcFileDisk file;
+  FileDisk file;
   
   if (!file.Open (filename, "rb"))
     return false;
@@ -192,11 +194,11 @@ bool Image::FileLoad (const char* filename)
   return FileLoad (file);
 }
 
-bool Image::FileSave(lcFile& file, LC_IMAGE_OPTS* opts) const
+bool Image::FileSave (File& file, LC_IMAGE_OPTS* opts) const
 {
   switch (opts->format)
   {
-#if LC_HAVE_JPEGLIB
+#ifdef LC_HAVE_JPEGLIB
   case LC_IMAGE_JPG:
     return SaveJPG (file, opts->quality, opts->interlaced);
 #endif
@@ -207,7 +209,7 @@ bool Image::FileSave(lcFile& file, LC_IMAGE_OPTS* opts) const
   case LC_IMAGE_BMP:
     return SaveBMP (file, opts->truecolor == false);
 
-#if LC_HAVE_PNGLIB
+#ifdef LC_HAVE_PNGLIB
   case LC_IMAGE_PNG:
     return SavePNG (file, opts->transparent, opts->interlaced, opts->background);
 #endif
@@ -224,7 +226,7 @@ bool Image::FileSave(lcFile& file, LC_IMAGE_OPTS* opts) const
 bool Image::FileSave (const char* filename, LC_IMAGE_OPTS* opts) const
 {
   char name[LC_MAXPATH], ext[5], *p;
-  lcFileDisk file;
+  FileDisk file;
   bool needext = false;
 
   strcpy (name, filename);
@@ -242,7 +244,7 @@ bool Image::FileSave (const char* filename, LC_IMAGE_OPTS* opts) const
     else
     {
       strcpy (ext, p+1);
-      _strlwr (ext);
+      strlwr (ext);
 
       if (strcmp (ext, "bmp") == 0)
         opts->format = LC_IMAGE_BMP;
@@ -302,7 +304,7 @@ bool Image::FileSave (const char* filename, LC_IMAGE_OPTS* opts) const
 // =============================================================================
 // Global functions
 
-#if LC_WINDOWS
+#ifdef LC_WINDOWS
 #include "system.h"
 
 #define AVIIF_KEYFRAME	0x00000010L // this frame is a key frame.

@@ -259,30 +259,30 @@ config:
 	  $$ac_cv_sizeof_long_long)	lcint64="long long";; \
 	esac; \
 	if test "$$ac_cv_sizeof_void_p" -eq "8"; then \
-	  echo "#define LC_POINTER_TO_INT(p) ((i32)(i64)(p))" >> $(OSDIR)/config.h; \
+	  echo "#define LC_POINTER_TO_INT(p) ((lcint32)(lcint64)(p))" >> $(OSDIR)/config.h; \
 	else \
-	  echo "#define LC_POINTER_TO_INT(p) ((i32)(p))" >> $(OSDIR)/config.h; \
+	  echo "#define LC_POINTER_TO_INT(p) ((lcint32)(p))" >> $(OSDIR)/config.h; \
 	fi; \
 	echo "" >> $(OSDIR)/config.h; \
-	echo "typedef signed char i8;" >> $(OSDIR)/config.h; \
-	echo "typedef unsigned char u8;" >> $(OSDIR)/config.h; \
+	echo "typedef signed char lcint8;" >> $(OSDIR)/config.h; \
+	echo "typedef unsigned char lcuint8;" >> $(OSDIR)/config.h; \
 	if test -n "$$lcint16"; then \
-	  echo "typedef signed $$lcint16 i16;" >> $(OSDIR)/config.h; \
-	  echo "typedef unsigned $$lcint16 u16;" >> $(OSDIR)/config.h; \
+	  echo "typedef signed $$lcint16 lcint16;" >> $(OSDIR)/config.h; \
+	  echo "typedef unsigned $$lcint16 lcuint16;" >> $(OSDIR)/config.h; \
 	else \
-	  echo "#error need to define i16 and u16" >> $(OSDIR)/config.h; \
+	  echo "#error need to define lcint16 and lcuint16" >> $(OSDIR)/config.h; \
 	fi; \
 	if test -n "$$lcint32"; then \
-	echo "typedef signed $$lcint32 i32;" >> $(OSDIR)/config.h; \
-	echo "typedef unsigned $$lcint32 u32;" >> $(OSDIR)/config.h; \
+	echo "typedef signed $$lcint32 lcint32;" >> $(OSDIR)/config.h; \
+	echo "typedef unsigned $$lcint32 lcuint32;" >> $(OSDIR)/config.h; \
 	else \
-	  echo "#error need to define i32 and u32" >> $(OSDIR)/config.h; \
+	  echo "#error need to define lcint32 and lcuint32" >> $(OSDIR)/config.h; \
 	fi; \
 	if test -n "$$lcint64"; then \
-	echo "typedef signed $$lcint64 i64;" >> $(OSDIR)/config.h; \
-	echo "typedef unsigned $$lcint64 u64;" >> $(OSDIR)/config.h; \
+	echo "typedef signed $$lcint64 lcint64;" >> $(OSDIR)/config.h; \
+	echo "typedef unsigned $$lcint64 lcuint64;" >> $(OSDIR)/config.h; \
 	else \
-	  echo "#error need to define i64 and u64" >> $(OSDIR)/config.h; \
+	  echo "#error need to define lcint64 and lcuint64" >> $(OSDIR)/config.h; \
 	fi; \
 	echo "" >> $(OSDIR)/config.h
 
@@ -302,14 +302,14 @@ config:
 	else \
 	  echo "big endian"; \
 	  echo "#define LC_BIG_ENDIAN" >> $(OSDIR)/config.h; \
-	  echo "#define LCUINT16(val) ((u16) ( \\" >> $(OSDIR)/config.h; \
-	  echo "    (((u16) (val) & (u16) 0x00ffU) << 8) | \\" >> $(OSDIR)/config.h; \
-	  echo "    (((u16) (val) & (u16) 0xff00U) >> 8)))" >> $(OSDIR)/config.h; \
-	  echo "#define LCUINT32(val) ((u32) ( \\" >> $(OSDIR)/config.h; \
-	  echo "    (((u32) (val) & (u32) 0x000000ffU) << 24) | \\" >> $(OSDIR)/config.h; \
-	  echo "    (((u32) (val) & (u32) 0x0000ff00U) <<  8) | \\" >> $(OSDIR)/config.h; \
-	  echo "    (((u32) (val) & (u32) 0x00ff0000U) >>  8) | \\" >> $(OSDIR)/config.h; \
-	  echo "    (((u32) (val) & (u32) 0xff000000U) >> 24)))" >> $(OSDIR)/config.h; \
+	  echo "#define LCUINT16(val) ((lcuint16) ( \\" >> $(OSDIR)/config.h; \
+	  echo "    (((lcuint16) (val) & (lcuint16) 0x00ffU) << 8) | \\" >> $(OSDIR)/config.h; \
+	  echo "    (((lcuint16) (val) & (lcuint16) 0xff00U) >> 8)))" >> $(OSDIR)/config.h; \
+	  echo "#define LCUINT32(val) ((lcuint32) ( \\" >> $(OSDIR)/config.h; \
+	  echo "    (((lcuint32) (val) & (lcuint32) 0x000000ffU) << 24) | \\" >> $(OSDIR)/config.h; \
+	  echo "    (((lcuint32) (val) & (lcuint32) 0x0000ff00U) <<  8) | \\" >> $(OSDIR)/config.h; \
+	  echo "    (((lcuint32) (val) & (lcuint32) 0x00ff0000U) >>  8) | \\" >> $(OSDIR)/config.h; \
+	  echo "    (((lcuint32) (val) & (lcuint32) 0xff000000U) >> 24)))" >> $(OSDIR)/config.h; \
 	  echo "#define LCINT16(val) ((lcint16)LCUINT16(val))" >> $(OSDIR)/config.h; \
 	  echo "#define LCINT32(val) ((lcint32)LCUINT32(val))" >> $(OSDIR)/config.h; \
 	  echo -e "inline float LCFLOAT (float l)\n{" >> $(OSDIR)/config.h; \
@@ -359,11 +359,11 @@ endif
 	  (test -s jpegtest); then  \
 	  echo "ok"; \
 	  echo "HAVE_JPEGLIB = yes" >> $(OSDIR)/config.mk; \
-	  echo "#define LC_HAVE_JPEGLIB 1" >> $(OSDIR)/config.h; \
+	  echo "#define LC_HAVE_JPEGLIB" >> $(OSDIR)/config.h; \
 	else \
 	  echo "no (libjpeg optional)"; \
 	  echo "HAVE_JPEGLIB = no" >> $(OSDIR)/config.mk; \
-	  echo "#define LC_HAVE_JPEGLIB 0" >> $(OSDIR)/config.h; \
+	  echo "#undef LC_HAVE_JPEGLIB" >> $(OSDIR)/config.h; \
 	fi
 	@rm -f jpegtest.c jpegtest
 
@@ -375,11 +375,11 @@ endif
 	  (test -s ztest); then  \
 	  echo "ok"; \
 	  echo "HAVE_ZLIB = yes" >> $(OSDIR)/config.mk; \
-	  echo "#define LC_HAVE_ZLIB 1" >> $(OSDIR)/config.h; \
+	  echo "#define LC_HAVE_ZLIB" >> $(OSDIR)/config.h; \
 	else \
 	  echo "no (zlib optional)"; \
 	  echo "HAVE_ZLIB = no" >> $(OSDIR)/config.mk; \
-	  echo "#define LC_HAVE_ZLIB 0" >> $(OSDIR)/config.h; \
+	  echo "#undef LC_HAVE_ZLIB" >> $(OSDIR)/config.h; \
 	fi
 	@rm -f ztest.c ztest
 
@@ -391,14 +391,13 @@ endif
 	  (test -s pngtest); then  \
 	  echo "ok"; \
 	  echo "HAVE_PNGLIB = yes" >> $(OSDIR)/config.mk; \
-	  echo "#define LC_HAVE_PNGLIB 1" >> $(OSDIR)/config.h; \
+	  echo "#define LC_HAVE_PNGLIB" >> $(OSDIR)/config.h; \
 	else \
 	  echo "no (libpng optional)"; \
 	  echo "HAVE_PNGLIB = no" >> $(OSDIR)/config.mk; \
-	  echo "#define LC_HAVE_PNGLIB 0" >> $(OSDIR)/config.h; \
+	  echo "#undef LC_HAVE_PNGLIB" >> $(OSDIR)/config.h; \
 	fi
 	@rm -f pngtest.c pngtest
 
 	@echo "" >> $(OSDIR)/config.h
 	@echo "#endif // _CONFIG_H_" >> $(OSDIR)/config.h
-

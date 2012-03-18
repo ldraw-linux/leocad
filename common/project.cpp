@@ -1,15 +1,6 @@
 // Everything that is a part of a LeoCAD project goes here.
 //
 
-#include "lc_global.h"
-#include "project.h"
-
-#include "lc_application.h"
-#include "lc_model.h"
-#include "lc_mesh.h"
-#include "lc_colors.h"
-#include "preview.h"
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,6 +8,7 @@
 #include <math.h>
 #include <locale.h>
 #include "opengl.h"
+#include "vector.h"
 #include "matrix.h"
 #include "pieceinf.h"
 #include "texture.h"
@@ -24,9 +16,14 @@
 #include "camera.h"
 #include "light.h"
 #include "group.h"
+#include "terrain.h"
+#include "project.h"
 #include "image.h"
 #include "system.h"
+#include "globals.h"
 #include "minifig.h"
+#include "config.h"
+#include "message.h"
 #include "curve.h"
 #include "mainwnd.h"
 #include "view.h"
@@ -34,12 +31,17 @@
 #include "texfont.h"
 #include "algebra.h"
 #include "debug.h"
-#include "console.h"
+#include "lc_application.h"
 
-// TODO: temporary function, rewrite.
-void SystemUpdateFocus(void* p)
+// FIXME: temporary function, replace the code !!!
+void SystemUpdateFocus (void* p)
 {
-	lcPostMessage(LC_MSG_FOCUS_OBJECT_CHANGED, p);
+  messenger->Dispatch (LC_MSG_FOCUS_CHANGED, p);
+}
+
+static void ProjectListener(int Message, void* Data, void* User)
+{
+	((Project*)User)->HandleMessage(Message, Data);
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -50,26 +52,40 @@ Project::Project()
 	int i;
 
 	m_ActiveView = NULL;
-	m_ActiveModel = NULL;
-
 	m_bModified = false;
 	m_bTrackCancel = false;
 	m_nTracking = LC_TRACK_NONE;
+	m_pPieces = NULL;
+	m_pCameras = NULL;
+	m_pLights = NULL;
+	m_pGroups = NULL;
 	m_pUndoList = NULL;
 	m_pRedoList = NULL;
+	m_nGridList = 0;
 	m_pTrackFile = NULL;
 	m_nCurClipboard = 0;
 	m_nCurAction = 0;
+	m_pTerrain = new Terrain();
 	m_pBackground = new Texture();
 	m_nAutosave = Sys_ProfileLoadInt ("Settings", "Autosave", 10);
+	m_nMouse = Sys_ProfileLoadInt ("Default", "Mouse", 11);
 	strcpy(m_strModelsPath, Sys_ProfileLoadString ("Default", "Projects", ""));
+
+	if (messenger == NULL)
+		messenger = new Messenger ();
+	messenger->AddRef();
+	messenger->Listen(&ProjectListener, this);
+
+  for (i = 0; i < LC_CONNECTIONS; i++)
+	{
+		m_pConnections[i].entries = NULL;
+		m_pConnections[i].numentries = 0;
+	}
 
 	for (i = 0; i < 10; i++)
 		m_pClipboard[i] = NULL;
 
 	m_pScreenFont = new TexFont();
-
-	VRMLScale = 0.01f; // centimeter to meter
 }
 
 Project::~Project()
@@ -77,16 +93,19 @@ Project::~Project()
 	DeleteContents(false);
 	SystemFinish();
 
-	if (m_pTrackFile)
-	{
-		delete m_pTrackFile;
-		m_pTrackFile = NULL;
-	}
+  if (m_pTrackFile)
+  {
+    delete m_pTrackFile;
+    m_pTrackFile = NULL;
+  }
 
 	for (int i = 0; i < 10; i++)
 		if (m_pClipboard[i] != NULL)
 			delete m_pClipboard[i];
 
+  messenger->DecRef ();
+
+	delete m_pTerrain;
 	delete m_pBackground;
 	delete m_pScreenFont;
 }
@@ -106,22 +125,27 @@ void Project::UpdateInterface()
 
 	SystemUpdateFocus(NULL);
 	SetAction(m_nCurAction);
-	SystemUpdateColorList(g_App->m_SelectedColor);
-	SystemUpdateAnimation(m_Animation, m_bAddKeys);
+//	SystemUpdateViewport(m_nViewportMode, 0);
+	SystemUpdateColorList(m_nCurColor);
+	SystemUpdateAnimation(m_bAnimation, m_bAddKeys);
 	SystemUpdateRenderingMode((m_nDetail & LC_DET_FAST) != 0);
 	SystemUpdateSnap(m_nSnap);
 	SystemUpdateSnap(m_nMoveSnap, m_nAngleSnap);
-	SystemUpdateCameraMenu(m_ActiveModel->m_Cameras);
-	SystemUpdateCurrentCamera(NULL, m_ActiveView->GetCamera1(), m_ActiveModel->m_Cameras);
+	SystemUpdateCameraMenu(m_pCameras);
+	SystemUpdateCurrentCamera(NULL, m_ActiveView ? m_ActiveView->m_Camera : NULL, m_pCameras);
 	UpdateSelection();
-	SystemUpdateTime(m_Animation, m_ActiveModel->m_CurFrame, m_Animation ? m_ActiveModel->m_TotalFrames : LC_OBJECT_TIME_MAX);
-	SystemUpdateModelMenu(m_ModelList, m_ActiveModel);
+	if (m_bAnimation)
+		SystemUpdateTime(m_bAnimation, m_nCurFrame, m_nTotalFrames);
+	else
+		SystemUpdateTime(m_bAnimation, m_nCurStep, 255);
 
 	for (int i = 0; i < m_ViewList.GetSize(); i++)
 	{
 		m_ViewList[i]->MakeCurrent();
 		RenderInitialize();
 	}
+
+	UpdateSelection();
 }
 
 void Project::SetTitle(const char* lpszTitle)
@@ -137,7 +161,7 @@ void Project::SetTitle(const char* lpszTitle)
 	{
 		strncpy(ext, ptr+1, 3);
 		ext[3] = 0;
-		_strlwr(ext);
+		strlwr(ext);
 
 		if (strcmp(ext, "lcd") == 0)
 			*ptr = 0;
@@ -156,6 +180,11 @@ void Project::SetTitle(const char* lpszTitle)
 
 void Project::DeleteContents(bool bUndo)
 {
+	Piece* pPiece;
+	Camera* pCamera;
+	Light* pLight;
+	Group* pGroup;
+
 	memset(m_strAuthor, 0, sizeof(m_strAuthor));
 	memset(m_strDescription, 0, sizeof(m_strDescription));
 	memset(m_strComments, 0, sizeof(m_strComments));
@@ -182,21 +211,47 @@ void Project::DeleteContents(bool bUndo)
 		m_pUndoList = NULL;
 
 		m_pBackground->Unload();
+		m_pTerrain->LoadDefaults(true);
 	}
 
-	for (int i = 0; i < m_ViewList.GetSize(); i++)
-		m_ViewList[i]->SetCamera1(NULL);
+	while (m_pPieces)
+	{
+		pPiece = m_pPieces;
+		m_pPieces = m_pPieces->m_pNext;
+		delete pPiece;
+	}
 
-	// Remove all submodels.
-	for (int i = 0; i < m_ModelList.GetSize(); i++)
-		m_ModelList[i]->DeleteContents();
+	for (int i = 0; i < LC_CONNECTIONS; i++)
+	{
+		for (int j = 0; j < m_pConnections[i].numentries; j++)
+			delete (m_pConnections[i].entries[j].cons);
 
-	for (int i = 0; i < m_ModelList.GetSize(); i++)
-		delete m_ModelList[i];
-	m_ModelList.RemoveAll();
+		delete m_pConnections[i].entries;
+		m_pConnections[i].entries = NULL;
+		m_pConnections[i].numentries = 0;
+	}
 
-	m_ActiveModel = NULL;
-	SystemUpdateModelMenu(m_ModelList, m_ActiveModel);
+	while (m_pCameras)
+	{
+		pCamera = m_pCameras;
+		m_pCameras = m_pCameras->m_pNext;
+		delete pCamera;
+	}
+
+	while (m_pLights)
+	{
+		pLight = m_pLights;
+		m_pLights = m_pLights->m_pNext;
+		delete pLight;
+	}
+
+	while (m_pGroups)
+	{
+		pGroup = m_pGroups;
+		m_pGroups = m_pGroups->m_pNext;
+		delete pGroup;
+	}
+
 
 /*
 	if (!m_strTempFile.IsEmpty())
@@ -214,12 +269,14 @@ void Project::LoadDefaults(bool cameras)
 	unsigned long rgb;
 
 	// Default values
+//	SystemUpdateViewport(0, m_nViewportMode);
+//	m_nViewportMode = 0;
 	SetAction(0);
-	g_App->m_SelectedColor = lcConvertLDrawColor(4);
-	SystemUpdateColorList(g_App->m_SelectedColor);
-	m_Animation = false;
+	m_nCurColor = 0;
+	SystemUpdateColorList(m_nCurColor);
+	m_bAnimation = false;
 	m_bAddKeys = false;
-	SystemUpdateAnimation(m_Animation, m_bAddKeys);
+	SystemUpdateAnimation(m_bAnimation, m_bAddKeys);
 	m_bUndoOriginal = true;
 	SystemUpdateUndoRedo(NULL, NULL);
 	m_nDetail = Sys_ProfileLoadInt ("Default", "Detail", LC_DET_BRICKEDGES);
@@ -236,6 +293,7 @@ void Project::LoadDefaults(bool cameras)
 	m_fFogColor[1] = (float)((unsigned char) (((unsigned short) (rgb)) >> 8))/255;
 	m_fFogColor[2] = (float)((unsigned char) ((rgb) >> 16))/255;
 	m_fFogColor[3] = 1.0f;
+	m_nGridSize = (unsigned short)Sys_ProfileLoadInt ("Default", "Grid", 20);
 	rgb = Sys_ProfileLoadInt ("Default", "Ambient", 0x4B4B4B);
 	m_fAmbient[0] = (float)((unsigned char) (rgb))/255;
 	m_fAmbient[1] = (float)((unsigned char) (((unsigned short) (rgb)) >> 8))/255;
@@ -255,385 +313,416 @@ void Project::LoadDefaults(bool cameras)
 	m_fGradient2[1] = (float)((unsigned char) (((unsigned short) (rgb)) >> 8))/255;
 	m_fGradient2[2] = (float)((unsigned char) ((rgb) >> 16))/255;
 	m_nFPS = Sys_ProfileLoadInt ("Default", "FPS", 24);
+	m_nCurStep = 1;
+	m_nCurFrame = 1;
+	m_nTotalFrames = 100;
+	SystemUpdateTime(false, 1, 255);
 	m_nScene = Sys_ProfileLoadInt ("Default", "Scene", 0);
 	m_nSaveTimer = 0;
 	strcpy(m_strHeader, Sys_ProfileLoadString ("Default", "Header", ""));
 	strcpy(m_strFooter, Sys_ProfileLoadString ("Default", "Footer", "Page &P"));
 	strcpy(m_strBackground, Sys_ProfileLoadString ("Default", "BMP", ""));
+	m_pTerrain->LoadDefaults(true);
 	m_OverlayActive = false;
-	m_PlayingAnimation = false;
 
 	for (i = 0; i < m_ViewList.GetSize (); i++)
 	{
-		m_ViewList[i]->MakeCurrent();
+		m_ViewList[i]->MakeCurrent ();
 		RenderInitialize();
 	}
 
 	if (cameras)
 	{
-		lcModel* Model = new lcModel();
-		Model->SetName("Main");
-		m_ModelList.Add(Model);
-		SetActiveModel(Model);
-
-		m_ActiveModel->ResetCameras();
-
-		for (int i = 0; i < m_ViewList.GetSize(); i++)
-			m_ViewList[i]->UpdateCamera();
-
-		SystemUpdateCameraMenu(m_ActiveModel->m_Cameras);
+		Camera* pCam;
+		for (pCam = NULL, i = 0; i < 7; i++)
+		{
+			pCam = new Camera(i, pCam);
+			if (m_pCameras == NULL)
+				m_pCameras = pCam;
+		}
+		for (i = 0; i < m_ViewList.GetSize (); i++)
+			m_ViewList[i]->m_Camera = pCam;
+		SystemUpdateCameraMenu(m_pCameras);
 		if (m_ActiveView)
-			SystemUpdateCurrentCamera(NULL, m_ActiveView->GetCamera1(), m_ActiveModel->m_Cameras);
+			SystemUpdateCurrentCamera(NULL, m_ActiveView->m_Camera, m_pCameras);
 	}
-
 	SystemPieceComboAdd(NULL);
+	UpdateSelection();
 }
 
 /////////////////////////////////////////////////////////////////////////////
 // Standard file menu commands
 
-static u32 LC_FILE_VERSION = 0x0076;
-
 // Read a .lcd file
-bool Project::FileLoad(lcFile* file, bool bUndo, bool bMerge)
+bool Project::FileLoad(File* file, bool bUndo, bool bMerge)
 {
 	int i, count;
-	char fid[32];
+	char id[32];
+	unsigned long rgb;
 	float fv = 0.4f;
-	u32 Version = 0;
-	u16 sh;
-	u8 ch;
+	unsigned char ch, action = m_nCurAction;
+	unsigned short sh;
 
 	file->Seek(0, SEEK_SET);
-	file->Read(fid, 32);
-	sscanf(&fid[7], "%f", &fv);
+	file->Read(id, 32);
+	sscanf(&id[7], "%f", &fv);
 
-	// Fix floating point reading on computers with different decimal separators.
+	// Fix the ugly floating point reading on computers with different decimal points.
 	if (fv == 0.0f)
 	{
 		lconv *loc = localeconv();
-		fid[8] = loc->decimal_point[0];
-		sscanf(&fid[7], "%f", &fv);
+		id[8] = loc->decimal_point[0];
+		sscanf(&id[7], "%f", &fv);
 
 		if (fv == 0.0f)
 			return false;
 	}
 
 	if (fv > 0.4f)
-		file->ReadFloats(&fv, 1);
+		file->ReadFloat (&fv, 1);
 
-	if (fv > 1.4f)
-		file->ReadInts(&Version, 1);
-
-	if (Version > LC_FILE_VERSION)
-		return false;
-
-	if (Version < 0x0076)
+	file->ReadLong (&rgb, 1);
+	if (!bMerge)
 	{
-		u32 rgb;
-		file->ReadInts(&rgb, 1);
+		m_fBackground[0] = (float)((unsigned char) (rgb))/255;
+		m_fBackground[1] = (float)((unsigned char) (((unsigned short) (rgb)) >> 8))/255;
+		m_fBackground[2] = (float)((unsigned char) ((rgb) >> 16))/255;
+	}
 
-		if (!bMerge)
+	if (fv < 0.6f) // old view
+	{
+		Camera* pCam;
+		for (pCam = NULL, i = 0; i < 7; i++)
 		{
-			m_fBackground[0] = (float)((rgb & 0x0000ff) >> 0) / 255;
-			m_fBackground[1] = (float)((rgb & 0x00ff00) >> 8) / 255;
-			m_fBackground[2] = (float)((rgb & 0xff0000) >> 16) / 255;
+			pCam = new Camera(i, pCam);
+			if (m_pCameras == NULL)
+				m_pCameras = pCam;
+
+//			switch (i) 
+//			{
+//			case LC_CAMERA_MAIN:  m_pViewCameras[0] = pCam; break;
+//			case LC_CAMERA_FRONT: m_pViewCameras[1] = pCam; break;
+//			case LC_CAMERA_TOP:   m_pViewCameras[2] = pCam; break;
+//			case LC_CAMERA_RIGHT: m_pViewCameras[3] = pCam; break;
+//			}
 		}
 
-		if (fv < 0.6f)
-		{
-			// Old view format, ignore it.
-			m_ActiveModel->ResetCameras();
+		double eye[3], target[3];
+		file->ReadDouble (&eye, 3);
+		file->ReadDouble (&target, 3);
+		float tmp[3] = { (float)eye[0], (float)eye[1], (float)eye[2] };
+		pCam->ChangeKey(1, false, false, tmp, LC_CK_EYE);
+		pCam->ChangeKey(1, true, false, tmp, LC_CK_EYE);
+		tmp[0] = (float)target[0]; tmp[1] = (float)target[1]; tmp[2] = (float)target[2];
+		pCam->ChangeKey(1, false, false, tmp, LC_CK_TARGET);
+		pCam->ChangeKey(1, true, false, tmp, LC_CK_TARGET);
 
-			for (int i = 0; i < m_ViewList.GetSize(); i++)
-				m_ViewList[i]->UpdateCamera();
-
-			file->Seek(48, SEEK_SET); // eye, target
-		}
+		// Create up vector
+		Vector upvec(0,0,1), frontvec((float)(eye[0]-target[0]), (float)(eye[1]-target[1]), (float)(eye[2]-target[2])), sidevec;
+		frontvec.Normalize();
+		if (frontvec == upvec)
+			sidevec = Vector(1,0,0);
+		else
+			sidevec.Cross(frontvec, upvec);
+		upvec.Cross(sidevec, frontvec);
+		upvec.Normalize();
+		upvec.ToFloat(tmp);
+		pCam->ChangeKey(1, false, false, tmp, LC_CK_UP);
+		pCam->ChangeKey(1, true, false, tmp, LC_CK_UP);
 	}
 
 	if (bMerge)
-		file->Seek(16, SEEK_CUR);
+		file->Seek(32, SEEK_CUR);
 	else
 	{
-		file->ReadInts(&i, 1); m_nAngleSnap = i;
-		file->ReadInts(&m_nSnap, 1);
-		file->ReadFloats(&m_fLineWidth, 1);
-		file->ReadInts(&m_nDetail, 1);
+		file->ReadLong (&i, 1); m_nAngleSnap = i;
+		file->ReadLong (&m_nSnap, 1);
+		file->ReadFloat (&m_fLineWidth, 1);
+		file->ReadLong (&m_nDetail, 1);
+		file->ReadLong (&i, 1); //m_nCurGroup = i;
+		file->ReadLong (&i, 1); m_nCurColor = i;
+		file->ReadLong (&i, 1); action = i;
+		file->ReadLong (&i, 1); m_nCurStep = i;
 	}
 
-	if (Version < 0x0076)
-		file->Seek(16, SEEK_SET); // m_nCurGroup, m_nCurColor, m_nCurAction, m_CurFrame
-
 	if (fv > 0.8f)
-		file->ReadInts(&m_nScene, 1);
+		file->ReadLong (&m_nScene, 1);
 
-	int NumModels = 1;
-	if (Version > 0x0075)
-		file->ReadInts(&NumModels, 1);
+	file->ReadLong (&count, 1);
+	SystemStartProgressBar(0, count, 1, "Loading project...");
 
-	for (int ModelIndex = 0; ModelIndex < NumModels; i++)
-	{
-		lcModel* Model = new lcModel();
-		m_ModelList.Add(Model);
-		m_ActiveModel = Model;
-
-		file->ReadInts(&count, 1);
-		SystemStartProgressBar(0, count, 1, "Loading model...");
-
-		while (count--)
-		{	
-			if (fv > 0.4f)
-			{
-				char name[9];
-				lcPiece* Piece = new lcPiece(NULL);
-				Piece->FileLoad(*file, name);
-				PieceInfo* pInfo = lcGetPiecesLibrary()->FindPieceInfo(name);
-				if (pInfo)
-				{
-					Piece->SetPieceInfo(pInfo);
-
-					if (bMerge)
-					{
-						for (lcPiece* p = m_ActiveModel->m_Pieces; p; p = (lcPiece*)p->m_Next)
-							if (p->m_Name == Piece->m_Name)
-							{
-								Piece->SetUniqueName(m_ActiveModel->m_Pieces, pInfo->m_strDescription);
-								break;
-							}
-					}
-
-					if (Piece->m_Name.GetLength() == 0)
-						Piece->SetUniqueName(m_ActiveModel->m_Pieces, pInfo->m_strDescription);
-
-					m_ActiveModel->AddPiece(Piece);
-					if (!bUndo)
-						SystemPieceComboAdd(pInfo->m_strDescription);
-				}
-				else 
-					delete Piece; // TODO: create a dummy piece instead.
-			}
-			else
-			{
-				char name[9];
-				float pos[3], rot[3], param[4];
-				unsigned char color, step, group;
-			
-				file->ReadFloats(pos, 3);
-				file->ReadFloats(rot, 3);
-				file->ReadBytes(&color, 1);
-				file->Read(name, sizeof(name));
-				file->ReadBytes(&step, 1);
-				file->ReadBytes(&group, 1);
-
-				// Convert from the old colors to 0.75 and then to LDraw.
-				const int conv[20] = { 0,2,4,9,7,6,22,8,10,11,14,16,18,9,21,20,22,8,10,11 };
-				color = conv[color];
-				const int ColorTable[28] = { 4,25,2,10,1,9,14,15,8,0,6,13,13,334,36,44,34,42,33,41,46,47,7,382,6,13,11,383 };
-				color = lcConvertLDrawColor(ColorTable[color]);
-
-				PieceInfo* Info = lcGetPiecesLibrary()->FindPieceInfo(name);
-				if (Info != NULL)
-				{
-					lcPiece* Piece = new lcPiece(Info);
-					Matrix mat;
-
-					Piece->Initialize(pos[0], pos[1], pos[2], step, color);
-					Piece->SetUniqueName(m_ActiveModel->m_Pieces, Info->m_strDescription);
-					m_ActiveModel->AddPiece(Piece);
-					mat.CreateOld(0,0,0, rot[0],rot[1],rot[2]);
-					mat.ToAxisAngle(param);
-					Piece->ChangeKey(1, false, param, LC_PK_ROTATION);
-//					Piece->SetGroup((Group*)group);
-					SystemPieceComboAdd(Info->m_strDescription);
-				}
-			}
-			SystemStepProgressBar();
-		}
-		SystemEndProgressBar();
-
-		if (!bMerge)
+	while (count--)
+	{	
+		if (fv > 0.4f)
 		{
-			if (fv >= 0.4f)
+			char name[LC_PIECE_NAME_LEN];
+			Piece* pPiece = new Piece(NULL);
+			pPiece->FileLoad(*file, name);
+			PieceInfo* pInfo = lcGetPiecesLibrary()->FindPieceInfo(name);
+			if (pInfo)
 			{
-				file->Read(&ch, 1);
-				if (ch == 0xFF) file->ReadShorts(&sh, 1); else sh = ch;
-				if (sh > 100)
-					file->Seek(sh, SEEK_CUR);
-				else
-					file->Read(m_strAuthor, sh);
+				pPiece->SetPieceInfo(pInfo);
 
-				file->Read(&ch, 1);
-				if (ch == 0xFF) file->ReadShorts(&sh, 1); else sh = ch;
-				if (sh > 100)
-					file->Seek(sh, SEEK_CUR);
-				else
-					file->Read(m_strDescription, sh);
+				if (bMerge)
+					for (Piece* p = m_pPieces; p; p = p->m_pNext)
+						if (strcmp(p->GetName(), pPiece->GetName()) == 0)
+						{
+							pPiece->CreateName(m_pPieces);
+							break;
+						}
 
-				file->Read(&ch, 1);
-				if (ch == 0xFF && fv < 1.3f) file->ReadShorts(&sh, 1); else sh = ch;
-				if (sh > 255)
-					file->Seek(sh, SEEK_CUR);
-				else
-					file->Read(m_strComments, sh);
+				if (strlen(pPiece->GetName()) == 0)
+					pPiece->CreateName(m_pPieces);
+
+				AddPiece(pPiece);
+				if (!bUndo)
+					SystemPieceComboAdd(pInfo->m_strDescription);
 			}
+			else 
+				delete pPiece;
 		}
 		else
 		{
-			if (fv >= 0.4f)
+			char name[LC_PIECE_NAME_LEN];
+			float pos[3], rot[3], param[4];
+			unsigned char color, step, group;
+		
+			file->ReadFloat (pos, 3);
+			file->ReadFloat (rot, 3);
+			file->ReadByte (&color, 1);
+			file->Read(name, sizeof(name));
+			file->ReadByte (&step, 1);
+			file->ReadByte (&group, 1);
+
+			const unsigned char conv[20] = { 0,2,4,9,7,6,22,8,10,11,14,16,18,9,21,20,22,8,10,11 };
+			color = conv[color];
+
+			PieceInfo* pInfo = lcGetPiecesLibrary()->FindPieceInfo(name);
+			if (pInfo != NULL)
 			{
-				file->Read (&ch, 1);
-				if (ch == 0xFF) file->ReadShorts(&sh, 1); else sh = ch;
-				file->Seek(sh, SEEK_CUR);
+				Piece* pPiece = new Piece(pInfo);
+				Matrix mat;
 
-				file->Read(&ch, 1);
-				if (ch == 0xFF) file->ReadShorts(&sh, 1); else sh = ch;
-				file->Seek(sh, SEEK_CUR);
-
-				file->Read(&ch, 1);
-				if (ch == 0xFF && fv < 1.3f) file->ReadShorts(&sh, 1); else sh = ch;
-				file->Seek(sh, SEEK_CUR);
+				pPiece->Initialize(pos[0], pos[1], pos[2], step, 1, color);
+				pPiece->CreateName(m_pPieces);
+				AddPiece(pPiece);
+				mat.CreateOld(0,0,0, rot[0],rot[1],rot[2]);
+				mat.ToAxisAngle(param);
+				pPiece->ChangeKey(1, false, false, param, LC_PK_ROTATION);
+				pPiece->ChangeKey(1, true, false, param, LC_PK_ROTATION);
+//				pPiece->SetGroup((Group*)group);
+				SystemPieceComboAdd(pInfo->m_strDescription);
 			}
 		}
+		SytemStepProgressBar();
+	}
+	SytemEndProgressBar();
 
-		if (fv >= 0.5f)
+	if (!bMerge)
+	{
+		if (fv >= 0.4f)
 		{
-			file->ReadInts(&count, 1);
+			file->Read(&ch, 1);
+			if (ch == 0xFF) file->ReadShort (&sh, 1); else sh = ch;
+			if (sh > 100)
+				file->Seek(sh, SEEK_CUR);
+			else
+				file->Read(m_strAuthor, sh);
 
-			lcGroup* pGroup;
-			lcGroup* pLastGroup = NULL;
-			for (pGroup = m_ActiveModel->m_Groups; pGroup; pGroup = pGroup->m_Next)
-				pLastGroup = pGroup;
+			file->Read(&ch, 1);
+			if (ch == 0xFF) file->ReadShort (&sh, 1); else sh = ch;
+			if (sh > 100)
+				file->Seek(sh, SEEK_CUR);
+			else
+				file->Read(m_strDescription, sh);
 
-			pGroup = pLastGroup;
-			for (i = 0; i < count; i++)
-			{
-				if (pGroup)
-				{
-					pGroup->m_Next = new lcGroup();
-					pGroup = pGroup->m_Next;
-				}
-				else
-					m_ActiveModel->m_Groups = pGroup = new lcGroup();
-			}
-			pLastGroup = pLastGroup ? pLastGroup->m_Next : m_ActiveModel->m_Groups;
-
-			for (pGroup = pLastGroup; pGroup; pGroup = pGroup->m_Next)
-			{
-				if (fv < 1.0f)
-				{
-					file->Read(pGroup->m_strName, 65);
-					file->Read(&ch, 1);
-					pGroup->m_fCenter[0] = 0;
-					pGroup->m_fCenter[1] = 0;
-					pGroup->m_fCenter[2] = 0;
-					pGroup->m_Group = (lcGroup*)-1;
-				}
-				else
-					pGroup->FileLoad(file);
-			}
-
-			for (pGroup = pLastGroup; pGroup; pGroup = pGroup->m_Next)
-			{
-				i = LC_POINTER_TO_INT(pGroup->m_Group);
-				pGroup->m_Group = NULL;
-
-				if (i > 0xFFFF || i == -1)
-					continue;
-
-				for (lcGroup* g2 = pLastGroup; g2; g2 = g2->m_Next)
-				{
-					if (i == 0)
-					{
-						pGroup->m_Group = g2;
-						break;
-					}
-
-					i--;
-				}
-			}
-
-			lcPiece* Piece;
-			for (Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-			{
-				i = LC_POINTER_TO_INT(Piece->GetGroup());
-				Piece->SetGroup(NULL);
-
-				if (i > 0xFFFF || i == -1)
-					continue;
-
-				for (pGroup = pLastGroup; pGroup; pGroup = pGroup->m_Next)
-				{
-					if (i == 0)
-					{
-						Piece->SetGroup(pGroup);
-						break;
-					}
-
-					i--;
-				}
-			}
-
-			RemoveEmptyGroups();
+			file->Read(&ch, 1);
+			if (ch == 0xFF && fv < 1.3f) file->ReadShort (&sh, 1); else sh = ch;
+			if (sh > 255)
+				file->Seek(sh, SEEK_CUR);
+			else
+				file->Read(m_strComments, sh);
 		}
+	}
+	else
+	{
+		if (fv >= 0.4f)
+		{
+			file->Read (&ch, 1);
+			if (ch == 0xFF) file->ReadShort (&sh, 1); else sh = ch;
+			file->Seek (sh, SEEK_CUR);
 
-		if (fv >= 0.6f && Version < 0x0076)
+			file->Read (&ch, 1);
+			if (ch == 0xFF) file->ReadShort (&sh, 1); else sh = ch;
+			file->Seek (sh, SEEK_CUR);
+
+			file->Read (&ch, 1);
+			if (ch == 0xFF && fv < 1.3f) file->ReadShort (&sh, 1); else sh = ch;
+			file->Seek (sh, SEEK_CUR);
+		}
+	}
+
+	if (fv >= 0.5f)
+	{
+		file->ReadLong (&count, 1);
+
+		Group* pGroup;
+		Group* pLastGroup = NULL;
+		for (pGroup = m_pGroups; pGroup; pGroup = pGroup->m_pNext)
+			pLastGroup = pGroup;
+
+		pGroup = pLastGroup;
+		for (i = 0; i < count; i++)
+		{
+			if (pGroup)
+			{
+				pGroup->m_pNext = new Group();
+				pGroup = pGroup->m_pNext;
+			}
+			else
+				m_pGroups = pGroup = new Group();
+		}
+		pLastGroup = pLastGroup ? pLastGroup->m_pNext : m_pGroups;
+
+		for (pGroup = pLastGroup; pGroup; pGroup = pGroup->m_pNext)
 		{
 			if (fv < 1.0f)
-				file->Seek(4, SEEK_CUR); // m_nViewportMode
+			{
+				file->Read(pGroup->m_strName, 65);
+				file->Read(&ch, 1);
+				pGroup->m_fCenter[0] = 0;
+				pGroup->m_fCenter[1] = 0;
+				pGroup->m_fCenter[2] = 0;
+				pGroup->m_pGroup = (Group*)-1;
+			}
 			else
-				file->Seek(2, SEEK_CUR); // m_nViewportMode, m_nActiveViewport 
+				pGroup->FileLoad(file);
 		}
 
+		for (pGroup = pLastGroup; pGroup; pGroup = pGroup->m_pNext)
+		{
+			i = LC_POINTER_TO_INT(pGroup->m_pGroup);
+			pGroup->m_pGroup = NULL;
+
+			if (i > 0xFFFF || i == -1)
+				continue;
+
+			for (Group* g2 = pLastGroup; g2; g2 = g2->m_pNext)
+			{
+				if (i == 0)
+				{
+					pGroup->m_pGroup = g2;
+					break;
+				}
+
+				i--;
+			}
+		}
+
+
+		Piece* pPiece;
+		for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+		{
+			i = LC_POINTER_TO_INT(pPiece->GetGroup());
+			pPiece->SetGroup(NULL);
+
+			if (i > 0xFFFF || i == -1)
+				continue;
+
+			for (pGroup = pLastGroup; pGroup; pGroup = pGroup->m_pNext)
+			{
+				if (i == 0)
+				{
+					pPiece->SetGroup(pGroup);
+					break;
+				}
+
+				i--;
+			}
+		}
+
+		RemoveEmptyGroups();
+	}
+
+	if (!bMerge)
+	{
 		if (fv >= 0.6f)
 		{
-			file->ReadInts(&count, 1);
-			lcCamera* pCam = NULL;
+			if (fv < 1.0f)
+			{
+				int ViewportMode;
+				file->ReadLong(&ViewportMode, 1);
+			}
+			else
+			{
+				lcuint8 ViewportMode, ActiveViewport;
+				file->ReadByte(&ViewportMode, 1);
+				file->ReadByte(&ActiveViewport, 1);
+			}
+
+			file->ReadLong (&count, 1);
+			Camera* pCam = NULL;
 			for (i = 0; i < count; i++)
 			{
-				pCam = new lcCamera();
-				m_ActiveModel->AddCamera(pCam);
-				pCam->FileLoad(*file);
+				pCam = new Camera(i, pCam);
+				if (m_pCameras == NULL)
+					m_pCameras = pCam;
+
+//				if (i < 4 && fv == 0.6f)
+//					m_pViewCameras[i] = pCam;
 			}
 
 			if (count < 7)
-				m_ActiveModel->ResetCameras();
+			{
+				pCam = new Camera(0, NULL);
+				for (i = 0; i < count; i++)
+					pCam->FileLoad(*file);
+				delete pCam;
+			}
+			else
+				for (pCam = m_pCameras; pCam; pCam = pCam->m_pNext)
+					pCam->FileLoad(*file);
 		}
 
 		if (fv >= 0.7f)
 		{
-			if (Version < 0x0076)
-				file->Seek(16, SEEK_SET); // view camera index.
+			for (count = 0; count < 4; count++)
+			{
+				file->ReadLong (&i, 1);
 
-			u32 rgb;
-			file->ReadInts(&rgb, 1);
+				Camera* pCam = m_pCameras;
+				while (i--)
+					pCam = pCam->m_pNext;
+//				m_pViewCameras[count] = pCam;
+			}
 
-			m_fFogColor[0] = (float)((rgb & 0x0000ff) >> 0) / 255;
-			m_fFogColor[1] = (float)((rgb & 0x00ff00) >> 8) / 255;
-			m_fFogColor[2] = (float)((rgb & 0xff0000) >> 16) / 255;
+			file->ReadLong (&rgb, 1);
+			m_fFogColor[0] = (float)((unsigned char) (rgb))/255;
+			m_fFogColor[1] = (float)((unsigned char) (((unsigned short) (rgb)) >> 8))/255;
+			m_fFogColor[2] = (float)((unsigned char) ((rgb) >> 16))/255;
 
 			if (fv < 1.0f)
 			{
-				file->ReadInts(&rgb, 1);
+				file->ReadLong (&rgb, 1);
 				m_fFogDensity = (float)rgb/100;
 			}
 			else
-				file->ReadFloats(&m_fFogDensity, 1);
+				file->ReadFloat (&m_fFogDensity, 1);
 
 			if (fv < 1.3f)
 			{
-				file->ReadBytes(&ch, 1);
+				file->ReadByte (&ch, 1);
 				if (ch == 0xFF)
-					file->ReadShorts(&sh, 1);
+					file->ReadShort (&sh, 1);
 				sh = ch;
 			}
 			else
-				file->ReadShorts(&sh, 1);
+				file->ReadShort (&sh, 1);
 
 			if (sh < LC_MAXPATH)
-				file->Read(m_strBackground, sh); // TODO: make background be part of the model.
+				file->Read (m_strBackground, sh);
 			else
-				file->Seek(sh, SEEK_CUR);
+				file->Seek (sh, SEEK_CUR);
 		}
 
 		if (fv >= 0.8f)
@@ -646,104 +735,65 @@ bool Project::FileLoad(lcFile* file, bool bUndo, bool bMerge)
 
 		if (fv > 0.9f)
 		{
-			u32 rgb;
-			file->ReadInts(&rgb, 1);
-
-			m_fAmbient[0] = (float)((rgb & 0x0000ff) >> 0) / 255;
-			m_fAmbient[1] = (float)((rgb & 0x00ff00) >> 8) / 255;
-			m_fAmbient[2] = (float)((rgb & 0xff0000) >> 16) / 255;
+			file->ReadLong (&rgb, 1);
+			m_fAmbient[0] = (float)((unsigned char) (rgb))/255;
+			m_fAmbient[1] = (float)((unsigned char) (((unsigned short) (rgb)) >> 8))/255;
+			m_fAmbient[2] = (float)((unsigned char) ((rgb) >> 16))/255;
 
 			if (fv < 1.3f)
 			{
-				file->ReadInts(&i, 1); m_Animation = (i != 0);
-				file->ReadInts(&i, 1); m_bAddKeys = (i != 0);
-				file->ReadBytes(&m_nFPS, 1);
-				file->ReadInts(&i, 1); // m_nCurFrame = i;
-				file->ReadShorts(&sh, 1); m_ActiveModel->m_TotalFrames = sh;
-				file->ReadInts(&i, 1); // m_nGridSize = i;
-				file->ReadInts(&i, 1); // m_nMoveSnap = i;
+				file->ReadLong (&i, 1); m_bAnimation = (i != 0);
+				file->ReadLong (&i, 1); m_bAddKeys = (i != 0);
+				file->ReadByte (&m_nFPS, 1);
+				file->ReadLong (&i, 1); m_nCurFrame = i;
+				file->ReadShort (&m_nTotalFrames, 1);
+				file->ReadLong (&i, 1); m_nGridSize = i;
+				file->ReadLong (&i, 1); //m_nMoveSnap = i;
 			}
 			else
 			{
-				file->ReadBytes(&ch, 1); m_Animation = (ch != 0);
-				file->ReadBytes(&ch, 1); m_bAddKeys = (ch != 0);
-				file->ReadBytes(&m_nFPS, 1);
-				file->ReadShorts(&sh, 1); // m_nCurFrame
-				file->ReadShorts(&sh, 1); m_ActiveModel->m_TotalFrames = sh;
-				file->ReadShorts(&sh, 1); // m_nGridSize
-				file->ReadShorts(&sh, 1);
+				file->ReadByte (&ch, 1); m_bAnimation = (ch != 0);
+				file->ReadByte (&ch, 1); m_bAddKeys = (ch != 0);
+				file->ReadByte (&m_nFPS, 1);
+				file->ReadShort (&m_nCurFrame, 1);
+				file->ReadShort (&m_nTotalFrames, 1);
+				file->ReadShort (&m_nGridSize, 1);
+				file->ReadShort (&sh, 1);
 				if (fv >= 1.4f)
 					m_nMoveSnap = sh;
 			}
 		}
-
+			
 		if (fv > 1.0f)
 		{
-			u32 rgb;
-
-			file->ReadInts(&rgb, 1);
-			m_fGradient1[0] = (float)((rgb & 0x0000ff) >> 0) / 255;
-			m_fGradient1[1] = (float)((rgb & 0x00ff00) >> 8) / 255;
-			m_fGradient1[2] = (float)((rgb & 0xff0000) >> 16) / 255;
-			file->ReadInts(&rgb, 1);
-			m_fGradient2[0] = (float)((rgb & 0x0000ff) >> 0) / 255;
-			m_fGradient2[1] = (float)((rgb & 0x00ff00) >> 8) / 255;
-			m_fGradient2[2] = (float)((rgb & 0xff0000) >> 16) / 255;
+			file->ReadLong (&rgb, 1);
+			m_fGradient1[0] = (float)((unsigned char) (rgb))/255;
+			m_fGradient1[1] = (float)((unsigned char) (((unsigned short) (rgb)) >> 8))/255;
+			m_fGradient1[2] = (float)((unsigned char) ((rgb) >> 16))/255;
+			file->ReadLong (&rgb, 1);
+			m_fGradient2[0] = (float)((unsigned char) (rgb))/255;
+			m_fGradient2[1] = (float)((unsigned char) (((unsigned short) (rgb)) >> 8))/255;
+			m_fGradient2[2] = (float)((unsigned char) ((rgb) >> 16))/255;
 			
 			if (fv > 1.1f)
-			{
-				u8 ch;
-
-				file->ReadBytes(&ch);
-				if (ch != 3)
-				{
-					u16 sh;
-					u32 i, j;
-
-					file->ReadInts(&i);
-					file->ReadInts(&j);
-					file->Seek(6*4, SEEK_CUR);
-
-					if (ch == 1)
-					{
-						file->ReadBytes(&ch);
-						sh = ch;
-					}
-					else
-						file->ReadShorts(&sh);
-
-					file->Seek(sh, SEEK_CUR);
-					file->Seek(i*j*4, SEEK_CUR);
-				}
-			}
+				m_pTerrain->FileLoad (file);
 			else
 			{
-				file->Seek(4, SEEK_CUR);
-				file->Read(&ch, 1);
-				file->Seek(ch, SEEK_CUR);
+				file->Seek (4, SEEK_CUR);
+				file->Read (&ch, 1);
+				file->Seek (ch, SEEK_CUR);
 			}
 		}
 	}
 
-	int ActiveModelIndex = 0;
-
-	if (Version > 0x0075)
-	{
-		file->ReadInts(&ActiveModelIndex, 1);
-		UpdateAllModelMeshes();
-	}
-
-	m_ModelList[ActiveModelIndex]->SetActive(true);
-
-	// TODO: update piece model mesh pointers.
-	// TODO: load model references.
-
 	if (!bMerge)
 	{
-		// TODO: fix file merge
+		Camera* Cam = GetCamera(LC_CAMERA_MAIN);
+		for (i = 0; i < m_ViewList.GetSize (); i++)
+			m_ViewList[i]->m_Camera = Cam;
 	}
 
-	for (i = 0; i < m_ViewList.GetSize(); i++)
+	for (i = 0; i < m_ViewList.GetSize (); i++)
 	{
 		m_ViewList[i]->MakeCurrent();
 		RenderInitialize();
@@ -753,54 +803,58 @@ bool Project::FileLoad(lcFile* file, bool bUndo, bool bMerge)
 		SelectAndFocusNone(false);
 	if (!bMerge)
 		SystemUpdateFocus(NULL);
-	SystemUpdateColorList(g_App->m_SelectedColor);
-	SystemUpdateAnimation(m_Animation, m_bAddKeys);
+	SetAction(action);
+//	SystemUpdateViewport(m_nViewportMode, 0);
+	SystemUpdateColorList(m_nCurColor);
+	SystemUpdateAnimation(m_bAnimation, m_bAddKeys);
 	SystemUpdateRenderingMode((m_nDetail & LC_DET_FAST) != 0);
 	SystemUpdateSnap(m_nSnap);
 	SystemUpdateSnap(m_nMoveSnap, m_nAngleSnap);
-	SystemUpdateCameraMenu(m_ActiveModel->m_Cameras);
-	SystemUpdateCurrentCamera(NULL, m_ActiveView->GetCamera1(), m_ActiveModel->m_Cameras);
+	SystemUpdateCameraMenu(m_pCameras);
+	SystemUpdateCurrentCamera(NULL, m_ActiveView->m_Camera, m_pCameras);
 	UpdateSelection();
-	SystemUpdateTime(m_Animation, m_ActiveModel->m_CurFrame, m_Animation ? m_ActiveModel->m_TotalFrames : LC_OBJECT_TIME_MAX);
-	UpdateAllViews();
+	if (m_bAnimation)
+		SystemUpdateTime(m_bAnimation, m_nCurFrame, m_nTotalFrames);
+	else
+		SystemUpdateTime(m_bAnimation, m_nCurStep, 255);
+	UpdateAllViews ();
 
 	return true;
 }
 
-void Project::FileSave(lcFile* file, bool bUndo)
+void Project::FileSave(File* file, bool bUndo)
 {
-	float ver_flt = 1.5f; // LeoCAD 0.76
-	u32 rgb;
-	u16 sh;
-	u8 ch;
+	float ver_flt = 1.4f; // LeoCAD 0.75 - (and this should have been an integer).
+	unsigned long rgb;
+	unsigned char ch;
+	unsigned short sh;
 	int i, j;
 
-	file->Seek(0, SEEK_SET);
-	file->Write(LC_STR_VERSION, 32);
-	file->WriteFloats(&ver_flt, 1);
-	file->WriteInts(&LC_FILE_VERSION, 1);
+	file->Seek (0, SEEK_SET);
+	file->Write (LC_STR_VERSION, 32);
+	file->WriteFloat (&ver_flt, 1);
 
 	rgb = FLOATRGB(m_fBackground);
-	file->WriteInts(&rgb, 1);
+	file->WriteLong (&rgb, 1);
 
-	i = m_nAngleSnap; file->WriteInts(&i, 1);
-	file->WriteInts(&m_nSnap, 1);
-	file->WriteFloats(&m_fLineWidth, 1);
-	file->WriteInts(&m_nDetail, 1);
+	i = m_nAngleSnap; file->WriteLong (&i, 1);
+	file->WriteLong (&m_nSnap, 1);
+	file->WriteFloat (&m_fLineWidth, 1);
+	file->WriteLong (&m_nDetail, 1);
 	//i = m_nCurGroup;
-	file->WriteInts(&i, 1);
-	i = 0; file->WriteInts(&i, 1); //m_nCurColor
-	i = m_nCurAction; file->WriteInts(&i, 1);
-	file->WriteInts(&m_ActiveModel->m_CurFrame, 1);
-	file->WriteInts(&m_nScene, 1);
+	file->WriteLong (&i, 1);
+	i = m_nCurColor; file->WriteLong (&i, 1);
+	i = m_nCurAction; file->WriteLong (&i, 1);
+	i = m_nCurStep; file->WriteLong (&i, 1);
+	file->WriteLong (&m_nScene, 1);
 
-	lcPiece* Piece;
-	for (i = 0, Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
+	Piece* pPiece;
+	for (i = 0, pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 		i++;
-	file->WriteInts(&i, 1);
+	file->WriteLong (&i, 1);
 
-	for (Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-		Piece->FileSave(*file, m_ActiveModel->m_Groups);
+	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+		pPiece->FileSave (*file, m_pGroups);
 
 	ch = strlen(m_strAuthor);
 	file->Write(&ch, 1);
@@ -812,45 +866,43 @@ void Project::FileSave(lcFile* file, bool bUndo)
 	file->Write(&ch, 1);
 	file->Write(m_strComments, ch);
 
-	lcGroup* pGroup;
-	for (i = 0, pGroup = m_ActiveModel->m_Groups; pGroup; pGroup = pGroup->m_Next)
+	Group* pGroup;
+	for (i = 0, pGroup = m_pGroups; pGroup; pGroup = pGroup->m_pNext)
 		i++;
-	file->WriteInts(&i, 1);
+	file->WriteLong (&i, 1);
 
-	for (pGroup = m_ActiveModel->m_Groups; pGroup; pGroup = pGroup->m_Next)
-		pGroup->FileSave(file, m_ActiveModel->m_Groups);
+	for (pGroup = m_pGroups; pGroup; pGroup = pGroup->m_pNext)
+		pGroup->FileSave(file, m_pGroups);
 
-	ch = 0;
-	file->WriteBytes(&ch, 1); // m_nViewportMode
-	file->WriteBytes(&ch, 1); // m_nActiveViewport
+	lcuint8 ViewportMode = 0, ActiveViewport = 0;
+	file->WriteByte(&ViewportMode, 1);
+	file->WriteByte(&ActiveViewport, 1);
 
-	lcCamera* Camera;
-	for (i = 0, Camera = m_ActiveModel->m_Cameras; Camera; Camera = (lcCamera*)Camera->m_Next)
+	Camera* pCamera;
+	for (i = 0, pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
 		i++;
-	file->WriteInts(&i, 1);
+	file->WriteLong (&i, 1);
 
-	for (Camera = m_ActiveModel->m_Cameras; Camera; Camera = (lcCamera*)Camera->m_Next)
-		Camera->FileSave(*file);
+	for (i = 0, pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+		pCamera->FileSave(*file);
 
 	for (j = 0; j < 4; j++)
 	{
-		/*
-		for (i = 0, Camera = m_Cameras; Camera; Camera = (lcCamera*)Camera->m_Next)
-			if (Camera == m_pViewCameras[j])
-				break;
-			else
-				i++;
-		*/
 		i = 0;
+//		for (i = 0, pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+//			if (pCamera == m_pViewCameras[j])
+//				break;
+//			else
+//				i++;
 
-		file->WriteInts(&i, 1);
+		file->WriteLong (&i, 1);
 	}
 
 	rgb = FLOATRGB(m_fFogColor);
-	file->WriteInts(&rgb, 1);
-	file->WriteFloats(&m_fFogDensity, 1);
+	file->WriteLong (&rgb, 1);
+	file->WriteFloat (&m_fFogDensity, 1);
 	sh = strlen(m_strBackground);
-	file->WriteShorts(&sh, 1);
+	file->WriteShort (&sh, 1);
 	file->Write(m_strBackground, sh);
 	ch = strlen(m_strHeader);
 	file->Write(&ch, 1);
@@ -860,24 +912,23 @@ void Project::FileSave(lcFile* file, bool bUndo)
 	file->Write(m_strFooter, ch);
 	// 0.60 (1.0)
 	rgb = FLOATRGB(m_fAmbient);
-	file->WriteInts(&rgb, 1);
-	ch = m_Animation;
+	file->WriteLong (&rgb, 1);
+	ch = m_bAnimation;
 	file->Write(&ch, 1);
 	ch = m_bAddKeys;
-	file->WriteBytes(&ch, 1);
-	file->WriteBytes(&m_nFPS, 1);
-	sh = 1; file->WriteShorts(&sh, 1); // m_nCurFrame
-	sh = 0xffff; file->WriteShorts(&sh, 1); // m_nTotalFrames
-	sh = 10; file->WriteShorts(&sh, 1); // m_nGridSize
-	file->WriteShorts(&m_nMoveSnap, 1);
+	file->WriteByte (&ch, 1);
+	file->WriteByte (&m_nFPS, 1);
+	file->WriteShort (&m_nCurFrame, 1);
+	file->WriteShort (&m_nTotalFrames, 1);
+	file->WriteShort (&m_nGridSize, 1);
+	file->WriteShort (&m_nMoveSnap, 1);
 	// 0.62 (1.1)
 	rgb = FLOATRGB(m_fGradient1);
-	file->WriteInts(&rgb, 1);
+	file->WriteLong (&rgb, 1);
 	rgb = FLOATRGB(m_fGradient2);
-	file->WriteInts(&rgb, 1);
+	file->WriteLong (&rgb, 1);
 	// 0.64 (1.2)
-	ch = 3;
-	file->WriteBytes(&ch); // m_pTerrain->FileSave(file);
+	m_pTerrain->FileSave(file);
 
 	if (!bUndo)
 	{
@@ -888,20 +939,191 @@ void Project::FileSave(lcFile* file, bool bUndo)
 		{
 			pos = file->GetPosition();
 
-			Image* image = new Image[1];
+      Image* image = new Image[1];
 			LC_IMAGE_OPTS opts;
 			opts.interlaced = false;
 			opts.transparent = false;
 			opts.format = LC_IMAGE_GIF;
 
-			CreateImages(image, 120, 100, m_ActiveModel->m_CurFrame, m_ActiveModel->m_CurFrame, false);
+			i = m_bAnimation ? m_nCurFrame : m_nCurStep;
+			CreateImages(image, 120, 100, i, i, false);
 			image[0].FileSave (*file, &opts);
 			delete []image;
 		}
 
-		file->WriteInts(&pos, 1);
+		file->WriteLong (&pos, 1);
 		m_nSaveTimer = 0;
 	}
+}
+
+void Project::FileReadMPD(File& MPD, PtrArray<File>& FileArray) const
+{
+  FileMem* CurFile = NULL;
+	char Buf[1024];
+
+	while (MPD.ReadLine(Buf, 1024))
+  {
+    String Line(Buf);
+
+    Line.TrimLeft();
+
+    if (Line[0] != '0')
+    {
+      // Copy current line.
+      if (CurFile != NULL)
+        CurFile->Write(Buf, strlen(Buf));
+
+      continue;
+    }
+
+    Line.TrimRight();
+    Line = Line.Right(Line.GetLength() - 1);
+    Line.TrimLeft();
+
+    // Find where a subfile starts.
+    if (Line.CompareNoCase("FILE", 4) == 0)
+    {
+      Line = Line.Right(Line.GetLength() - 4);
+      Line.TrimLeft();
+
+      // Create a new file.
+      CurFile = new FileMem();
+      CurFile->SetFileName(Line);
+      FileArray.Add(CurFile);
+    }
+    else if (Line.CompareNoCase("ENDFILE", 7) == 0)
+    {
+      // File ends here.
+      CurFile = NULL;
+    }
+    else if (CurFile != NULL)
+    {
+      // Copy current line.
+      CurFile->Write(Buf, strlen(Buf));
+    }
+  }
+}
+
+void Project::FileReadLDraw(File* file, Matrix* prevmat, int* nOk, int DefColor, int* nStep, PtrArray<File>& FileArray)
+{
+	char buf[1024];
+
+	// Save file offset.
+	lcuint32 Offset = file->GetPosition();
+	file->Seek(0, SEEK_SET);
+
+	while (file->ReadLine(buf, 1024))
+	{
+		strupr(buf);
+		if (strstr(buf, "STEP"))
+		{
+			(*nStep)++;
+			continue;
+		}
+
+		bool read = true;
+		char *ptr, tmp[LC_MAXPATH], pn[LC_MAXPATH];
+		int color, cmd;
+		float fmat[12];
+
+		if (sscanf(buf, "%d %d %g %g %g %g %g %g %g %g %g %g %g %g %s[12]",
+			&cmd, &color, &fmat[0], &fmat[1], &fmat[2], &fmat[3], &fmat[4], &fmat[5], &fmat[6], 
+			&fmat[7], &fmat[8], &fmat[9], &fmat[10], &fmat[11], &tmp[0]) != 15)
+			continue;
+
+		Matrix incmat, tmpmat;
+		incmat.FromLDraw(fmat);
+		tmpmat.Multiply(*prevmat, incmat);
+
+		if (cmd == 1)
+		{
+			int cl = 0;
+			if (color == 16) 
+				cl = DefColor;
+			else
+				cl = ConvertColor(color);
+
+			strcpy(pn, tmp);
+			ptr = strrchr(tmp, '.');
+
+			if (ptr != NULL)
+				*ptr = 0;
+
+			// See if it's a piece in the library
+			if (strlen(tmp) < LC_PIECE_NAME_LEN)
+			{
+				char name[LC_PIECE_NAME_LEN];
+				strcpy(name, tmp);
+
+				PieceInfo* pInfo = lcGetPiecesLibrary()->FindPieceInfo(name);
+				if (pInfo != NULL)
+				{
+					float x, y, z, rot[4];
+					Piece* pPiece = new Piece(pInfo);
+					read = false;
+
+					tmpmat.GetTranslation(&x, &y, &z);
+					pPiece->Initialize(x, y, z, *nStep, 1, cl);
+					pPiece->CreateName(m_pPieces);
+					AddPiece(pPiece);
+					tmpmat.ToAxisAngle(rot);
+					pPiece->ChangeKey(1, false, false, rot, LC_PK_ROTATION);
+					pPiece->ChangeKey(1, true, false, rot, LC_PK_ROTATION);
+					SystemPieceComboAdd(pInfo->m_strDescription);
+					(*nOk)++;
+				}
+			}
+
+			// Check for MPD files first.
+			if (read)
+			{
+				for (int i = 0; i < FileArray.GetSize(); i++)
+				{
+					if (stricmp(FileArray[i]->GetFileName(), pn) == 0)
+					{
+						FileReadLDraw(FileArray[i], &tmpmat, nOk, cl, nStep, FileArray);
+						read = false;
+						break;
+					}
+				}
+			}
+
+			// Try to read the file from disk.
+			if (read)
+			{
+				FileDisk tf;
+
+				if (tf.Open(pn, "rt"))
+				{
+					FileReadLDraw(&tf, &tmpmat, nOk, cl, nStep, FileArray);
+					read = false;
+				}
+			}
+
+			if (read)
+			{
+				// Create a placeholder.
+				PieceInfo* Info = lcGetPiecesLibrary()->CreatePiecePlaceholder(tmp);
+
+				float x, y, z, rot[4];
+				Piece* pPiece = new Piece(Info);
+				read = false;
+
+				tmpmat.GetTranslation(&x, &y, &z);
+				pPiece->Initialize(x, y, z, *nStep, 1, cl);
+				pPiece->CreateName(m_pPieces);
+				AddPiece(pPiece);
+				tmpmat.ToAxisAngle(rot);
+				pPiece->ChangeKey(1, false, false, rot, LC_PK_ROTATION);
+				pPiece->ChangeKey(1, true, false, rot, LC_PK_ROTATION);
+				SystemPieceComboAdd(Info->m_strDescription);
+				(*nOk)++;
+			}
+		}
+	}
+
+	// Restore file offset.
+	file->Seek(Offset, SEEK_SET);
 }
 
 bool Project::DoFileSave()
@@ -916,98 +1138,131 @@ bool Project::DoFileSave()
 	}
 	else
 */	{
-		if (!DoSave(m_strPathName))
+		if (!DoSave(m_strPathName, true))
 			return false;
 	}
 	return true;
 }
 
 // Save the document data to a file
-// PathName = path name where to save document file
-// if PathName is NULL then the user will be prompted (SaveAs)
-// note: PathName can be different than 'm_strPathName'
-bool Project::DoSave(char* PathName)
+// lpszPathName = path name where to save document file
+// if lpszPathName is NULL then the user will be prompted (SaveAs)
+// note: lpszPathName can be different than 'm_strPathName'
+// if 'bReplace' is TRUE will change file name if successful (SaveAs)
+// if 'bReplace' is FALSE will not change path name (SaveCopyAs)
+bool Project::DoSave(char* lpszPathName, bool bReplace)
 {
-	lcFileDisk file;
-	char NewName[LC_MAXPATH];
-	memset(NewName, 0, sizeof(NewName));
-	if (PathName)
-		strcpy(NewName, PathName);
+	FileDisk file;
+	char newName[LC_MAXPATH];
+	memset(newName, 0, sizeof(newName));
+	if (lpszPathName)
+		strcpy(newName, lpszPathName);
 
-	int Len = strlen(NewName);
-	if (Len > 4)
+	char ext[4], *ptr;
+	memset(ext, 0, 4);
+	ptr = strrchr(newName, '.');
+	if (ptr != NULL)
 	{
-		char* ext = &NewName[Len - 3];
+		ptr++;
+		strncpy(ext, ptr, 3);
+		strlwr(ext);
 
-		if (!_stricmp(ext, "dat") || !_stricmp(ext, "ldr") || !_stricmp(ext, "mpd"))
+		if ((strcmp(ext, "dat") == 0) || (strcmp(ext, "ldr") == 0))
 		{
-			*ext = 0;
-			strcat(NewName, "lcd");
+			*ptr = 0;
+			strcat(newName, "lcd");
 		}
 	}
 
-	if (Len == 0)
+	if (strlen(newName) == 0)
 	{
-		strcpy(NewName, m_strPathName);
-		if (strlen(NewName) == 0)
+		strcpy(newName, m_strPathName);
+		if (bReplace && strlen(newName) == 0)
 		{
-			strcpy(NewName, m_strTitle);
+			strcpy(newName, m_strTitle);
 
 			// check for dubious filename
-			char* Bad = strpbrk(NewName, " #%;/\\");
-			if (Bad)
-				*Bad = 0;
+			int iBad = strcspn(newName, " #%;/\\");
+			if (iBad != -1)
+				newName[iBad] = 0;
 
-			strcat(NewName, ".lcd");
+			strcat(newName, ".lcd");
 		}
 
-		if (!SystemDoDialog(LC_DLG_FILE_SAVE_PROJECT, &NewName))
+		if (!SystemDoDialog(LC_DLG_FILE_SAVE_PROJECT, &newName))
 			return false; // don't even attempt to save
 	}
 
-	if (!file.Open(NewName, "wb"))
+//	CWaitCursor wait;
+
+	if (!file.Open(newName, "wb"))
 	{
-		char Message[LC_MAXPATH+1024];
-		sprintf(Message, "Failed to open file %s for writing.", NewName);
-		main_window->MessageBox(Message, "LeoCAD", LC_MB_OK | LC_MB_ICONERROR);
+//		MessageBox("Failed to save.");
 
 		// be sure to delete the file
-		if (PathName == NULL)
-			remove(NewName);
+		if (lpszPathName == NULL)
+			remove(newName);
 
 		return false;
 	}
 
-	bool SaveLDR = false;
-	bool SaveMPD = false;
-
-	Len = strlen(NewName);
-	if (Len > 4)
+	memset(ext, 0, 4);
+	ptr = strrchr(newName, '.');
+	if (ptr != NULL)
 	{
-		const char* ext = &NewName[Len - 3];
-
-		if (!_stricmp(ext, "dat") || !_stricmp(ext, "ldr"))
-			SaveLDR = true;
-		else if (!_stricmp(ext, "mpd"))
-			SaveMPD = true;
+		strncpy(ext, ptr+1, 3);
+		strlwr(ext);
 	}
 
-	if (SaveLDR || SaveMPD)
+	if ((strcmp(ext, "dat") == 0) || (strcmp(ext, "ldr") == 0))
 	{
+		const int col[28] = { 4,12,2,10,1,9,14,15,8,0,6,13,13,334,36,44,34,42,33,41,46,47,7,382,6,13,11,383 };
+		Piece* pPiece;
+		int i, steps = GetLastStep();
+		char buf[256], *ptr;
+
+		ptr = strrchr(m_strPathName, '\\');
+		if (ptr == NULL)
+			ptr = strrchr(m_strPathName, '/');
+		if (ptr == NULL)
+			ptr = m_strPathName;
+		else
+			ptr++;
+
+		sprintf(buf, "0 Model exported from LeoCAD\r\n"
+					"0 Original name: %s\r\n", ptr);
+		if (strlen(m_strAuthor) != 0)
+		{
+			strcat(buf, "0 Author: ");
+			strcat(buf, m_strAuthor);
+			strcat(buf, "\r\n");
+		}
+		strcat(buf, "\r\n");
+		file.Write(buf, strlen(buf));
+
 		const char* OldLocale = setlocale(LC_NUMERIC, "C");
 
-		m_ActiveModel->ExportLDraw(file, SaveMPD, IdentityMatrix44(), LC_COLOR_DEFAULT);
-
-		if (SaveMPD)
+		for (i = 1; i <= steps; i++)
 		{
-			for (int ModelIndex = 0; ModelIndex < m_ModelList.GetSize(); ModelIndex++)
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 			{
-				if (m_ModelList[ModelIndex] == m_ActiveModel)
-					continue;
-
-				m_ModelList[ModelIndex]->ExportLDraw(file, SaveMPD, IdentityMatrix44(), LC_COLOR_DEFAULT);
+				if ((pPiece->IsVisible(i, false)) && (pPiece->GetStepShow() == i))
+				{
+					float f[12], position[3], rotation[4];
+					pPiece->GetPosition(position);
+					pPiece->GetRotation(rotation);
+					Matrix mat(rotation, position);
+					mat.ToLDraw(f);
+					sprintf (buf, " 1 %d %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %s.DAT\r\n",
+						col[pPiece->GetColor()], f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], pPiece->GetPieceInfo()->m_strName);
+					file.Write(buf, strlen(buf));
+				}
 			}
+
+			if (i != steps)
+				file.Write("0 STEP\r\n", 8);
 		}
+		file.Write("0\r\n", 3);
 
 		setlocale(LC_NUMERIC, OldLocale);
 	}
@@ -1019,7 +1274,8 @@ bool Project::DoSave(char* PathName)
 	SetModifiedFlag(false);     // back to unmodified
 
 	// reset the title and change the document name
-	SetPathName(NewName, true);
+	if (bReplace)
+		SetPathName(newName, true);
 
 	return true; // success
 }
@@ -1090,8 +1346,14 @@ bool Project::OnNewDocument()
 	LoadDefaults(true);
 	CheckPoint("");
 
-	lcPostMessage(LC_MSG_FOCUS_OBJECT_CHANGED, NULL);
+        //	SystemUpdateRecentMenu(m_strRecentFiles);
+        messenger->Dispatch (LC_MSG_FOCUS_CHANGED, NULL);
 
+//	CWnd* pFrame = AfxGetMainWnd();
+//	if (pFrame != NULL)
+//		pFrame->PostMessage (WM_LC_UPDATE_LIST, 1, m_nCurColor+1);
+// set cur group to 0
+ 
 	return true;
 }
 
@@ -1120,182 +1382,111 @@ bool Project::OpenProject(const char* FileName)
 	return true;
 }
 
-bool Project::OnOpenDocument(const char* PathName)
+bool Project::OnOpenDocument (const char* lpszPathName)
 {
-	lcFileDisk file;
+  FileDisk file;
+  bool bSuccess = false;
 
-	if (!file.Open(PathName, "rb") || !file.GetLength())
-	{
-		char Message[LC_MAXPATH + 64];
+  if (!file.Open(lpszPathName, "rb"))
+  {
+//    MessageBox("Failed to open file.");
+    return false;
+  }
 
-		sprintf(Message, "Failed to open %s for reading.", PathName);
-		main_window->MessageBox(Message, "LeoCAD", LC_MB_OK | LC_MB_ICONERROR);
+  char ext[4];
+  const char *ptr;
+  memset(ext, 0, 4);
+  ptr = strrchr(lpszPathName, '.');
+  if (ptr != NULL)
+  {
+    strncpy(ext, ptr+1, 3);
+    strlwr(ext);
+  }
 
-		return false;
-	}
+  bool datfile = false;
+  bool mpdfile = false;
 
-	bool LoadLDR = false;
-	bool LoadMPD = false;
+  // Find out what file type we're loading.
+  if ((strcmp(ext, "dat") == 0) || (strcmp(ext, "ldr") == 0))
+    datfile = true;
+  else if (strcmp(ext, "mpd") == 0)
+    mpdfile = true;
 
-	int Len = strlen(PathName);
-	if (Len > 4)
-	{
-		const char* ext = &PathName[Len - 3];
+  // Delete the current project.
+  DeleteContents(false);
+  LoadDefaults(datfile || mpdfile);
+  SetModifiedFlag(true);  // dirty during loading
 
-		if (!_stricmp(ext, "dat") || !_stricmp(ext, "ldr"))
-			LoadLDR = true;
-		else if (!_stricmp(ext, "mpd"))
-			LoadMPD = true;
-	}
+  SystemDoWaitCursor(1);
 
-	// Delete the current project.
-	DeleteContents(false);
-	LoadDefaults(false);
-	SetModifiedFlag(true);  // dirty during loading
+  if (file.GetLength() != 0)
+  {
+    PtrArray<File> FileArray;
 
-	SystemDoWaitCursor(1);
+    // Unpack the MPD file.
+    if (mpdfile)
+    {
+      FileReadMPD(file, FileArray);
 
-	if (LoadMPD || LoadLDR)
-	{
-		// Extract the file's directory.
-		String FilePath(PathName);
-		int s1 = FilePath.ReverseFind('\\');
-		int s2 = FilePath.ReverseFind('/');
+      if (FileArray.GetSize() == 0)
+      {
+        file.Seek(0, SEEK_SET);
+        mpdfile = false;
+        datfile = true;
+        console.PrintWarning("No files found inside the MPD, trying to load it as a .DAT file.\n");
+      }
+    }
 
-		if (s2 > s1)
-			s1 = s2;
+    if (datfile || mpdfile)
+    {
+      int ok = 0, step = 1;
+      Matrix mat;
 
-		if (s1 == -1)
-			FilePath = "";
-		else
-			FilePath[s1+1] = 0;
+      if (mpdfile)
+        FileReadLDraw(FileArray[0], &mat, &ok, m_nCurColor, &step, FileArray);
+      else
+        FileReadLDraw(&file, &mat, &ok, m_nCurColor, &step, FileArray);
 
-		if (LoadMPD)
-		{
-			lcPtrArray<lcFile> FileArray;
-			lcFile* CurrentFile = NULL;
-			char Buf[1024];
-			bool Skip = true;
+      m_nCurStep = step;
+      SystemUpdateTime(false, m_nCurStep, 255);
+      SystemUpdateFocus(NULL);
+      UpdateSelection();
+      CalculateStep();
+      UpdateAllViews ();
 
-			// Split MPD into separate files.
-			while (file.ReadLine(Buf, 1024))
-			{
-				char* ptr = Buf;
-				String LineType = GetToken(ptr);
+      console.PrintMisc("%d objects imported.\n", ok);
+      bSuccess = true;
+    }
+    else
+    {
+      // Load a LeoCAD file.
+      bSuccess = FileLoad(&file, false, false);
+    }
 
-				if (LineType == "0")
-				{
-					String Token = GetToken(ptr);
+    // Clean up.
+    if (mpdfile)
+    {
+      for (int i = 0; i < FileArray.GetSize(); i++)
+        delete FileArray[i];
+    }
+  }
 
-					if (!Token.CompareNoCase("FILE"))
-					{
-						while (*ptr && *ptr <= 32)
-							ptr++;
-						char* Name = ptr;
-						while (*ptr > 32)
-							ptr++;
-						*ptr = 0;
+  file.Close();
+  SystemDoWaitCursor(-1);
 
-						CurrentFile = new lcFileMem();
-						CurrentFile->SetFileName(Name);
-						FileArray.Add(CurrentFile);
-						Skip = false;
-						continue;
-					}
-					else if (!Token.CompareNoCase("NOFILE"))
-					{
-						CurrentFile = NULL;
-						Skip = true;
-						continue;
-					}
-				}
+  if (bSuccess == false)
+  {
+//    MessageBox("Failed to load.");
+    DeleteContents(false);   // remove failed contents
+    return false;
+  }
 
-				if (!Skip)
-					CurrentFile->Write(Buf, strlen(Buf));
-			}
+  CheckPoint("");
+  m_nSaveTimer = 0;
 
-			// Read MPD files.
-			for (int FileIndex = 0; FileIndex < FileArray.GetSize(); FileIndex++)
-			{
-				lcModel* Model = new lcModel();
-				Model->SetName(FileArray[FileIndex]->GetFileName());
-				strncpy(Model->m_PieceInfo->m_strDescription, Model->m_Name, sizeof(Model->m_PieceInfo->m_strDescription)-1);
-				Model->m_PieceInfo->m_strDescription[sizeof(Model->m_PieceInfo->m_strDescription)-1] = 0;
-				FileArray[FileIndex]->Seek(0, SEEK_SET);
-				m_ModelList.Add(Model);
+  SetModifiedFlag(false);     // start off with unmodified
 
-				Model->ResetCameras();
-			}
-
-			for (int FileIndex = 0; FileIndex < FileArray.GetSize(); FileIndex++)
-			{
-				m_ModelList[FileIndex]->ImportLDraw(*FileArray[FileIndex], LC_COLOR_DEFAULT, IdentityMatrix44(), FilePath);
-				delete FileArray[FileIndex];
-			}
-
-			UpdateAllModelMeshes();
-
-			if (FileArray.GetSize() == 0)
-			{
-				LoadMPD = false;
-				LoadLDR = true;
-				file.Seek(0, SEEK_SET);
-				console.PrintWarning("No files found inside the MPD file, trying to load it as a .DAT file instead.\n");
-			}
-		}
-
-		if (LoadLDR)
-		{
-			lcModel* Model = new lcModel();
-			Model->SetName("Main");
-			m_ModelList.Add(Model);
-
-			Model->ResetCameras();
-			Model->ImportLDraw(file, LC_COLOR_DEFAULT, IdentityMatrix44(), FilePath);
-		}
-
-		SetActiveModel(m_ModelList[0]);
-
-		for (int i = 0; i < m_ViewList.GetSize(); i++)
-			m_ViewList[i]->UpdateCamera();
-
-		SystemUpdateCameraMenu(m_ActiveModel->m_Cameras);
-		if (m_ActiveView)
-			SystemUpdateCurrentCamera(NULL, m_ActiveView->GetCamera1(), m_ActiveModel->m_Cameras);
-
-		SystemUpdateTime(false, m_ActiveModel->m_CurFrame, LC_OBJECT_TIME_MAX);
-		SystemUpdateFocus(NULL);
-		UpdateSelection();
-		CalculateStep();
-		UpdateAllViews();
-
-//		console.PrintMisc("%d objects imported.\n", Pieces);
-	}
-	else
-	{
-		// Load a LeoCAD file.
-		if (!FileLoad(&file, false, false))
-		{
-			char Message[LC_MAXPATH + 64];
-
-			sprintf(Message, "Failed to load %s.", PathName);
-			main_window->MessageBox(Message, "LeoCAD", LC_MB_OK | LC_MB_ICONERROR);
-
-			DeleteContents(false);   // remove failed contents
-			SystemDoWaitCursor(-1);
-			return false;
-		}
-	}
-
-	file.Close();
-	SystemDoWaitCursor(-1);
-
-	CheckPoint("");
-	m_nSaveTimer = 0;
-
-	SetModifiedFlag(false);     // start off with unmodified
-
-	return true;
+  return true;
 }
 
 void Project::SetPathName(const char* PathName, bool bAddToMRU)
@@ -1356,777 +1547,521 @@ void Project::CheckPoint (const char* text)
 
 void Project::AddView (View* pView)
 {
-	m_ViewList.Add(pView);
+	m_ViewList.Add (pView);
 
-	pView->MakeCurrent();
-	RenderInitialize();
+	pView->MakeCurrent ();
+	RenderInitialize ();
 
-	if (m_ViewList.GetSize() == 1)
-		lcCreateDefaultMeshes();
+	if (!m_ActiveView)
+		m_ActiveView = pView;
 }
 
-void Project::RemoveView(View* pView)
+void Project::RemoveView (View* pView)
 {
-	if (m_ViewList.GetSize() == 1)
-		lcDestroyDefaultMeshes();
-
 	if (pView == m_ActiveView)
 		m_ActiveView = NULL;
+
 	m_ViewList.RemovePointer(pView);
 }
 
 void Project::UpdateAllViews()
 {
-	for (int i = 0; i < m_ViewList.GetSize(); i++)
-		m_ViewList[i]->Redraw(true);
+	for (int i = 0; i < m_ViewList.GetSize (); i++)
+		m_ViewList[i]->Redraw ();
 }
 
 // Returns true if the active view changed.
 bool Project::SetActiveView(View* view)
 {
+	m_ActiveView = view;
+	return false;
+	/*
 	if (view == m_ActiveView)
 		return false;
 
-	lcCamera* OldCamera = NULL;
+//	Camera* OldCamera = NULL;
 	View* OldView = m_ActiveView;
 	m_ActiveView = view;
 
 	if (OldView)
 	{
 		OldView->Redraw();
-		OldCamera = OldView->GetCamera1();
+//		OldCamera = OldView->GetCamera();
 	}
 
 	if (view)
 	{
 		view->Redraw();
-		SystemUpdateCurrentCamera(OldCamera, m_ActiveView->GetCamera1(), m_ActiveModel->m_Cameras);
+//		SystemUpdateCurrentCamera(OldCamera, m_ActiveView->GetCamera(), m_ActiveModel->m_Cameras);
 	}
 
 	return true;
+	*/
 }
 
 /////////////////////////////////////////////////////////////////////////////
 // Project rendering
 
-void Project::Render(View* view, bool AllowFast, bool Interface)
+// Only this function should be called.
+void Project::Render(View* view, bool ToMemory)
 {
-#if LC_PROFILE
-	memset(&g_RenderStats, 0, sizeof(g_RenderStats));
-
-	LARGE_INTEGER li;
-	QueryPerformanceCounter(&li);
-	u64 Start = li.QuadPart;
-#endif
-
-	// Setup the viewport.
 	glViewport(0, 0, view->GetWidth(), view->GetHeight());
 
-	// Render the background.
 	RenderBackground(view);
 
 	// Setup the projection and camera matrices.
-	Matrix44 Projection = view->GetProjectionMatrix();
+	float ratio = (float)view->GetWidth() / (float)view->GetHeight();
+	view->m_Camera->LoadProjection(ratio);
 
-	glMatrixMode(GL_PROJECTION);
-	glLoadMatrixf(Projection);
-
-	glMatrixMode(GL_MODELVIEW);
-	glLoadMatrixf(view->GetViewpoint()->mWorldView);
-
-	// Render 3D objects.
-	if (AllowFast && (m_nDetail & LC_DET_FAST) && (m_nTracking != LC_TRACK_NONE))
-		RenderSceneBoxes(view);
+	if (ToMemory)
+		RenderScenePieces(view);
 	else
-		RenderScene(view, Interface);
-
-	// Render user interface elements.
-	if (Interface)
 	{
-		RenderInterface(view);
+		if ((m_nDetail & LC_DET_FAST) && (m_nTracking != LC_TRACK_NONE))
+			RenderSceneBoxes(view);
+		else
+			RenderScenePieces(view);
+
+		RenderSceneObjects(view);
+
+		if (m_OverlayActive || ((m_nCurAction == LC_ACTION_SELECT) && (m_nTracking == LC_TRACK_LEFT) && (m_ActiveView == view)))
+			RenderOverlays(view);
+
+		RenderViewports(view);
 	}
-
-	if (m_PlayingAnimation)
-	{
-		if (view == m_ActiveView)
-		{
-			m_LastFrameTime = SystemGetTicks();
-		}
-	}
-
-#ifdef LC_PROFILE
-	glFlush();
-	glFinish();
-	QueryPerformanceCounter(&li);
-	u64 End = li.QuadPart;
-
-	QueryPerformanceFrequency(&li);
-	g_RenderStats.RenderMS = (int)((End - Start) / (li.QuadPart / 1000.0));
-
-//	lcRenderProfileStats(view);
-
-	char szMsg[30];
-	static int FrameCount = 0;
-	FrameCount++;
-	sprintf(szMsg, "%d - %d ms", FrameCount, g_RenderStats.RenderMS);
-	AfxGetMainWnd()->SetWindowText(szMsg);
-#endif
 }
 
 void Project::RenderBackground(View* view)
 {
-	if (m_nScene & (LC_SCENE_GRADIENT|LC_SCENE_BG))
-	{
-		glClear(GL_DEPTH_BUFFER_BIT);
-
-		glDepthMask(GL_FALSE);
-		glDisable(GL_DEPTH_TEST);
-		glDisable(GL_LIGHTING);
-		glDisable(GL_FOG);
-
-		float w = (float)view->GetWidth();
-		float h = (float)view->GetHeight();
-
-		glMatrixMode(GL_PROJECTION);
-		glLoadIdentity();
-		glOrtho(0, w, 0, h, -1, 1);
-		glMatrixMode(GL_MODELVIEW);
-		glLoadIdentity();
-		glTranslatef(0.375, 0.375, 0.0);
-
-		// Draw gradient quad.
-		if (m_nScene & LC_SCENE_GRADIENT)
-		{
-			glShadeModel(GL_SMOOTH);
-
-			float Verts[4][2];
-			float Colors[4][4];
-
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glVertexPointer(2, GL_FLOAT, 0, Verts);
-			glEnableClientState(GL_COLOR_ARRAY);
-			glColorPointer(4, GL_FLOAT, 0, Colors);
-
-			Colors[0][0] = m_fGradient1[0]; Colors[0][1] = m_fGradient1[1]; Colors[0][2] = m_fGradient1[2]; Colors[0][3] = 1.0f;
-			Verts[0][0] = (float)view->GetWidth(); Verts[0][1] = (float)view->GetHeight();
-			Colors[1][0] = m_fGradient1[0]; Colors[1][1] = m_fGradient1[1]; Colors[1][2] = m_fGradient1[2]; Colors[1][3] = 1.0f;
-			Verts[1][0] = 0; Verts[1][1] = (float)view->GetHeight();
-			Colors[2][0] = m_fGradient2[0]; Colors[2][1] = m_fGradient2[1]; Colors[2][2] = m_fGradient2[2]; Colors[2][3] = 1.0f;
-			Verts[2][0] = 0; Verts[2][1] = 0;
-			Colors[3][0] = m_fGradient2[0]; Colors[3][1] = m_fGradient2[1]; Colors[3][2] = m_fGradient2[2]; Colors[3][3] = 1.0f;
-			Verts[3][0] = (float)view->GetWidth(); Verts[3][1] = 0;
-
-			glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-
-			glDisableClientState(GL_VERTEX_ARRAY);
-			glDisableClientState(GL_COLOR_ARRAY);
-
-			glShadeModel(GL_FLAT);
-		}
-
-		// Draw the background picture.
-		if (m_nScene & LC_SCENE_BG)
-		{
-			glEnable(GL_TEXTURE_2D);
-
-			glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-			m_pBackground->MakeCurrent();
-
-			float Verts[4][2];
-			float Coords[4][2];
-
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glVertexPointer(2, GL_FLOAT, 0, Verts);
-			glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-			glTexCoordPointer(2, GL_FLOAT, 0, Coords);
-
-			float tw = 1.0f, th = 1.0f;
-			if (m_nScene & LC_SCENE_BG_TILE)
-			{
-				tw = w/m_pBackground->m_nWidth;
-				th = h/m_pBackground->m_nHeight;
-			}
-
-			Coords[0][0] = 0; Coords[0][1] = 0;
-			Verts[0][0] = 0; Verts[0][1] = (float)view->GetHeight();
-			Coords[1][0] = tw; Coords[1][1] = 0;
-			Verts[1][0] = (float)view->GetWidth(); Verts[1][1] = (float)view->GetHeight();
-			Coords[2][0] = tw; Coords[2][1] = th; 
-			Verts[2][0] = (float)view->GetWidth(); Verts[2][1] = 0;
-			Coords[3][0] = 0; Coords[3][1] = th;
-			Verts[3][0] = 0; Verts[3][1] = 0;
-
-			glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-
-			glDisableClientState(GL_VERTEX_ARRAY);
-			glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-
-			glDisable(GL_TEXTURE_2D);
-		}
-
-		glEnable(GL_DEPTH_TEST);
-	}
-	else
+	if ((m_nScene & (LC_SCENE_GRADIENT | LC_SCENE_BG)) == 0)
 	{
 		glClearColor(m_fBackground[0], m_fBackground[1], m_fBackground[2], 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+		return;
+	}
+
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	glDepthMask(GL_FALSE);
+	glDisable(GL_DEPTH_TEST);
+	glDisable(GL_LIGHTING);
+	glDisable(GL_FOG);
+
+	float ViewWidth = (float)view->GetWidth();
+	float ViewHeight = (float)view->GetHeight();
+
+	glMatrixMode(GL_PROJECTION);
+	glLoadIdentity();
+	glOrtho(0.0f, ViewWidth, 0.0f, ViewHeight, -1.0f, 1.0f);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+	glTranslatef(0.375f, 0.375f, 0.0f);
+
+	// Draw gradient quad.
+	if (m_nScene & LC_SCENE_GRADIENT)
+	{
+		glShadeModel(GL_SMOOTH);
+
+		float Verts[4][2];
+		float Colors[4][4];
+
+		glEnableClientState(GL_VERTEX_ARRAY);
+		glVertexPointer(2, GL_FLOAT, 0, Verts);
+		glEnableClientState(GL_COLOR_ARRAY);
+		glColorPointer(4, GL_FLOAT, 0, Colors);
+
+		Colors[0][0] = m_fGradient1[0]; Colors[0][1] = m_fGradient1[1]; Colors[0][2] = m_fGradient1[2]; Colors[0][3] = 1.0f;
+		Verts[0][0] = ViewWidth; Verts[0][1] = ViewHeight;
+		Colors[1][0] = m_fGradient1[0]; Colors[1][1] = m_fGradient1[1]; Colors[1][2] = m_fGradient1[2]; Colors[1][3] = 1.0f;
+		Verts[1][0] = 0; Verts[1][1] = ViewHeight;
+		Colors[2][0] = m_fGradient2[0]; Colors[2][1] = m_fGradient2[1]; Colors[2][2] = m_fGradient2[2]; Colors[2][3] = 1.0f;
+		Verts[2][0] = 0; Verts[2][1] = 0;
+		Colors[3][0] = m_fGradient2[0]; Colors[3][1] = m_fGradient2[1]; Colors[3][2] = m_fGradient2[2]; Colors[3][3] = 1.0f;
+		Verts[3][0] = ViewWidth; Verts[3][1] = 0;
+
+		glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+		glDisableClientState(GL_VERTEX_ARRAY);
+		glDisableClientState(GL_COLOR_ARRAY);
+
+		glShadeModel(GL_FLAT);
+	}
+
+	// Draw the background picture.
+	if (m_nScene & LC_SCENE_BG)
+	{
+		glEnable(GL_TEXTURE_2D);
+
+		glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+		m_pBackground->MakeCurrent();
+
+		float Verts[4][2];
+		float Coords[4][2];
+
+		glEnableClientState(GL_VERTEX_ARRAY);
+		glVertexPointer(2, GL_FLOAT, 0, Verts);
+		glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+		glTexCoordPointer(2, GL_FLOAT, 0, Coords);
+
+		float tw = 1.0f, th = 1.0f;
+		if (m_nScene & LC_SCENE_BG_TILE)
+		{
+			tw = ViewWidth / m_pBackground->m_nWidth;
+			th = ViewHeight / m_pBackground->m_nHeight;
+		}
+
+		Coords[0][0] = 0; Coords[0][1] = 0;
+		Verts[0][0] = 0; Verts[0][1] = ViewHeight;
+		Coords[1][0] = tw; Coords[1][1] = 0;
+		Verts[1][0] = ViewWidth; Verts[1][1] = ViewHeight;
+		Coords[2][0] = tw; Coords[2][1] = th; 
+		Verts[2][0] = ViewWidth; Verts[2][1] = 0;
+		Coords[3][0] = 0; Coords[3][1] = th;
+		Verts[3][0] = 0; Verts[3][1] = 0;
+
+		glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+		glDisableClientState(GL_VERTEX_ARRAY);
+		glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+
+		glDisable(GL_TEXTURE_2D);
+	}
+
+	glEnable(GL_DEPTH_TEST);
+	glDepthMask(GL_TRUE);
+}
+
+typedef struct LC_BSPNODE
+{
+	float plane[4];
+	Piece* piece;
+	LC_BSPNODE* front;
+	LC_BSPNODE* back;
+
+	~LC_BSPNODE()
+	{
+		if (piece == NULL)
+		{
+			if (front)
+				delete front;
+			if (back)
+				delete back;
+		}
+	}
+} LC_BSPNODE;
+
+static void RenderBSP(LC_BSPNODE* node, float* eye, bool* bSel, bool bLighting, bool bEdges, unsigned char* nLastColor, bool* bTrans)
+{
+	if (node->piece)
+	{
+		if (node->piece->IsSelected())
+		{
+			if (!*bSel)
+			{
+				*bSel = true;
+				glLineWidth (2);//*m_fLineWidth);
+			}
+		}
+		else
+		{
+			if (*bSel)
+			{
+				*bSel = false;
+				glLineWidth(1);//m_fLineWidth);
+			}
+		}
+
+		node->piece->Render(bLighting, bEdges, nLastColor, bTrans);
+		return;
+	}
+
+	if (eye[0]*node->plane[0] + eye[1]*node->plane[1] +
+		eye[2]*node->plane[2] + node->plane[3] > 0.0f)
+	{
+		RenderBSP(node->back, eye, bSel, bLighting, bEdges, nLastColor, bTrans);
+		RenderBSP(node->front, eye, bSel, bLighting, bEdges, nLastColor, bTrans);
+	}
+	else
+	{
+		RenderBSP(node->front, eye, bSel, bLighting, bEdges, nLastColor, bTrans);
+		RenderBSP(node->back, eye, bSel, bLighting, bEdges, nLastColor, bTrans);
 	}
 }
 
-struct lcRenderSection
+static void BuildBSP(LC_BSPNODE* node, Piece* pList)
 {
-//	Matrix44 ModelWorld;
-	lcPiece* Owner;
-	lcMesh* Mesh;
-	lcMeshSection* Section;
-	float Distance;
-	int Color;
-	bool Edge;
-};
+	Piece *front_list = NULL, *back_list = NULL;
+	Piece *pPiece, *pNext;
 
-void Project::RenderScene(View* view, bool Interface)
-{
-	glDepthMask(GL_TRUE);
-	glLineWidth(m_fLineWidth);
+	node->piece = NULL;
 
-	// Draw the base grid.
-	if (Interface && (m_nSnap & LC_DRAW_GRID))
+	if (pList->m_pLink == NULL)
 	{
-		glDisable(GL_LIGHTING);
-		glDisable(GL_FOG);
-		glShadeModel(GL_FLAT);
+		// This is a leaf
+		node->piece = pList;
+		return;
+	}
 
-		lcViewpoint* Viewpoint = view->GetViewpoint();
-/*
-		if (Camera->IsSide() && Camera->IsOrtho())
-		{
-			Vector3 frontvec = Vector3(Camera->m_ViewWorld[2]);
-			float Aspect = (float)view->GetWidth()/(float)view->GetHeight();
-			float ymax, ymin, xmin, xmax, x, y;
+	float dx, dy, dz, bs[6] = { 10000, 10000, 10000, -10000, -10000, -10000 };
+	const float *pos;
 
-			ymax = (Length(frontvec))*sinf(DTOR*Camera->m_FOV/2);
-			ymin = -ymax;
-			xmin = ymin * Aspect;
-			xmax = ymax * Aspect;
+	for (pPiece = pList; pPiece; pPiece = pPiece->m_pLink)
+	{
+		pos = pPiece->GetConstPosition();
+		if (pos[0] < bs[0]) bs[0] = pos[0];
+		if (pos[1] < bs[1]) bs[1] = pos[1];
+		if (pos[2] < bs[2]) bs[2] = pos[2];
+		if (pos[0] > bs[3]) bs[3] = pos[0];
+		if (pos[1] > bs[4]) bs[4] = pos[1];
+		if (pos[2] > bs[5]) bs[5] = pos[2];
+	}
 
-			// Calculate camera offset.
-			Matrix44 ModelView = Camera->m_WorldView;
-			Vector3 offset = Mul30(Camera->m_Position, ModelView);
+	dx = ABS(bs[0]-bs[3]);
+	dy = ABS(bs[1]-bs[4]);
+	dz = ABS(bs[2]-bs[5]);
 
-			glMatrixMode(GL_MODELVIEW);
-			glPushMatrix();
-			glLoadIdentity();
-			glTranslatef(-offset[0], -offset[1], 0.0f);
+	node->plane[0] = node->plane[1] = node->plane[2] = 0.0f;
 
-			xmin += offset[0];
-			xmax += offset[0];
-			ymin += offset[1];
-			ymax += offset[1];
-
-			float z = -Camera->m_FarDist;
-
-			Vector3 up = Abs(Vector3(Camera->m_ViewWorld[1]));
-			float incx = 0.8f, incy;
-
-			if ((up[2] > up[0]) && (up[2] > up[1]))
-				incy = 0.96f;
-			else
-				incy = 0.8f;
-
-			float scale = 1;
-
-			// Calculate minor line increment.
-			while ((ymax - ymin) / (incy * scale) > 100)
-				scale *= 2;
-
-			while ((xmax - xmin) / (incx * scale) > 100)
-				scale *= 2;
-
-			incx *= scale;
-			incy *= scale;
-
-			glBegin(GL_LINES);
-
-			// Draw minor lines.
-			glColor3f(0.75f, 0.75f, 0.75f);
-			for (x = (int)(xmin / incx) * incx; x < xmax; x += incx)
-			{
-				glVertex3f(x, ymin, z);
-				glVertex3f(x, ymax, z);
-			}
-
-			for (y = (int)(ymin / incy) * incy; y < ymax; y += incy)
-			{
-				glVertex3f(xmin, y, z);
-				glVertex3f(xmax, y, z);
-			}
-
-			// Reset increments and scale.
-			incx /= scale;
-			incy /= scale;
-			scale = 1;
-
-			// Calculate major line increment.
-			while ((ymax - ymin) / (incy * scale) > 10)
-				scale *= 2;
-
-			while ((xmax - xmin) / (incx * scale) > 10)
-				scale *= 2;
-
-			incx *= scale;
-			incy *= scale;
-
-			// Draw major lines.
-			glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
-			for (x = (int)(xmin / incx) * incx; x < xmax; x += incx)
-			{
-				glVertex3f(x, ymin, z);
-				glVertex3f(x, ymax, z);
-			}
-
-			for (y = (int)(ymin / incy) * incy; y < ymax; y += incy)
-			{
-				glVertex3f(xmin, y, z);
-				glVertex3f(xmax, y, z);
-			}
-
-			glEnd();
-
-			glPopMatrix();
-		}
+	if (dx > dy)
+	{
+		if (dx > dz)
+			node->plane[0] = 1.0f;
 		else
-*/
-		{
-			// Calculate view matrices.
-			Matrix44 ModelView = Viewpoint->mWorldView;
-			Matrix44 Projection = view->GetProjectionMatrix();
-
-			// Unproject edge center points to world space.
-			Vector3 Points[10] =
-			{
-				Vector3(0, (float)view->mViewport[3] / 2, 0),
-				Vector3(0, (float)view->mViewport[3] / 2, 1),
-				Vector3((float)view->mViewport[2] / 2, 0, 0),
-				Vector3((float)view->mViewport[2] / 2, 0, 1),
-				Vector3((float)view->mViewport[2], (float)view->mViewport[3] / 2, 0),
-				Vector3((float)view->mViewport[2], (float)view->mViewport[3] / 2, 1),
-				Vector3((float)view->mViewport[2] / 2, (float)view->mViewport[3], 0),
-				Vector3((float)view->mViewport[2] / 2, (float)view->mViewport[3], 1),
-				Vector3((float)view->mViewport[2] / 2, (float)view->mViewport[3] / 2, 0),
-				Vector3((float)view->mViewport[2] / 2, (float)view->mViewport[3] / 2, 1),
-			};
-
-			UnprojectPoints(Points, 10, ModelView, Projection, view->mViewport);
-
-			// Intersect lines with base plane.
-			Vector3 Intersections[5];
-			int i;
-
-			for (i = 0; i < 5; i++)
-				LinePlaneIntersection(&Intersections[i], Points[i*2], Points[i*2+1], Vector4(0, 0, 1, 0));
-
-			// Find the smallest edge length.
-			float MinSize = FLT_MAX;
-			for (i = 0; i < 4; i++)
-			{
-				float d1 = LinePointMinDistance(Intersections[4], Intersections[i], i == 0 ? Intersections[3] : Intersections[i-1]);
-
-				if (d1 < MinSize)
-					MinSize = d1;
-			}
-
-			// Draw grid.
-			float inc = 0.8f;
-			float z = 0.0f;
-			float xsteps = ceilf(MinSize / inc);
-
-			while (xsteps > 10)
-			{
-				xsteps = floorf(xsteps / 2);
-				inc *= 2;
-			}
-
-			float ysteps = xsteps;
-
-			float xmin = floorf((Intersections[4][0] + (10 * inc)) / (20 * inc)) * (20 * inc) - (xsteps * inc);
-			float ymin = floorf((Intersections[4][1] + (10 * inc)) / (20 * inc)) * (20 * inc) - (ysteps * inc);
-			xmin -= inc * 10;
-			ymin -= inc * 10;
-
-			xsteps *= 2;
-			ysteps *= 2;
-
-			if (fmodf(Intersections[4][0] + (10 * inc), (20 * inc)) > 0.5f)
-				xsteps += 20;
-			else
-				xsteps += 10;
-
-			if (fmodf(Intersections[4][1] + (10 * inc), (20 * inc)) > 0.5f)
-				ysteps += 20;
-			else
-				ysteps += 10;
-
-			float xmax = xmin + (xsteps + 1) * inc;
-			float ymax = ymin + (ysteps + 1) * inc;
-
-			// Draw lines.
-			glColor3f(0.75f, 0.75f, 0.75f);
-
-			float* Verts = new float[((int)xsteps + (int)ysteps + 4) * 6];
-			float* v = Verts;
-
-			for (int x = 0; x < xsteps + 2; x++)
-			{
-				*v++ = xmin + x * inc;
-				*v++ = ymin;
-				*v++ = z;
-				*v++ = xmin + x * inc;
-				*v++ = ymax;
-				*v++ = z;
-			}
-
-			for (int y = 0; y < ysteps + 2; y++)
-			{
-				*v++ = xmin;
-				*v++ = ymin + y * inc;
-				*v++ = z;
-				*v++ = xmax;
-				*v++ = ymin + y * inc;
-				*v++ = z;
-			}
-
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glVertexPointer(3, GL_FLOAT, 0, Verts);
-			glDrawArrays(GL_LINES, 0, ((int)xsteps + (int)ysteps + 4) * 2);
-			glDisableClientState(GL_VERTEX_ARRAY);
-			delete[] Verts;
-		}
-	}
-
-	// Setup lights.
-	if (m_nDetail & LC_DET_LIGHTING)
-	{
-		glEnable(GL_LIGHTING);
-
-		int index = 0;
-		lcObject* Light;
-
-		for (Light = m_ActiveModel->m_Lights; Light; Light = Light->m_Next, index++)
-			((lcLight*)Light)->Setup(index);
-	}
-
-	// Set render states.
-	if (m_nScene & LC_SCENE_FOG)
-	{
-		glEnable(GL_FOG);
-		glFogi(GL_FOG_MODE, GL_EXP);
-		glFogf(GL_FOG_DENSITY, m_fFogDensity);
-		glFogfv(GL_FOG_COLOR, m_fFogColor);
+			node->plane[2] = 1.0f;
 	}
 	else
-		glDisable(GL_FOG);
-
-	if (m_nDetail & LC_DET_SMOOTH)
-		glShadeModel(GL_SMOOTH);
-
-	// TODO: Build the render lists outside of the render function and only sort translucent sections here.
-
-	// Build a list for opaque and another for translucent mesh sections.
-	lcObjArray<lcRenderSection> OpaqueSections(1024);
-	lcObjArray<lcRenderSection> TranslucentSections(1024);
-
-	const Matrix44& WorldView = view->GetViewpoint()->mWorldView;
-
-	for (lcPiece * Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
 	{
-		if (!Piece->IsVisible(m_ActiveModel->m_CurFrame))
-			continue;
-
-		lcMesh* Mesh = Piece->m_PieceInfo->m_Mesh;
-
-		for (int i = 0; i < Mesh->m_SectionCount; i++)
-		{
-			lcRenderSection RenderSection;
-			lcMeshSection* Section = &Mesh->m_Sections[i];
-
-			RenderSection.Owner = Piece;
-			RenderSection.Mesh = Mesh;
-			RenderSection.Section = Section;
-			RenderSection.Edge = false;
-
-			if (Section->ColorIndex == LC_COLOR_DEFAULT || Section->ColorIndex == LC_COLOR_EDGE)
-				RenderSection.Color = Piece->m_Color;
-			else
-				RenderSection.Color = Section->ColorIndex;
-
-			if (RenderSection.Section->PrimitiveType == GL_LINES)
-			{
-				// FIXME: LC_DET_BRICKEDGES
-//				if ((m_nDetail & LC_DET_BRICKEDGES) == 0)
-//					continue;
-
-				if (Piece->IsFocused())
-					RenderSection.Color = LC_COLOR_FOCUS;
-				else if (Piece->IsSelected())
-					RenderSection.Color = LC_COLOR_SELECTION;
-				else if (Section->ColorIndex == LC_COLOR_EDGE)
-					RenderSection.Edge = true;
-			}
-
-			if (!RenderSection.Edge && LC_COLOR_TRANSLUCENT(RenderSection.Color))
-			{
-				// Sort by distance to the camera.
-				Vector3 Pos = Mul31(Section->Box.GetCenter(), Piece->m_ModelWorld);
-				Pos = Mul31(Pos, WorldView);
-				RenderSection.Distance = Pos[2];
-
-				TranslucentSections.Add(RenderSection);
-			}
-			else
-			{
-				// Pieces are already sorted by vertex buffer, so no need to sort again here.
-				// TODO: not true anymore, need to sort by vertex buffer here.
-				RenderSection.Distance = 0;
-				OpaqueSections.Add(RenderSection);
-			}
-		}
-	}
-
-	glEnableClientState(GL_VERTEX_ARRAY);
-	glDepthMask(GL_TRUE);
-	glDisable(GL_BLEND);
-
-	lcVertexBuffer* LastVertexBuffer = NULL;
-	lcIndexBuffer* LastIndexBuffer = NULL;
-	lcPiece* LastPiece = NULL;
-	lcMesh* LastMesh = NULL;
-
-	glPushMatrix();
-
-	// Render opaque sections.
-	for (int i = 0; i < OpaqueSections.GetSize(); i++)
-	{
-		lcRenderSection& RenderSection = OpaqueSections[i];
-		lcMesh* Mesh = RenderSection.Mesh;
-
-		if (Mesh->m_VertexBuffer != LastVertexBuffer)
-		{
-			LastVertexBuffer = Mesh->m_VertexBuffer;
-			LastVertexBuffer->BindBuffer();
-		}
-
-		if (Mesh->m_IndexBuffer != LastIndexBuffer)
-		{
-			LastIndexBuffer = Mesh->m_IndexBuffer;
-			LastIndexBuffer->BindBuffer();
-		}
-
-		if (LastPiece != RenderSection.Owner || LastMesh != Mesh)
-		{
-			LastPiece = RenderSection.Owner;
-			LastMesh = Mesh;
-			glPopMatrix();
-			glPushMatrix();
-			glMultMatrixf(LastPiece->m_ModelWorld);
-
-			if (LastPiece->IsSelected())
-				glLineWidth(2.0f);
-			else
-				glLineWidth(1.0f);
-		}
-
-		if (RenderSection.Edge)
-			lcSetEdgeColor(RenderSection.Color);
+		if (dy > dz)
+			node->plane[1] = 1.0f;
 		else
-			lcSetColor(RenderSection.Color);
-
-		lcMeshSection* Section = RenderSection.Section;
-
-#if LC_PROFILE
-		if (Section->PrimitiveType == GL_TRIANGLES)
-			g_RenderStats.TriCount += Section->IndexCount / 3;
-		else if (Section->PrimitiveType == GL_LINES)
-			g_RenderStats.LineCount += Section->IndexCount / 2;
-#endif
-
-		glDrawElements(Section->PrimitiveType, Section->IndexCount, Mesh->m_IndexType, (char*)LastIndexBuffer->GetDrawElementsOffset() + Section->IndexOffset);
+			node->plane[2] = 1.0f;
 	}
 
-	// Render translucent sections.
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glEnable(GL_BLEND);
-	glDepthMask(GL_FALSE);
+	// D = -Ax -By -Cz
+	node->plane[3] = -(node->plane[0]*(bs[0]+bs[3])/2)-(node->plane[1]*(bs[1]+bs[4])/2)-(node->plane[2]*(bs[2]+bs[5])/2);
 
-	for (int j = 0; j < TranslucentSections.GetSize(); j++)
+	for (pPiece = pList; pPiece;)
 	{
-		lcRenderSection& RenderSection = TranslucentSections[j];
-		lcMesh* Mesh = RenderSection.Mesh;
+		pos = pPiece->GetConstPosition();
+		pNext = pPiece->m_pLink;
 
-		if (Mesh->m_VertexBuffer != LastVertexBuffer)
+		if (pos[0]*node->plane[0] + pos[1]*node->plane[1] +
+			pos[2]*node->plane[2] + node->plane[3] > 0.0f)
 		{
-			LastVertexBuffer = Mesh->m_VertexBuffer;
-			LastVertexBuffer->BindBuffer();
+			pPiece->m_pLink = front_list;
+			front_list = pPiece;
+		}
+		else
+		{
+			pPiece->m_pLink = back_list;
+			back_list = pPiece;
 		}
 
-		if (Mesh->m_IndexBuffer != LastIndexBuffer)
-		{
-			LastIndexBuffer = Mesh->m_IndexBuffer;
-			LastIndexBuffer->BindBuffer();
-		}
-
-		if (LastPiece != RenderSection.Owner)
-		{
-			LastPiece = RenderSection.Owner;
-			glPopMatrix();
-			glPushMatrix();
-			glMultMatrixf(LastPiece->m_ModelWorld);
-		}
-
-		lcSetColor(RenderSection.Color);
-
-		lcMeshSection* Section = RenderSection.Section;
-
-#if LC_PROFILE
-		if (Section->PrimitiveType == GL_TRIANGLES)
-			g_RenderStats.TriCount += Section->IndexCount / 3;
-		else if (Section->PrimitiveType == GL_LINES)
-			g_RenderStats.LineCount += Section->IndexCount / 2;
-#endif
-
-		glDrawElements(Section->PrimitiveType, Section->IndexCount, Mesh->m_IndexType, (char*)LastIndexBuffer->GetDrawElementsOffset() + Section->IndexOffset);
+		pPiece = pNext;
 	}
 
-	glPopMatrix();
-
-	// Reset states.
-	glDisable(GL_BLEND);
-	glDepthMask(GL_TRUE);
-
-	if (LastVertexBuffer)
-		LastVertexBuffer->UnbindBuffer();
-
-	if (LastIndexBuffer)
-		LastIndexBuffer->UnbindBuffer();
-
-	if (Interface)
+	if (bs[0] == bs[3] && bs[1] == bs[4] && bs[2] == bs[5])
 	{
-		glLineWidth(2.0f);
-
-		// Draw selection boxes.
-		for (lcPiece * Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
+		if (back_list)
 		{
-			if (!Piece->IsVisible(m_ActiveModel->m_CurFrame) || !Piece->IsSelected())
-				continue;
-
-			const BoundingBox& Box = Piece->m_PieceInfo->m_BoundingBox;
-			Vector3 Size = Box.m_Max - Box.m_Min;
-
-			Matrix44 ScaleMatrix(Vector4(Size[0], 0.0f, 0.0f, 0.0f), Vector4(0.0f, Size[1], 0.0f, 0.0f), Vector4(0.0f, 0.0f, Size[2], 0.0f), Vector4(Box.GetCenter(), 1.0f));
-			Matrix44 ModelWorld = Mul(ScaleMatrix, Piece->m_ModelWorld);
-
-			glPushMatrix();
-			glMultMatrixf(ModelWorld);
-			lcSelectionMesh->Render(LC_COLOR_SELECTION, true, Piece->IsFocused());
-			glPopMatrix();
+			front_list = back_list;
+			back_list = back_list->m_pLink;
+			front_list->m_pLink = NULL;
 		}
-
-		// Add piece preview.
-		if (m_nCurAction == LC_ACTION_INSERT)
+		else
 		{
-			Vector3 Pos;
-			Vector4 Rot;
-			GetPieceInsertPosition(m_nDownX, m_nDownY, Pos, Rot);
-
-			glPushMatrix();
-			glTranslatef(Pos[0], Pos[1], Pos[2]);
-			glRotatef(Rot[3], Rot[0], Rot[1], Rot[2]);
-			glLineWidth(2*m_fLineWidth);
-			g_App->m_PiecePreview->m_Selection->RenderPiece(g_App->m_SelectedColor);
-			glLineWidth(m_fLineWidth);
-			glPopMatrix();
+			back_list = front_list;
+			front_list = front_list->m_pLink;
+			back_list->m_pLink = NULL;
 		}
+	}
+
+	if (front_list)
+	{
+		node->front = new LC_BSPNODE;
+		BuildBSP(node->front, front_list);
+	}
+	else
+		node->front = NULL;
+
+	if (back_list)
+	{
+		node->back = new LC_BSPNODE;
+		BuildBSP(node->back, back_list);
+	}
+	else
+		node->back = NULL;
+}
+
+void Project::RenderScenePieces(View* view)
+{
+	float AspectRatio = (float)view->GetWidth() / (float)view->GetHeight();
+	view->m_Camera->LoadProjection(AspectRatio);
+
+	if (m_nSnap & LC_DRAW_GRID)
+	{
+		glColor3f(1.0f - m_fBackground[0], 1.0f - m_fBackground[1], 1.0f - m_fBackground[2]);
+		glCallList (m_nGridList);
 	}
 
 	if (m_nDetail & LC_DET_LIGHTING)
 	{
-		glDisable(GL_LIGHTING);
-
 		int index = 0;
-		lcLight* Light;
+		Light *pLight;
 
-		for (Light = m_ActiveModel->m_Lights; Light; Light = (lcLight*)Light->m_Next, index++)
-			glDisable((GLenum)(GL_LIGHT0+index));
+		for (pLight = m_pLights; pLight; pLight = pLight->m_pNext, index++)
+			pLight->Setup (index);
+
+		glEnable(GL_LIGHTING);
 	}
 
-	// Draw cameras and lights.
-	for (lcCamera* Camera = m_ActiveModel->m_Cameras; Camera; Camera = (lcCamera*)Camera->m_Next)
+	if (m_nScene & LC_SCENE_FOG)
+		glEnable(GL_FOG);
+
+	if (m_nScene & LC_SCENE_FLOOR)
+		m_pTerrain->Render(view->m_Camera, AspectRatio);
+
+	unsigned char nLastColor = 255;
+	bool bTrans = false;
+	bool bSel = false;
+	bool bCull = false;
+	Piece* pPiece;
+
+	LC_BSPNODE tree;
+	tree.front = tree.back = NULL;
+	Piece* pList = NULL;
+
+	// Draw opaque pieces first
+	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 	{
-		if ((Camera == view->GetCamera1()) || !Camera->IsVisible())
+		if (!pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation))
 			continue;
-		Camera->Render(m_fLineWidth);
+
+		if (!pPiece->IsTransparent())
+		{
+			if (pPiece->IsSelected())
+			{
+				if (!bSel)
+				{
+					bSel = true;
+					glLineWidth (2*m_fLineWidth);
+				}
+			}
+			else
+			{
+				if (bSel)
+				{
+					bSel = false;
+					glLineWidth(m_fLineWidth);
+				}
+			}
+
+			pPiece->Render((m_nDetail & LC_DET_LIGHTING) != 0, (m_nDetail & LC_DET_BRICKEDGES) != 0, &nLastColor, &bTrans);
+		}
+		else
+		{
+			pPiece->m_pLink = pList;
+			pList = pPiece;
+		}
 	}
 
-	for (lcLight* Light = m_ActiveModel->m_Lights; Light; Light = (lcLight*)Light->m_Next)
+	if (pList)
 	{
-		if (Light->IsVisible())
-			Light->Render(m_fLineWidth);
+		float eye[3];
+		view->m_Camera->GetEyePos (eye);
+		BuildBSP(&tree, pList);
+		RenderBSP(&tree, eye, &bSel, (m_nDetail & LC_DET_LIGHTING) != 0, (m_nDetail & LC_DET_BRICKEDGES) != 0, &nLastColor, &bTrans);
 	}
 
-#ifdef LC_DEBUG
-	RenderDebugPrimitives();
-#endif
+	if (bTrans)
+	{
+		glDepthMask(GL_TRUE);
+		glDisable(GL_BLEND);
+	}
+
+	if (bSel)
+		glLineWidth(m_fLineWidth);
+
+	if (bCull)
+		glDisable(GL_CULL_FACE);
 }
 
 void Project::RenderSceneBoxes(View* view)
 {
-	glDisable(GL_LIGHTING);
-	glDisable(GL_FOG);
-	glShadeModel(GL_FLAT);
-//	glEnable(GL_CULL_FACE);
+	Piece* pPiece;
 
-	// Wireframe
 	glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
-	for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-		if (Piece->IsVisible(m_ActiveModel->m_CurFrame))
-			Piece->RenderBox(true, m_fLineWidth);
+	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+		if (pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation))
+			pPiece->RenderBox(true, m_fLineWidth);
 
 	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 }
 
-void Project::RenderInterface(View* view)
+void Project::RenderSceneObjects(View* view)
 {
-	// Set render states.
-	glDisable(GL_LIGHTING);
-	glDisable(GL_FOG);
-	glShadeModel(GL_FLAT);
-	glLineWidth(1.0f);
+#ifdef LC_DEBUG
+	RenderDebugPrimitives();
+#endif
 
-	glDepthMask(GL_TRUE);
-	glEnable(GL_DEPTH_TEST);
+	// Draw cameras & lights
+	if (m_nCurAction == LC_ACTION_INSERT)
+	{
+		Vector3 Pos;
+		Vector4 Rot;
+		GetPieceInsertPosition(view, m_nDownX, m_nDownY, Pos, Rot);
 
-	// Start with a new Z buffer.
-	glClear(GL_DEPTH_BUFFER_BIT);
+		glPushMatrix();
+		glTranslatef(Pos[0], Pos[1], Pos[2]);
+		glRotatef(Rot[3], Rot[0], Rot[1], Rot[2]);
+		glLineWidth(2*m_fLineWidth);
+		m_pCurPiece->RenderPiece(m_nCurColor);
+		glLineWidth(m_fLineWidth);
+		glPopMatrix();
+	}
 
-	float w = (float)view->GetWidth();
-	float h = (float)view->GetHeight();
+	if (m_nDetail & LC_DET_LIGHTING)
+	{
+		glDisable (GL_LIGHTING);
+		int index = 0;
+		Light *pLight;
+				
+		for (pLight = m_pLights; pLight; pLight = pLight->m_pNext, index++)
+			glDisable ((GLenum)(GL_LIGHT0+index));
+	}
+			
+	for (Camera* pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+	{
+		if ((pCamera == view->m_Camera) || !pCamera->IsVisible())
+			continue;
+		pCamera->Render(m_fLineWidth);
+	}
 
-	// Draw camera cube.
-	view->DrawViewCube();
+	for (Light* pLight = m_pLights; pLight; pLight = pLight->m_pNext)
+		if (pLight->IsVisible ())
+			pLight->Render(m_fLineWidth);
 
-	// Render axis icon.
+	// Draw axis icon
 	if (m_nSnap & LC_DRAW_AXIS)
 	{
-		Matrix44 Mats[3];
-		Mats[0] = view->GetViewpoint()->mWorldView;
-		Mats[1] = Matrix44(Mats[0][1], Mats[0][0], Mats[0][2], Mats[0][3]);
-		Mats[2] = Matrix44(Mats[0][2], Mats[0][1], Mats[0][0], Mats[0][3]);
+//		glClear(GL_DEPTH_BUFFER_BIT);
 
-		Vector3 pts[3] = { Vector3(Mats[0][0]) * 20, Vector3(Mats[0][1]) * 20, Vector3(Mats[0][2]) * 20 };
+		Matrix Mats[3];
+		Mats[0].CreateLookat(view->m_Camera->GetEyePos(), view->m_Camera->GetTargetPos(), view->m_Camera->GetUpVec());
+		Mats[0].SetTranslation(0, 0, 0);
+
+		float m1[] = { 0, 1, 0, 0,  1, 0, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1 };
+		float m2[] = { 0, 0, 1, 0,  0, 1, 0, 0,  1, 0, 0, 0,  0, 0, 0, 1 };
+		Mats[1].Multiply(Mats[0], Matrix(m1));
+		Mats[2].Multiply(Mats[0], Matrix(m2));
+
+		float pts[3][3] = { { 20, 0, 0 }, { 0, 20, 0 }, { 0, 0, 20 } };
+		Mats[0].TransformPoints(&pts[0][0], 3);
 
 		glMatrixMode(GL_PROJECTION);
 		glLoadIdentity();
-		glOrtho(0, w, 0, h, -50, 50);
+		glOrtho(0, view->GetWidth(), 0, view->GetHeight(), -50, 50);
 		glMatrixMode(GL_MODELVIEW);
 		glLoadIdentity();
 		glTranslatef(25.375f, 25.375f, 0.0f);
@@ -2147,32 +2082,20 @@ void Project::RenderInterface(View* view)
 				break;
 			}
 
-			float Verts[11][3];
+			glBegin(GL_LINES);
+			glVertex3f(pts[i][0], pts[i][1], pts[i][2]);
+			glVertex3f(0, 0, 0);
+			glEnd();
 
-			Verts[0][0] = 0.0f;
-			Verts[0][1] = 0.0f;
-			Verts[0][2] = 0.0f;
-
-			Verts[1][0] = pts[i][0];
-			Verts[1][1] = pts[i][1];
-			Verts[1][2] = pts[i][2];
-
+			glBegin(GL_TRIANGLE_FAN);
+			glVertex3f(pts[i][0], pts[i][1], pts[i][2]);
 			for (int j = 0; j < 9; j++)
 			{
-				Vector3 pt(12.0f, cosf(LC_2PI * j / 8) * 3.0f, sinf(LC_2PI * j / 8) * 3.0f);
-				pt = Mul30(pt, Mats[i]);
-				Verts[j+2][0] = pt[0];
-				Verts[j+2][1] = pt[1];
-				Verts[j+2][2] = pt[2];
+				float pt[3] = { 12.0f, cosf(LC_2PI * j / 8) * 3.0f, sinf(LC_2PI * j / 8) * 3.0f };
+				Mats[i].TransformPoints(pt, 1);
+				glVertex3f(pt[0], pt[1], pt[2]);
 			}
-
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glVertexPointer(3, GL_FLOAT, 0, Verts);
-
-			glDrawArrays(GL_LINES, 0, 2);
-			glDrawArrays(GL_TRIANGLE_FAN, 1, 10);
-
-			glDisableClientState(GL_VERTEX_ARRAY);
+			glEnd();
 		}
 
 		// Draw the text.
@@ -2181,108 +2104,54 @@ void Project::RenderInterface(View* view)
 		glEnable(GL_TEXTURE_2D);
 		glEnable(GL_ALPHA_TEST);
 
-		glColor4f(0, 0, 0, 1);
+		glBegin(GL_QUADS);
+		glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
 		m_pScreenFont->PrintText(pts[0][0], pts[0][1], 40.0f, "X");
 		m_pScreenFont->PrintText(pts[1][0], pts[1][1], 40.0f, "Y");
 		m_pScreenFont->PrintText(pts[2][0], pts[2][1], 40.0f, "Z");
+		glEnd();
 
 		glDisable(GL_TEXTURE_2D);
 		glDisable(GL_ALPHA_TEST);
 	}
+}
 
-	// Render overlays.
-	if (m_OverlayActive)
-		RenderOverlays(view);
-
+void Project::RenderOverlays(View* view)
+{
 	// Draw the selection rectangle.
-	if ((m_nCurAction == LC_ACTION_SELECT) && (m_nTracking == LC_TRACK_LEFT))
+	if ((m_nCurAction == LC_ACTION_SELECT) && (m_nTracking == LC_TRACK_LEFT) && (m_ActiveView == view))
 	{
 		glMatrixMode(GL_PROJECTION);
 		glLoadIdentity();
-		glOrtho(0, w, 0, h, -1, 1);
+		glOrtho(0.0f, view->GetWidth(), 0.0f, view->GetHeight(), -1.0f, 1.0f);
 		glMatrixMode(GL_MODELVIEW);
 		glLoadIdentity();
-		glTranslatef(0.375, 0.375, 0.0);
+		glTranslatef(0.375f, 0.375f, 0.0f);
 
 		glDisable(GL_DEPTH_TEST);
-		glEnableLineStipple();
-		glColor4f(0, 0, 0, 1);
+		glEnable(GL_LINE_STIPPLE);
+		glLineStipple(5, 0x5555);
+		glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
 
 		float pt1x = (float)m_nDownX;
 		float pt1y = (float)m_nDownY;
 		float pt2x = m_fTrack[0];
 		float pt2y = m_fTrack[1];
 
-		float verts[8][2] =
-		{
-			{ pt1x, pt1y }, { pt2x, pt1y },
-			{ pt2x, pt1y }, { pt2x, pt2y },
-			{ pt2x, pt2y }, { pt1x, pt2y },
-			{ pt1x, pt2y }, { pt1x, pt1y }
-		};
+		glBegin(GL_LINES);
+		glVertex2f(pt1x, pt1y);
+		glVertex2f(pt2x, pt1y);
+		glVertex2f(pt2x, pt1y);
+		glVertex2f(pt2x, pt2y);
+		glVertex2f(pt2x, pt2y);
+		glVertex2f(pt1x, pt2y);
+		glVertex2f(pt1x, pt2y);
+		glVertex2f(pt1x, pt1y);
+		glEnd();
 
-		glEnableClientState(GL_VERTEX_ARRAY);
-		glVertexPointer(2, GL_FLOAT, 0, verts);
-		glDrawArrays(GL_LINES, 0, 8);
-		glDisableClientState(GL_VERTEX_ARRAY);
-
-		glDisableLineStipple();
+		glDisable(GL_LINE_STIPPLE);
 		glEnable(GL_DEPTH_TEST);
 	}
-
-	// Setup the viewport.
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
-	glOrtho(0, w, 0, h, -1, 1);
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
-	glTranslatef(0.375f, 0.375f, 0.0);
-
-	// Draw border.
-	glLineWidth(1.0f);
-	if (view == m_ActiveView)
-		glColor4f(1.0f, 0.0f, 0.0f, 1.0f);
-	else
-		glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
-
-	glEnableClientState(GL_VERTEX_ARRAY);
-
-	float cx = (float)view->GetWidth() - 1.0f;
-	float cy = (float)view->GetHeight() - 1.0f;
-	float Verts[4][2] = { { 0, 0 }, { cx, 0 }, { cx, cy }, { 0, cy } };
-
-	glVertexPointer(2, GL_FLOAT, 0, Verts);
-	glDrawArrays(GL_LINE_LOOP, 0, 4);
-
-	glDisableClientState(GL_VERTEX_ARRAY);
-
-	// Draw camera name.
-	lcCamera* Camera = view->GetCamera1();
-
-	if (Camera)
-	{
-		glEnable(GL_TEXTURE_2D);
-		m_pScreenFont->MakeCurrent();
-		glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-		glEnable(GL_ALPHA_TEST);
-
-		glColor4f(0, 0, 0, 1);
-		m_pScreenFont->PrintText(3, h - 6, 0.0f, Camera->m_Name);
-
-		glDisable(GL_ALPHA_TEST);
-		glDisable(GL_TEXTURE_2D);
-	}
-}
-
-void Project::RenderOverlays(View* view)
-{
-	Matrix44 Projection = view->GetProjectionMatrix();
-
-	glMatrixMode(GL_PROJECTION);
-	glLoadMatrixf(Projection);
-
-	glMatrixMode(GL_MODELVIEW);
-	glLoadMatrixf(view->GetViewpoint()->mWorldView);
 
 	const float OverlayScale = view->m_OverlayScale;
 
@@ -2296,18 +2165,15 @@ void Project::RenderOverlays(View* view)
 		glDisable(GL_DEPTH_TEST);
 
 		// Find the rotation from the focused piece if relative snap is enabled.
-		lcObject* Focus = NULL;
-		Matrix44 Rot;
+		Object* Focus = NULL;
+		float Rot[4];
 
 		if ((m_nSnap & LC_DRAW_GLOBAL_SNAP) == 0)
 		{
 			Focus = GetFocusObject();
 
 			if ((Focus != NULL) && Focus->IsPiece())
-			{
-				Rot = ((lcPiece*)Focus)->m_ModelWorld;
-				Rot.SetTranslation(Vector3(0, 0, 0));
-			}
+				((Piece*)Focus)->GetRotation(Rot);
 			else
 				Focus = NULL;
 		}
@@ -2319,7 +2185,7 @@ void Project::RenderOverlays(View* view)
 			glTranslatef(m_OverlayCenter[0], m_OverlayCenter[1], m_OverlayCenter[2]);
 
 			if (Focus)
-				glMultMatrixf(Rot);
+				glRotatef(Rot[3], Rot[0], Rot[1], Rot[2]);
 
 			if (m_OverlayMode == LC_OVERLAY_XZ)
 				glRotatef(90.0f, 0.0f, 0.0f, -1.0f);
@@ -2329,21 +2195,13 @@ void Project::RenderOverlays(View* view)
 			glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 			glEnable(GL_BLEND);
 
+			glBegin(GL_QUADS);
 			glColor4f(0.8f, 0.8f, 0.0f, 0.3f);
-
-			float verts[4][3] =
-			{
-				{ 0.0f, 0.0f, 0.0f },
-				{ 0.0f, OverlayScale * OverlayMovePlaneSize, 0.0f },
-				{ 0.0f, OverlayScale * OverlayMovePlaneSize, OverlayScale * OverlayMovePlaneSize },
-				{ 0.0f, 0.0f, OverlayScale * OverlayMovePlaneSize }
-			};
-
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glVertexPointer(3, GL_FLOAT, 0, verts);
-			glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-			glDisableClientState(GL_VERTEX_ARRAY);
-
+			glVertex3f(0.0f, 0.0f, 0.0f);
+			glVertex3f(0.0f, OverlayScale * OverlayMovePlaneSize, 0.0f);
+			glVertex3f(0.0f, OverlayScale * OverlayMovePlaneSize, OverlayScale * OverlayMovePlaneSize);
+			glVertex3f(0.0f, 0.0f, OverlayScale * OverlayMovePlaneSize);
+			glEnd();
 
 			glDisable(GL_BLEND);
 
@@ -2379,35 +2237,27 @@ void Project::RenderOverlays(View* view)
 			glTranslatef(m_OverlayCenter[0], m_OverlayCenter[1], m_OverlayCenter[2]);
 
 			if (Focus)
-				glMultMatrixf(Rot);
+				glRotatef(Rot[3], Rot[0], Rot[1], Rot[2]);
 
 			if (i == 1)
 				glRotatef(90.0f, 0.0f, 0.0f, 1.0f);
 			else if (i == 2)
 				glRotatef(90.0f, 0.0f, -1.0f, 0.0f);
 
-			float Verts[11][3];
+			glBegin(GL_LINES);
+			glVertex3f(0.0f, 0.0f, 0.0f);
+			glVertex3f(OverlayScale * OverlayMoveArrowSize, 0.0f, 0.0f);
+			glEnd();
 
-			Verts[0][0] = 0.0f;
-			Verts[0][1] = 0.0f;
-			Verts[0][2] = 0.0f;
-
-			Verts[1][0] = OverlayScale * OverlayMoveArrowSize;
-			Verts[1][1] = 0.0f;
-			Verts[1][2] = 0.0f;
-
+			glBegin(GL_TRIANGLE_FAN);
+			glVertex3f(OverlayScale * OverlayMoveArrowSize, 0.0f, 0.0f);
 			for (int j = 0; j < 9; j++)
 			{
-				Verts[j+2][0] = OverlayScale * OverlayMoveArrowCapSize;
-				Verts[j+2][1] = cosf(LC_2PI * j / 8) * OverlayMoveArrowCapRadius * OverlayScale;
-				Verts[j+2][2] = sinf(LC_2PI * j / 8) * OverlayMoveArrowCapRadius * OverlayScale;
+				float y = cosf(LC_2PI * j / 8) * OverlayMoveArrowCapRadius * OverlayScale;
+				float z = sinf(LC_2PI * j / 8) * OverlayMoveArrowCapRadius * OverlayScale;
+				glVertex3f(OverlayScale * OverlayMoveArrowCapSize, y, z);
 			}
-
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glVertexPointer(3, GL_FLOAT, 0, Verts);
-			glDrawArrays(GL_LINES, 0, 2);
-			glDrawArrays(GL_TRIANGLE_FAN, 1, 10);
-			glDisableClientState(GL_VERTEX_ARRAY);
+			glEnd();
 
 			glPopMatrix();
 		}
@@ -2420,29 +2270,26 @@ void Project::RenderOverlays(View* view)
 
 		glDisable(GL_DEPTH_TEST);
 
-		lcViewpoint* Viewpoint = view->GetViewpoint();
+		Camera* Cam = view->m_Camera;
 		Matrix44 Mat;
 		int j;
 
 		// Find the rotation from the focused piece if relative snap is enabled.
-		lcObject* Focus = NULL;
-		Matrix44 Rot;
+		Object* Focus = NULL;
+		float Rot[4];
 
 		if ((m_nSnap & LC_DRAW_GLOBAL_SNAP) == 0)
 		{
 			Focus = GetFocusObject();
 
 			if ((Focus != NULL) && Focus->IsPiece())
-			{
-				Rot = ((lcPiece*)Focus)->m_ModelWorld;
-				Rot.SetTranslation(Vector3(0, 0, 0));
-			}
+				((Piece*)Focus)->GetRotation(Rot);
 			else
 				Focus = NULL;
 		}
 
 		// Draw a disc showing the rotation amount.
-		if (LengthSquared(m_MouseTotalDelta) != 0.0f && (m_nTracking != LC_TRACK_NONE))
+		if (m_MouseTotalDelta.LengthSquared() != 0.0f && (m_nTracking != LC_TRACK_NONE))
 		{
 			Vector4 Rotation;
 			float Angle, Step;
@@ -2485,23 +2332,16 @@ void Project::RenderOverlays(View* view)
 				glTranslatef(m_OverlayCenter[0], m_OverlayCenter[1], m_OverlayCenter[2]);
 
 				if (Focus)
-					glMultMatrixf(Rot);
+					glRotatef(Rot[3], Rot[0], Rot[1], Rot[2]);
 
 				glRotatef(Rotation[0], Rotation[1], Rotation[2], Rotation[3]);
 
 				glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 				glEnable(GL_BLEND);
 
-				float Verts[33][3];
-				int v = 0;
+				glBegin(GL_TRIANGLE_FAN);
 
-				glEnableClientState(GL_VERTEX_ARRAY);
-				glVertexPointer(3, GL_FLOAT, 0, Verts);
-
-				Verts[0][0] = 0.0f;
-				Verts[0][1] = 0.0f;
-				Verts[0][2] = 0.0f;
-				v++;
+				glVertex3f(0.0f, 0.0f, 0.0f);
 
 				float StartAngle;
 				int i = 0;
@@ -2516,19 +2356,7 @@ void Project::RenderOverlays(View* view)
 					float x = cosf((Step * i - StartAngle) * DTOR) * OverlayRotateRadius * OverlayScale;
 					float y = sinf((Step * i - StartAngle) * DTOR) * OverlayRotateRadius * OverlayScale;
 
-					Verts[v][0] = 0.0f;
-					Verts[v][1] = x;
-					Verts[v][2] = y;
-					v++;
-
-					if (v == 33)
-					{
-						glDrawArrays(GL_TRIANGLE_FAN, 0, v);
-						Verts[1][0] = Verts[32][0];
-						Verts[1][1] = Verts[32][1];
-						Verts[1][2] = Verts[32][2];
-						v = 2;
-					}
+					glVertex3f(0.0f, x, y);
 
 					i++;
 					if (Step > 0)
@@ -2538,21 +2366,21 @@ void Project::RenderOverlays(View* view)
 
 				} while (Angle >= 0.0f);
 
-				if (v > 2)
-					glDrawArrays(GL_TRIANGLE_FAN, 0, v);
+				glEnd();
 
-				glDisableClientState(GL_VERTEX_ARRAY);
 				glDisable(GL_BLEND);
 
 				glPopMatrix();
 			}
 		}
 
-		Mat = Viewpoint->mViewWorld;
+		Mat.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+		Mat.Transpose3();
 		Mat.SetTranslation(m_OverlayCenter);
 
 		// Draw the circles.
-		float Verts[32][3];
+		glBegin(GL_LINE_LOOP);
+		glColor3f(0.1f, 0.1f, 0.1f);
 
 		for (j = 0; j < 32; j++)
 		{
@@ -2564,31 +2392,27 @@ void Project::RenderOverlays(View* view)
 
 			Pt = Mul31(Pt, Mat);
 
-			Verts[j][0] = Pt[0];
-			Verts[j][1] = Pt[1];
-			Verts[j][2] = Pt[2];
+			glVertex3f(Pt[0], Pt[1], Pt[2]);
 		}
 
-		glColor4f(0.1f, 0.1f, 0.1f, 1.0f);
+		glEnd();
 
-		glEnableClientState(GL_VERTEX_ARRAY);
-		glVertexPointer(3, GL_FLOAT, 0, Verts);
-		glDrawArrays(GL_LINE_LOOP, 0, 32);
-		glDisableClientState(GL_VERTEX_ARRAY);
-
-		Vector3 ViewDir = Vector3(Viewpoint->mViewWorld[2]);
+		Vector3 ViewDir = Cam->GetTargetPosition() - Cam->GetEyePosition();
+		ViewDir.Normalize();
 
 		// Transform ViewDir to local space.
 		if (Focus)
 		{
-			Matrix33 WorldModel = RotTranInverse(Rot);
-			ViewDir = Mul30(ViewDir, WorldModel);
+			Matrix33 RotMat;
+			RotMat.CreateFromAxisAngle(Vector3(Rot[0], Rot[1], Rot[2]), -Rot[3] * LC_DTOR);
+
+			ViewDir = Mul(ViewDir, RotMat);
 		}
 
 		glTranslatef(m_OverlayCenter[0], m_OverlayCenter[1], m_OverlayCenter[2]);
 
 		if (Focus)
-			glMultMatrixf(Rot);
+			glRotatef(Rot[3], Rot[0], Rot[1], Rot[2]);
 
 		// Draw each axis circle.
 		for (int i = 0; i < 3; i++)
@@ -2613,8 +2437,7 @@ void Project::RenderOverlays(View* view)
 				}
 			}
 
-			float Verts[64][3];
-			int v = 0;
+			glBegin(GL_LINES);
 
 			for (int j = 0; j < 32; j++)
 			{
@@ -2622,7 +2445,6 @@ void Project::RenderOverlays(View* view)
 
 				switch (i)
 				{
-				default:
 				case 0:
 					v1 = Vector3(0.0f, cosf(LC_2PI * j / 32), sinf(LC_2PI * j / 32));
 					v2 = Vector3(0.0f, cosf(LC_2PI * (j + 1) / 32), sinf(LC_2PI * (j + 1) / 32));
@@ -2644,21 +2466,12 @@ void Project::RenderOverlays(View* view)
 					Vector3 Pt1 = v1 * OverlayRotateRadius * OverlayScale;
 					Vector3 Pt2 = v2 * OverlayRotateRadius * OverlayScale;
 
-					Verts[v][0] = Pt1[0];
-					Verts[v][1] = Pt1[1];
-					Verts[v][2] = Pt1[2];
-					v++;
-					Verts[v][0] = Pt2[0];
-					Verts[v][1] = Pt2[1];
-					Verts[v][2] = Pt2[2];
-					v++;
+					glVertex3f(Pt1[0], Pt1[1], Pt1[2]);
+					glVertex3f(Pt2[0], Pt2[1], Pt2[2]);
 				}
 			}
 
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glVertexPointer(3, GL_FLOAT, 0, Verts);
-			glDrawArrays(GL_LINES, 0, v);
-			glDisableClientState(GL_VERTEX_ARRAY);
+			glEnd();
 		}
 
 		// Draw tangent vector.
@@ -2666,9 +2479,9 @@ void Project::RenderOverlays(View* view)
 		{
 			if ((m_OverlayMode == LC_OVERLAY_X) || (m_OverlayMode == LC_OVERLAY_Y) || (m_OverlayMode == LC_OVERLAY_Z))
 			{
-				Vector3 Normal = Normalize(m_OverlayTrackStart - m_OverlayCenter);
-				Vector3 Tangent;
-				float Angle = 0;
+				Vector3 Tangent, Normal = m_OverlayTrackStart - m_OverlayCenter;
+				Normal.Normalize();
+				float Angle;
 
 				switch (m_OverlayMode)
 				{
@@ -2703,52 +2516,44 @@ void Project::RenderOverlays(View* view)
 					Vector3 Arrow;
 					Matrix33 Rot;
 
-					float Verts[6][3];
+					glBegin(GL_LINES);
+					glColor3f(0.8f, 0.8f, 0.0f);
 
-					Verts[0][0] = Pt[0];
-					Verts[0][1] = Pt[1];
-					Verts[0][2] = Pt[2];
-					Verts[1][0] = Tip[0];
-					Verts[1][1] = Tip[1];
-					Verts[1][2] = Tip[2];
+					glVertex3f(Pt[0], Pt[1], Pt[2]);
+					glVertex3f(Tip[0], Tip[1], Tip[2]);
 
-					Rot = MatrixFromAxisAngle(Vector4(Normal, LC_PI * 0.15f));
+					Rot.CreateFromAxisAngle(Normal, LC_PI * 0.15f);
 					Arrow = Mul(Tangent, Rot) * OverlayRotateArrowCapSize;
 
-					Verts[2][0] = Tip[0];
-					Verts[2][1] = Tip[1];
-					Verts[2][2] = Tip[2];
-					Verts[3][0] = Tip[0] - Arrow[0];
-					Verts[3][1] = Tip[1] - Arrow[1];
-					Verts[3][2] = Tip[2] - Arrow[2];
+					glVertex3f(Tip[0], Tip[1], Tip[2]);
+					glVertex3f(Tip[0] - Arrow[0], Tip[1] - Arrow[1], Tip[2] - Arrow[2]);
 
-					Rot = MatrixFromAxisAngle(Vector4(Normal, -LC_PI * 0.15f));
+					Rot.CreateFromAxisAngle(Normal, -LC_PI * 0.15f);
 					Arrow = Mul(Tangent, Rot) * OverlayRotateArrowCapSize;
 
-					Verts[4][0] = Tip[0];
-					Verts[4][1] = Tip[1];
-					Verts[4][2] = Tip[2];
-					Verts[5][0] = Tip[0] - Arrow[0];
-					Verts[5][1] = Tip[1] - Arrow[1];
-					Verts[5][2] = Tip[2] - Arrow[2];
+					glVertex3f(Tip[0], Tip[1], Tip[2]);
+					glVertex3f(Tip[0] - Arrow[0], Tip[1] - Arrow[1], Tip[2] - Arrow[2]);
 
-					glColor4f(0.8f, 0.8f, 0.0f, 1.0f);
-
-					glEnableClientState(GL_VERTEX_ARRAY);
-					glVertexPointer(3, GL_FLOAT, 0, Verts);
-					glDrawArrays(GL_LINES, 0, 6);
-					glDisableClientState(GL_VERTEX_ARRAY);
+					glEnd();
 				}
 
 				// Draw text.
-				if (view == m_ActiveView)
+//				if (Viewport == m_nActiveViewport)
 				{
-					Vector3 ScreenPos = ProjectPoint(Vector3(0.0f, 0.0f, 0.0f), view->GetViewpoint()->mWorldView, view->GetProjectionMatrix(), view->mViewport);
+					int Viewport[4] = { 0, 0, view->GetWidth(), view->GetHeight() };
+					float Aspect = (float)Viewport[2]/(float)Viewport[3];
+					Camera* Cam = view->m_Camera;
+
+					Matrix44 ModelView, Projection;
+					ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+					Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
+
+					Vector3 Screen = ProjectPoint(Vector3(0, 0, 0), ModelView, Projection, Viewport);
 
 					glMatrixMode(GL_PROJECTION);
 					glPushMatrix();
 					glLoadIdentity();
-					glOrtho(m_ActiveView->mViewport[0], m_ActiveView->mViewport[2], m_ActiveView->mViewport[1], m_ActiveView->mViewport[3], -1, 1);
+					glOrtho(0, Viewport[2], 0, Viewport[3], -1, 1);
 					glMatrixMode(GL_MODELVIEW);
 					glPushMatrix();
 					glLoadIdentity();
@@ -2765,8 +2570,10 @@ void Project::RenderOverlays(View* view)
 					int cx, cy;
 					m_pScreenFont->GetStringDimensions(&cx, &cy, buf);
 
-					glColor4f(0.8f, 0.8f, 0.0f, 1.0f);
-					m_pScreenFont->PrintText(ScreenPos[0] - m_ActiveView->mViewport[0] - (cx / 2), ScreenPos[1] - m_ActiveView->mViewport[1] + (cy / 2), 0.0f, buf);
+					glBegin(GL_QUADS);
+					glColor3f(0.8f, 0.8f, 0.0f);
+					m_pScreenFont->PrintText(Screen[0] - Viewport[0] - (cx / 2), Screen[1] - Viewport[1] + (cy / 2), 0.0f, buf);
+					glEnd();
 
 					glDisable(GL_TEXTURE_2D);
 					glDisable(GL_ALPHA_TEST);
@@ -2781,12 +2588,15 @@ void Project::RenderOverlays(View* view)
 
 		glEnable(GL_DEPTH_TEST);
 	}
-	else if (m_nCurAction == LC_ACTION_ORBIT)
+	else if (m_nCurAction == LC_ACTION_ROTATE_VIEW)
 	{
-		float w = (float)view->GetWidth();
-		float h = (float)view->GetHeight();
+		int x, y, w, h;
 
-		glViewport(0, 0, view->GetWidth(), view->GetHeight());
+		x = 0;
+		y = 0;
+		w = view->GetWidth();
+		h = view->GetHeight();
+
 		glMatrixMode(GL_PROJECTION);
 		glLoadIdentity();
 		glOrtho(0, w, 0, h, -1, 1);
@@ -2795,100 +2605,129 @@ void Project::RenderOverlays(View* view)
 		glTranslatef(0.375f, 0.375f, 0.0f);
 
 		glDisable(GL_DEPTH_TEST);
-		glColor4f(0, 0, 0, 1);
+		glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
 
 		// Draw circle.
-		float verts[32][2];
+		glBegin(GL_LINE_LOOP);
 
 		float r = min(w, h) * 0.35f;
-		float cx = w / 2.0f;
-		float cy = h / 2.0f;
+		float cx = x + w / 2.0f;
+		float cy = y + h / 2.0f;
 
 		for (int i = 0; i < 32; i++)
 		{
-			verts[i][0] = cosf((float)i / 32.0f * (2.0f * LC_PI)) * r + cx;
-			verts[i][1] = sinf((float)i / 32.0f * (2.0f * LC_PI)) * r + cy;
+			float x = cosf((float)i / 32.0f * (2.0f * LC_PI)) * r + cx;
+			float y = sinf((float)i / 32.0f * (2.0f * LC_PI)) * r + cy;
+
+			glVertex2f(x, y);
 		}
 
-		glEnableClientState(GL_VERTEX_ARRAY);
-		glVertexPointer(2, GL_FLOAT, 0, verts);
-		glDrawArrays(GL_LINE_LOOP, 0, 32);
+		glEnd();
 
 		const float OverlayCameraSquareSize = max(8.0f, (w+h)/200);
 
 		// Draw squares.
-		float Squares[16][3] =
-		{
-			{ cx + OverlayCameraSquareSize, cy + r + OverlayCameraSquareSize },
-			{ cx - OverlayCameraSquareSize, cy + r + OverlayCameraSquareSize },
-			{ cx - OverlayCameraSquareSize, cy + r - OverlayCameraSquareSize },
-			{ cx + OverlayCameraSquareSize, cy + r - OverlayCameraSquareSize },
-			{ cx + OverlayCameraSquareSize, cy - r + OverlayCameraSquareSize },
-			{ cx - OverlayCameraSquareSize, cy - r + OverlayCameraSquareSize },
-			{ cx - OverlayCameraSquareSize, cy - r - OverlayCameraSquareSize },
-			{ cx + OverlayCameraSquareSize, cy - r - OverlayCameraSquareSize },
-			{ cx + r + OverlayCameraSquareSize, cy + OverlayCameraSquareSize },
-			{ cx + r - OverlayCameraSquareSize, cy + OverlayCameraSquareSize },
-			{ cx + r - OverlayCameraSquareSize, cy - OverlayCameraSquareSize },
-			{ cx + r + OverlayCameraSquareSize, cy - OverlayCameraSquareSize },
-			{ cx - r + OverlayCameraSquareSize, cy + OverlayCameraSquareSize },
-			{ cx - r - OverlayCameraSquareSize, cy + OverlayCameraSquareSize },
-			{ cx - r - OverlayCameraSquareSize, cy - OverlayCameraSquareSize },
-			{ cx - r + OverlayCameraSquareSize, cy - OverlayCameraSquareSize }
-		};
+		glBegin(GL_LINE_LOOP);
+		glVertex2f(cx + OverlayCameraSquareSize, cy + r + OverlayCameraSquareSize);
+		glVertex2f(cx - OverlayCameraSquareSize, cy + r + OverlayCameraSquareSize);
+		glVertex2f(cx - OverlayCameraSquareSize, cy + r - OverlayCameraSquareSize);
+		glVertex2f(cx + OverlayCameraSquareSize, cy + r - OverlayCameraSquareSize);
+		glEnd();
 
-		glVertexPointer(3, GL_FLOAT, 0, Squares);
-		glDrawArrays(GL_LINE_LOOP, 0, 4);
-		glDrawArrays(GL_LINE_LOOP, 4, 4);
-		glDrawArrays(GL_LINE_LOOP, 8, 4);
-		glDrawArrays(GL_LINE_LOOP, 12, 4);
+		glBegin(GL_LINE_LOOP);
+		glVertex2f(cx + OverlayCameraSquareSize, cy - r + OverlayCameraSquareSize);
+		glVertex2f(cx - OverlayCameraSquareSize, cy - r + OverlayCameraSquareSize);
+		glVertex2f(cx - OverlayCameraSquareSize, cy - r - OverlayCameraSquareSize);
+		glVertex2f(cx + OverlayCameraSquareSize, cy - r - OverlayCameraSquareSize);
+		glEnd();
 
-		glDisableClientState(GL_VERTEX_ARRAY);
+		glBegin(GL_LINE_LOOP);
+		glVertex2f(cx + r + OverlayCameraSquareSize, cy + OverlayCameraSquareSize);
+		glVertex2f(cx + r - OverlayCameraSquareSize, cy + OverlayCameraSquareSize);
+		glVertex2f(cx + r - OverlayCameraSquareSize, cy - OverlayCameraSquareSize);
+		glVertex2f(cx + r + OverlayCameraSquareSize, cy - OverlayCameraSquareSize);
+		glEnd();
+
+		glBegin(GL_LINE_LOOP);
+		glVertex2f(cx - r + OverlayCameraSquareSize, cy + OverlayCameraSquareSize);
+		glVertex2f(cx - r - OverlayCameraSquareSize, cy + OverlayCameraSquareSize);
+		glVertex2f(cx - r - OverlayCameraSquareSize, cy - OverlayCameraSquareSize);
+		glVertex2f(cx - r + OverlayCameraSquareSize, cy - OverlayCameraSquareSize);
+		glEnd();
+
 		glEnable(GL_DEPTH_TEST);
 	}
 	else if (m_nCurAction == LC_ACTION_ZOOM_REGION)
 	{
-		float w = (float)view->GetWidth();
-		float h = (float)view->GetHeight();
-
-		glViewport(0, 0, view->GetWidth(), view->GetHeight());
 		glMatrixMode(GL_PROJECTION);
 		glLoadIdentity();
-		glOrtho(0, w, 0, h, -1, 1);
+		glOrtho(0, view->GetWidth(), 0, view->GetHeight(), -1, 1);
 		glMatrixMode(GL_MODELVIEW);
 		glLoadIdentity();
 		glTranslatef(0.375f, 0.375f, 0.0f);
 
 		glDisable(GL_DEPTH_TEST);
-		glEnableLineStipple();
-		glColor4f(0, 0, 0, 1);
+		glEnable(GL_LINE_STIPPLE);
+		glLineStipple(5, 0x5555);
+		glColor3f(0, 0, 0);
 
 		float pt1x = (float)m_nDownX;
 		float pt1y = (float)m_nDownY;
 		float pt2x = m_OverlayTrackStart[0];
 		float pt2y = m_OverlayTrackStart[1];
 
-		float Verts[8][2] =
-		{
-			{ pt1x, pt1y }, { pt2x, pt1y },
-			{ pt2x, pt1y }, { pt2x, pt2y },
-			{ pt2x, pt2y }, { pt1x, pt2y },
-			{ pt1x, pt2y }, { pt1x, pt1y }
-		};
+		glBegin(GL_LINES);
+		glVertex2f(pt1x, pt1y);
+		glVertex2f(pt2x, pt1y);
+		glVertex2f(pt2x, pt1y);
+		glVertex2f(pt2x, pt2y);
+		glVertex2f(pt2x, pt2y);
+		glVertex2f(pt1x, pt2y);
+		glVertex2f(pt1x, pt2y);
+		glVertex2f(pt1x, pt1y);
+		glEnd();
 
-		glEnableClientState(GL_VERTEX_ARRAY);
-		glVertexPointer(2, GL_FLOAT, 0, Verts);
-		glDrawArrays(GL_LINES, 0, 8);
-		glDisableClientState(GL_VERTEX_ARRAY);
-
-		glDisableLineStipple();
+		glDisable(GL_LINE_STIPPLE);
 		glEnable(GL_DEPTH_TEST);
 	}
+}
+
+void Project::RenderViewports(View* view)
+{
+	glMatrixMode(GL_PROJECTION);
+	glLoadIdentity();
+	glOrtho(0.0f, view->GetWidth(), 0.0f, view->GetHeight(), -1.0f, 1.0f);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+	glTranslatef(0.375f, 0.375f, 0.0f);
+
+	glDepthMask(GL_FALSE);
+	glDisable(GL_DEPTH_TEST);
+	glDisable(GL_LIGHTING);
+	glDisable(GL_FOG);
+
+	// Draw camera name
+	glColor3f(0, 0, 0);
+	glEnable(GL_TEXTURE_2D);
+	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+	m_pScreenFont->MakeCurrent();
+	glEnable(GL_ALPHA_TEST);
+
+	glBegin(GL_QUADS);
+	m_pScreenFont->PrintText(3.0f, (float)view->GetHeight() - 1.0f - 6.0f, 0.0f, view->m_Camera->GetName());
+	glEnd();
+	
+	glDisable(GL_ALPHA_TEST);
+	glDisable(GL_TEXTURE_2D);
+
+	glDepthMask(GL_TRUE);
+	glEnable(GL_DEPTH_TEST);
 }
 
 // Initialize OpenGL
 void Project::RenderInitialize()
 {
+	int i;
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
 	glEnable(GL_POLYGON_OFFSET_FILL);
@@ -2909,6 +2748,7 @@ void Project::RenderInitialize()
 	if (m_nDetail & LC_DET_LIGHTING)
 	{
 		glEnable(GL_LIGHTING);
+		glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT);
 		glEnable(GL_COLOR_MATERIAL);
 
 		GLfloat mat_translucent[] = { (GLfloat)0.8, (GLfloat)0.8, (GLfloat)0.8, (GLfloat)1.0 };
@@ -2926,12 +2766,23 @@ void Project::RenderInitialize()
 	}
 
 	glLightModelfv(GL_LIGHT_MODEL_AMBIENT, m_fAmbient);
+	glClearColor(m_fBackground[0], m_fBackground[1], m_fBackground[2], 1.0f);
+
+	if (m_nScene & LC_SCENE_FOG)
+	{
+		glEnable(GL_FOG);
+		glFogi(GL_FOG_MODE, GL_EXP);
+		glFogf(GL_FOG_DENSITY, m_fFogDensity);
+		glFogfv(GL_FOG_COLOR, m_fFogColor);
+	}
+	else
+		glDisable (GL_FOG);
 
 	// Load font
 	if (!m_pScreenFont->IsLoaded())
 	{
 		char filename[LC_MAXPATH];
-		lcFileDisk file;
+		FileDisk file;
 
 		strcpy(filename, lcGetPiecesLibrary()->GetLibraryPath());
 		strcat(filename, "sysfont.txf");
@@ -2942,255 +2793,232 @@ void Project::RenderInitialize()
 
 	glAlphaFunc(GL_GREATER, 0.0625);
 
+	if (m_nScene & LC_SCENE_FLOOR)
+		m_pTerrain->LoadTexture(true);
+
 	if (m_nScene & LC_SCENE_BG)
-		if (!m_pBackground->LoadFromFile(m_strBackground))
+		if (!m_pBackground->LoadFromFile(m_strBackground, true))
 		{
 			m_nScene &= ~LC_SCENE_BG;
 //			AfxMessageBox ("Could not load background");
 		}
+
+	// Set the perspective correction hint to fastest or nicest...
+//	glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_FASTEST);
+
+	// Grid display list
+	if (m_nGridList == 0)
+		m_nGridList = glGenLists(1);
+	glNewList (m_nGridList, GL_COMPILE);
+	glEnableClientState(GL_VERTEX_ARRAY);
+	i = 2*(4*m_nGridSize+2); // verts needed (2*lines)
+	float *grid = (float*)malloc(i*sizeof(float[3]));
+	float x = m_nGridSize*0.8f;
+
+	for (int j = 0; j <= m_nGridSize*2; j++)
+	{
+		grid[j*12] = x;
+		grid[j*12+1] = m_nGridSize*0.8f;
+		grid[j*12+2] = 0;
+		grid[j*12+3] = x;
+		grid[j*12+4] = -m_nGridSize*0.8f;
+		grid[j*12+5] = 0;
+		grid[j*12+6] = m_nGridSize*0.8f;
+		grid[j*12+7] = x;
+		grid[j*12+8] = 0;
+		grid[j*12+9] = -m_nGridSize*0.8f;
+		grid[j*12+10] = x;
+		grid[j*12+11] = 0;
+		x -= 0.8f;
+	}
+	glVertexPointer(3, GL_FLOAT, 0, grid);
+	glDrawArrays(GL_LINES, 0, i);
+	glEndList();
+	free(grid);
 }
 
 /////////////////////////////////////////////////////////////////////////////
 // Project functions
 
-void Project::AddModel(lcModel* Model)
+void Project::AddPiece(Piece* pPiece)
 {
-	m_ModelList.Add(Model);
-}
+/*
+// Sort piece array to avoid OpenGL state changes (needs work)
+void CCADDoc::AddPiece(CPiece* pNewPiece)
+{
+	POSITION pos1, pos2;
 
-void Project::DeleteModel(lcModel* DeleteModel)
-{
-	// Make sure we aren't deleting the last model.
-	if (m_ModelList.GetSize() < 2)
+	for (pos1 = m_Pieces.GetHeadPosition(); (pos2 = pos1) != NULL;)
 	{
-		SystemDoMessageBox("Cannot delete model, projects must have at least 1 model.", LC_MB_OK | LC_MB_ICONINFORMATION);
-		return;
+		CPiece* pPiece = m_Pieces.GetNext(pos1);
+		if (pPiece->IsTransparent())
+			break;
 	}
 
-	// Ask the user if he really wants to delete this model.
-	char Text[1024];
-	sprintf(Text, "Are you sure you want to delete the model \"%s\"?", (char*)DeleteModel->m_Name);
-
-	if (SystemDoMessageBox(Text, LC_MB_YESNO | LC_MB_ICONQUESTION) != LC_YES)
-		return;
-
-	// Check if the current model is referenced by another model.
-	bool Referenced = false;
-
-	for (int i = 0; i < m_ModelList.GetSize(); i++)
+	if (pos2 == NULL || pNewPiece->IsTransparent())
+		m_Pieces.AddTail(pNewPiece);
+	else
+		m_Pieces.InsertBefore(pos2, pNewPiece);
+}
+*/
+	if (m_pPieces != NULL)
 	{
-		lcModel* Model = m_ModelList[i];
+		pPiece->m_pNext = m_pPieces;
+		m_pPieces = pPiece;
+	// TODO: sorting and BSP
+	}
+	else
+	{
+		m_pPieces = pPiece;
+		pPiece->m_pNext = NULL;
+	}
 
-		if (Model == DeleteModel)
-			continue;
+	pPiece->AddConnections(m_pConnections);
+}
 
-		if (Model->IsSubModel(DeleteModel))
+void Project::RemovePiece(Piece* pPiece)
+{
+	Piece* pTemp, *pLast;
+	pLast = NULL;
+
+	for (pTemp = m_pPieces; pTemp; pLast = pTemp, pTemp = pTemp->m_pNext)
+		if (pTemp == pPiece)
 		{
-			Referenced = true;
+			if (pLast != NULL)
+				pLast->m_pNext = pTemp->m_pNext;
+			else
+				m_pPieces = pTemp->m_pNext;
+
 			break;
 		}
-	}
 
-	if (Referenced)
-	{
-		const char* Prompt = "The model you are about to delete is referenced by other models in this project.\nDo you want to inline those references before deleting?";
-		bool Inline = (SystemDoMessageBox(Prompt, LC_MB_YESNO | LC_MB_ICONQUESTION) == LC_YES);
+	pPiece->RemoveConnections(m_pConnections);
 
-		for (int i = 0; i < m_ModelList.GetSize(); i++)
-		{
-			lcModel* Model = m_ModelList[i];
-
-			if (Model == DeleteModel)
-				continue;
-
-			lcPiece* Piece = Model->m_Pieces;
-			lcPiece* Prev = NULL;
-
-			while (Piece)
-			{
-				PieceInfo* Info = Piece->m_PieceInfo;
-
-				if (!(Info->m_nFlags & LC_PIECE_MODEL) || (Info->m_Model != DeleteModel))
-				{
-					Prev = Piece;
-					Piece = (lcPiece*)Piece->m_Next;
-					continue;
-				}
-
-				if (Inline)
-					Model->InlineModel(DeleteModel, Piece->m_ModelWorld, Piece->m_Color, Piece->m_TimeShow, Piece->m_TimeHide);
-
-				Model->RemovePiece(Piece);
-				delete Piece;
-
-				if (Prev)
-					Piece = Prev;
-				else
-					Piece = Model->m_Pieces;
-			}
-		}
-	}
-
-	if (m_ActiveModel == DeleteModel)
-		SetActiveModel(m_ModelList[0]);
-
-	m_ModelList.RemovePointer(DeleteModel);
-	delete DeleteModel;
-
-	SetModifiedFlag(true);
-	CheckPoint("Deleting Model");
-	SystemUpdateModelMenu(m_ModelList, m_ActiveModel);
-	UpdateAllViews();
-}
-
-void Project::SetActiveModel(lcModel* Model)
-{
-	if (m_ActiveModel)
-		m_ActiveModel->SetActive(false);
-
-	m_ActiveModel = Model;
-
-	if (m_ActiveModel)
-		m_ActiveModel->SetActive(true);
-
-	SystemUpdateModelMenu(m_ModelList, m_ActiveModel);
-	UpdateSelection();
-	UpdateAllViews();
-}
-
-void Project::UpdateAllModelMeshes()
-{
-	lcPtrArray<lcModel> ModelList;
-
-	// Sort models by dependency.
-	for (int ModelIndex = 0; ModelIndex < m_ModelList.GetSize(); ModelIndex++)
-	{
-		lcModel* Model = m_ModelList[ModelIndex];
-
-		int ListIndex;
-		for (ListIndex = 0; ListIndex < ModelList.GetSize(); ListIndex++)
-		{
-			if (Model->IsSubModel(ModelList[ListIndex]))
-			{
-				ModelList.InsertAt(ListIndex, Model);
-				break;
-			}
-		}
-
-		if (ListIndex == ModelList.GetSize())
-			ModelList.Add(Model);
-	}
-
-	for (int ListIndex = ModelList.GetSize()-1; ListIndex >= 0; ListIndex--)
-		ModelList[ListIndex]->UpdateMesh();
+	// TODO: remove from BSP
 }
 
 void Project::CalculateStep()
 {
-	lcPiece* Piece;
-	lcCamera* Camera;
-	lcLight* Light;
+	int PieceCount = 0;
+	Piece* pPiece;
+	Camera* pCamera;
+	Light* pLight;
 
-	for (Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-		Piece->UpdatePosition(m_ActiveModel->m_CurFrame);
+	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+	{
+		pPiece->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
+		PieceCount++;
+	}
 
-	for (Camera = m_ActiveModel->m_Cameras; Camera; Camera = (lcCamera*)Camera->m_Next)
-		Camera->UpdatePosition(m_ActiveModel->m_CurFrame);
+  SystemDoWaitCursor(1);
+	SystemStartProgressBar(0, PieceCount, 1, "Updating pieces...");
 
-	for (Light = m_ActiveModel->m_Lights; Light; Light = (lcLight*)Light->m_Next)
-		Light->UpdatePosition(m_ActiveModel->m_CurFrame);
+	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+	{
+		pPiece->CalculateConnections(m_pConnections, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, false, false);
+		SytemStepProgressBar();
+	}
+
+	SytemEndProgressBar();
+  SystemDoWaitCursor(-1);
+
+	for (pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+		pCamera->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
+
+	for (pLight = m_pLights; pLight; pLight = pLight->m_pNext)
+		pLight->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
 }
 
 // Returns true if anything was removed (used by cut and del)
 bool Project::RemoveSelectedObjects()
 {
-	lcPiece* Piece;
-	lcCamera* Camera;
-	lcLight* Light;
-	lcObject* Prev;
-	bool Removed = false;
+	Piece* pPiece;
+	Camera* pCamera;
+	Light* pLight;
+	void* pPrev;
+	bool removed = false;
 
-	Piece = m_ActiveModel->m_Pieces;
-	while (Piece)
+	pPiece = m_pPieces;
+	while (pPiece)
 	{
-		if (Piece->IsSelected())
+		if (pPiece->IsSelected())
 		{
-			lcPiece* Temp;
-			Temp = (lcPiece*)Piece->m_Next;
+			Piece* pTemp;
+			pTemp = pPiece->m_pNext;
 
-			Removed = true;
-			m_ActiveModel->RemovePiece(Piece);
-			delete Piece;
-			Piece = Temp;
+			removed = true;
+			RemovePiece(pPiece);
+			delete pPiece;
+			pPiece = pTemp;
 		}
 		else
-			Piece = (lcPiece*)Piece->m_Next;
+			pPiece = pPiece->m_pNext;
 	}
 
 	// Cameras can't be removed while being used or default
-	for (Prev = NULL, Camera = m_ActiveModel->m_Cameras; Camera; )
+	for (pPrev = NULL, pCamera = m_pCameras; pCamera; )
 	{
-		bool CanDelete = true;
+		bool bCanDelete = true;
 
-		for (int i = 0; i < m_ViewList.GetSize(); i++)
+		for (int ViewIdx = 0; ViewIdx < m_ViewList.GetSize(); ViewIdx++)
 		{
-			if (Camera == m_ViewList[i]->GetCamera1())
+			if (pCamera == m_ViewList[ViewIdx]->m_Camera)
 			{
-				CanDelete = false;
+				bCanDelete = false;
 				break;
 			}
 		}
 
-		if (CanDelete && Camera->IsSelected())
+		if (bCanDelete && pCamera->IsSelected() && pCamera->IsUser())
 		{
-			if (Prev)
+			if (pPrev)
 			{
-				Prev->m_Next = Camera->m_Next;
-				delete Camera;
-				Camera = (lcCamera*)Prev->m_Next;
+				((Camera*)pPrev)->m_pNext = pCamera->m_pNext;
+				delete pCamera;
+				pCamera = ((Camera*)pPrev)->m_pNext;
 			}
 			else
 			{
-				m_ActiveModel->m_Cameras = (lcCamera*)m_ActiveModel->m_Cameras->m_Next;
-				delete Camera;
-				Camera = m_ActiveModel->m_Cameras;
+				m_pCameras = m_pCameras->m_pNext;
+				delete pCamera;
+				pCamera = m_pCameras;
 			}
 			
-			Removed = true;
+			removed = true;
 
-			SystemUpdateCameraMenu(m_ActiveModel->m_Cameras);
-			SystemUpdateCurrentCamera(NULL, m_ActiveView->GetCamera1(), m_ActiveModel->m_Cameras);
+			SystemUpdateCameraMenu(m_pCameras);
+			SystemUpdateCurrentCamera(NULL, m_ActiveView->m_Camera, m_pCameras);
 		}
 		else
 		{
-			Prev = Camera;
-			Camera = (lcCamera*)Camera->m_Next;
+			pPrev = pCamera;
+			pCamera = pCamera->m_pNext;
 		}
 	}
 
-	for (Prev = NULL, Light = m_ActiveModel->m_Lights; Light; )
+	for (pPrev = NULL, pLight = m_pLights; pLight; )
 	{
-		if (Light->IsSelected())
+		if (pLight->IsSelected())
 		{
-			if (Prev)
+			if (pPrev)
 			{
-				Prev->m_Next = Light->m_Next;
-				delete Light;
-				Light = (lcLight*)Prev->m_Next;
+			  ((Light*)pPrev)->m_pNext = pLight->m_pNext;
+				delete pLight;
+				pLight = ((Light*)pPrev)->m_pNext;
 			}
 			else
 			{
-				m_ActiveModel->m_Lights = (lcLight*)m_ActiveModel->m_Lights->m_Next;
-				delete Light;
-				Light = m_ActiveModel->m_Lights;
+			  m_pLights = m_pLights->m_pNext;
+				delete pLight;
+				pLight = m_pLights;
 			}
 
-			Removed = true;
+			removed = true;
 		}
 		else
 		{
-			Prev = Light;
-			Light = (lcLight*)Light->m_Next;
+			pPrev = pLight;
+			pLight = pLight->m_pNext;
 		}
 	}
 
@@ -3198,52 +3026,52 @@ bool Project::RemoveSelectedObjects()
 //	CalculateStep();
 //	AfxGetMainWnd()->PostMessage(WM_LC_UPDATE_INFO, NULL, OT_PIECE);
 
-	return Removed;
+	return removed;
 }
 
 void Project::UpdateSelection()
 {
 	unsigned long flags = 0;
 	int SelectedCount = 0;
-	lcObject* Focus = NULL;
+	Object* Focus = NULL;
 
-	if (m_ActiveModel->m_Pieces == NULL)
+	if (m_pPieces == NULL)
 		flags |= LC_SEL_NO_PIECES;
 	else
 	{
-		lcPiece* Piece;
-		lcGroup* pGroup = NULL;
+		Piece* pPiece;
+		Group* pGroup = NULL;
 		bool first = true;
 
-		for (Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
+		for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 		{
-			if (Piece->IsSelected())
+			if (pPiece->IsSelected())
 			{
 				SelectedCount++;
 
-				if (Piece->IsFocused())
-					Focus = Piece;
+				if (pPiece->IsFocused())
+					Focus = pPiece;
 
 				if (flags & LC_SEL_PIECE)
 					flags |= LC_SEL_MULTIPLE;
 				else
 					flags |= LC_SEL_PIECE;
 
-				if (Piece->GetGroup() != NULL)
+				if (pPiece->GetGroup() != NULL)
 				{
 					flags |= LC_SEL_GROUP;
-					if (Piece->IsFocused())
+					if (pPiece->IsFocused())
 						flags |= LC_SEL_FOCUSGROUP;
 				}
 
 				if (first)
 				{
-					pGroup = Piece->GetGroup();
+					pGroup = pPiece->GetGroup();
 					first = false;
 				}
 				else
 				{
-					if (pGroup != Piece->GetGroup())
+					if (pGroup != pPiece->GetGroup())
 						flags |= LC_SEL_CANGROUP;
 					else
 						if (pGroup == NULL)
@@ -3254,30 +3082,30 @@ void Project::UpdateSelection()
 			{
 				flags |= LC_SEL_UNSELECTED;
 
-				if (Piece->IsHidden())
+				if (pPiece->IsHidden())
 					flags |= LC_SEL_HIDDEN;
 			}
 		}
 	}
 
-	for (lcCamera* Camera = m_ActiveModel->m_Cameras; Camera; Camera = (lcCamera*)Camera->m_Next)
-		if (Camera->IsSelected())
+	for (Camera* pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+		if (pCamera->IsSelected())
 		{
 			flags |= LC_SEL_CAMERA;
 			SelectedCount++;
 
-			if (Camera->IsEyeFocused() || Camera->IsTargetFocused())
-				Focus = Camera;
+			if (pCamera->IsEyeFocused() || pCamera->IsTargetFocused())
+				Focus = pCamera;
 		}
 
-	for (lcLight* Light = m_ActiveModel->m_Lights; Light; Light = (lcLight*)Light->m_Next)
-		if (Light->IsSelected())
+	for (Light* pLight = m_pLights; pLight; pLight = pLight->m_pNext)
+		if (pLight->IsSelected())
 		{
 			flags |= LC_SEL_LIGHT;
 			SelectedCount++;
 
-			if (Light->IsEyeFocused() || Light->IsTargetFocused())
-				Focus = Light;
+			if (pLight->IsEyeFocused() || pLight->IsTargetFocused())
+				Focus = pLight;
 		}
 
 	if (m_nTracking == LC_TRACK_NONE)
@@ -3322,102 +3150,84 @@ void Project::CheckAutoSave()
 	}
 }
 
-void Project::CheckAnimation()
+unsigned char Project::GetLastStep()
 {
-	if (!m_PlayingAnimation)
-		return;
+	unsigned char last = 1;
+	for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+		last = max(last, pPiece->GetStepShow());
 
-	u64 Now = SystemGetTicks();
-	u64 Elapsed = Now - m_LastFrameTime;
-	int Frames = (int)((float)Elapsed / 1000 * m_nFPS);
-
-	if (Frames)
-	{
-		m_ActiveModel->m_CurFrame += Frames;
-		while (m_ActiveModel->m_CurFrame > m_ActiveModel->m_TotalFrames)
-			m_ActiveModel->m_CurFrame -= m_ActiveModel->m_TotalFrames;
-
-		CalculateStep();
-		SystemUpdateTime(true, m_ActiveModel->m_CurFrame, m_ActiveModel->m_TotalFrames);
-
-		UpdateAllViews();
-	}
-}
-
-u32 Project::GetLastStep() // TODO: remove function
-{
-	return m_ActiveModel->GetLastStep();
+	return last;
 }
 
 // Create a series of pictures
-void Project::CreateImages(Image* images, int width, int height, unsigned short from, unsigned short to, bool hilite)
+void Project::CreateImages (Image* images, int width, int height, unsigned short from, unsigned short to, bool hilite)
 {
+	unsigned short oldtime;
 	void* render = Sys_StartMemoryRender (width, height);
-	unsigned char* buf = (unsigned char*)malloc(width*height*3);
-	u32 oldtime = m_ActiveModel->m_CurFrame;
+	unsigned char* buf = (unsigned char*)malloc (width*height*3);
+	oldtime = m_bAnimation ? m_nCurFrame : m_nCurStep;
 
 	View view(this, m_ActiveView);
+	view.m_Camera = m_ActiveView->m_Camera;
 	view.OnSize(width, height);
-
-	lcCamera* Camera = m_ActiveView->GetCamera1();
-	if (Camera)
-		view.SetCamera1(Camera);
-	else
-		view.SetViewpoint(m_ActiveView->GetViewpoint());
 
 	if (!hilite)
 		SelectAndFocusNone(false);
 
 	RenderInitialize();
 
-	for (u32 i = from; i <= to; i++)
+	for (int i = from; i <= to; i++)
 	{
-		m_ActiveModel->m_CurFrame = i;
+		if (m_bAnimation)
+			m_nCurFrame = i;
+		else
+			m_nCurStep = i;
 
 		if (hilite)
 		{
-			for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
+			for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 			{
-				if (Piece->m_TimeShow == i)
-					Piece->Select(true, false, false);
+				if ((m_bAnimation && pPiece->GetFrameShow() == i) ||
+					(!m_bAnimation && pPiece->GetStepShow() == i))
+					pPiece->Select (true, false, false);
 				else
-					Piece->Select(false, false, false);
+					pPiece->Select (false, false, false);
 			}
 		}
 
 		CalculateStep();
-		Render(&view, false, false);
+		Render(&view, true);
 		images[i-from].FromOpenGL (width, height);
 	}
 
-	m_ActiveModel->m_CurFrame = oldtime;
+	if (m_bAnimation)
+		m_nCurFrame = oldtime;
+	else
+		m_nCurStep = (unsigned char)oldtime;
 	CalculateStep();
 	free (buf);
 	Sys_FinishMemoryRender (render);
 }
 
-void Project::CreateHTMLPieceList(FILE* f, u32 nStep, bool bImages, const char* ext)
+void Project::CreateHTMLPieceList(FILE* f, int nStep, bool bImages, const char* ext)
 {
-	lcPiece* Piece;
-	int* col = new int[lcNumColors], ID = 0, c;
-	int* count = new int[lcNumColors];
-	memset(&col, 0, sizeof(int)*lcNumColors);
-
-	for (Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
+	Piece* pPiece;
+	int col[LC_MAXCOLORS], ID = 0, c;
+	memset (&col, 0, sizeof (col));
+	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 	{
-		if ((Piece->m_TimeShow == nStep) || (nStep == 0))
-			col[Piece->m_Color]++;
+		if ((pPiece->GetStepShow() == nStep) || (nStep == 0))
+			col[pPiece->GetColor()]++;
 	}
-
 	fputs("<br><table border=1><tr><td><center>Piece</center></td>\n",f);
 
-	for (c = 0; c < lcNumColors; c++)
-		if (col[c])
-		{
-			col[c] = ID;
-			ID++;
-			fprintf(f, "<td><center>%s</center></td>\n", g_ColorList[c].Name);
-		}
+	for (c = 0; c < LC_MAXCOLORS; c++)
+	if (col[c])
+	{
+		col[c] = ID;
+		ID++;
+		fprintf(f, "<td><center>%s</center></td>\n", colornames[c]);
+	}
 	ID++;
 	fputs("</tr>\n",f);
 
@@ -3425,14 +3235,16 @@ void Project::CreateHTMLPieceList(FILE* f, u32 nStep, bool bImages, const char* 
 	for (int j = 0; j < lcGetPiecesLibrary()->GetPieceCount (); j++)
 	{
 		bool Add = false;
-		memset(&count, 0, sizeof(int)*lcNumColors);
+		int count[LC_MAXCOLORS];
+		memset (&count, 0, sizeof (count));
 		pInfo = lcGetPiecesLibrary()->GetPieceInfo (j);
 
-		for (Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
+		for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 		{
-			if ((Piece->m_PieceInfo == pInfo) && ((Piece->m_TimeShow == nStep) || (nStep == 0)))
+			if ((pPiece->GetPieceInfo() == pInfo) && 
+				((pPiece->GetStepShow() == nStep) || (nStep == 0)))
 			{
-				count[Piece->m_Color]++;
+				count [pPiece->GetColor()]++;
 				Add = true;
 			}
 		}
@@ -3444,8 +3256,8 @@ void Project::CreateHTMLPieceList(FILE* f, u32 nStep, bool bImages, const char* 
 			else
 				fprintf(f, "<tr><td>%s</td>\n", pInfo->m_strDescription);
 
-			u32 curcol = 1;
-			for (c = 0; c < lcNumColors; c++)
+			int curcol = 1;
+			for (c = 0; c < LC_MAXCOLORS; c++)
 				if (count[c])
 				{
 					while (curcol != col[c] + 1)
@@ -3468,8 +3280,6 @@ void Project::CreateHTMLPieceList(FILE* f, u32 nStep, bool bImages, const char* 
 		}
 	}
 	fputs("</table>\n<br>", f);
-	delete[] col;
-	delete[] count;
 }
 
 // Special notifications.
@@ -3477,6 +3287,17 @@ void Project::HandleNotify(LC_NOTIFY id, unsigned long param)
 {
 	switch (id)
 	{
+		case LC_COLOR_CHANGED:
+		{
+			m_nCurColor = (unsigned char)param;
+		} break;
+
+		case LC_CAPTURE_LOST:
+		{
+			if (m_nTracking != LC_TRACK_NONE)
+				StopTracking(false);
+		} break;
+
 		// Application is (de)activated
 		case LC_ACTIVATE:
 		{
@@ -3490,37 +3311,50 @@ void Project::HandleNotify(LC_NOTIFY id, unsigned long param)
 			}
 		} break;
 
-		// FIXME: don't change the keys with ChangeKey(), even if pos == prevpos, the user might want to add a key
+		// FIXME: don't change the keys with ChangeKey()
+		// FIXME: even if pos == prevpos, the user might want to add a key
 
 		case LC_PIECE_MODIFIED:
 		{
 			LC_PIECE_MODIFY* mod = (LC_PIECE_MODIFY*)param;
-			lcPiece* Piece = (lcPiece*)mod->piece;
+			Piece* pPiece = (Piece*)mod->piece;
 
-			Matrix33 Mat = Piece->m_ModelWorld;
-			Vector3 Angles = MatrixToEulerAngles(Mat) * LC_RTOD;
+			float rot[4];
+			Vector3 Pos = pPiece->GetPosition();
+			pPiece->GetRotation(rot);
+			Matrix mat(rot, Pos);
+			mat.ToEulerAngles(rot);
 
-			if (Piece->m_Position != mod->Position)
-				Piece->ChangeKey(m_ActiveModel->m_CurFrame, m_bAddKeys, mod->Position, LC_PK_POSITION);
+			if (Pos != mod->Position)
+				pPiece->ChangeKey(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, mod->Position, LC_PK_POSITION);
 
-			if (mod->Rotation[0] != Angles[0] || mod->Rotation[1] != Angles[1] || mod->Rotation[2] != Angles[2])
+			if (mod->Rotation[0] != rot[0] || mod->Rotation[1] != rot[1] || mod->Rotation[2] != rot[2])
 			{
-				Mat = MatrixFromEulerAngles(mod->Rotation * LC_DTOR);
-				Vector4 Rot = MatrixToAxisAngle(Mat);
-				Piece->ChangeKey(m_ActiveModel->m_CurFrame, m_bAddKeys, Rot, LC_PK_ROTATION);
+				mat.FromEulerAngles(mod->Rotation[0], mod->Rotation[1], mod->Rotation[2]);
+				mat.ToAxisAngle(rot);
+				pPiece->ChangeKey(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, rot, LC_PK_ROTATION);
 			}
 
-			Piece->m_TimeShow = mod->from;
-			Piece->m_TimeHide = mod->to;
+			if (m_bAnimation)
+			{
+				pPiece->SetFrameShow(mod->from);
+				pPiece->SetFrameHide(mod->to);
+			}
+			else
+			{
+				pPiece->SetStepShow(mod->from);
+				pPiece->SetStepHide(mod->to);
+			}
 
 			if (mod->hidden)
-				Piece->Hide();
+				pPiece->Hide();
 			else
-				Piece->UnHide();
+				pPiece->UnHide();
 
-			Piece->m_Name = mod->name;
-			Piece->m_Color = mod->color;
-			Piece->UpdatePosition(m_ActiveModel->m_CurFrame);
+			pPiece->SetName(mod->name);
+			pPiece->SetColor(mod->color);
+			pPiece->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
+			pPiece->CalculateConnections(m_pConnections, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, false, true);
 
 			SetModifiedFlag(true);
 			CheckPoint("Modifying");
@@ -3531,30 +3365,27 @@ void Project::HandleNotify(LC_NOTIFY id, unsigned long param)
 		case LC_CAMERA_MODIFIED:
 		{
 			LC_CAMERA_MODIFY* mod = (LC_CAMERA_MODIFY*)param;
-			lcCamera* Camera = (lcCamera*)mod->camera;
+			Camera* pCamera = (Camera*)mod->camera;
 
 			if (mod->hidden)
-				Camera->Hide();
+				pCamera->Hide();
 			else
-				Camera->UnHide();
-//			Camera->SetOrtho(mod->ortho);
-//			Camera->ShowCone(mod->cone);
+				pCamera->UnHide();
 
-			if (Camera->m_Position != mod->Eye)
-				Camera->ChangeKey(m_ActiveModel->m_CurFrame, m_bAddKeys, mod->Eye, LC_CK_EYE);
+			if (pCamera->GetEyePosition() != mod->Eye)
+				pCamera->ChangeKey(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, mod->Eye, LC_CK_EYE);
 
-			if (Camera->m_TargetPosition != mod->Target)
-				Camera->ChangeKey(m_ActiveModel->m_CurFrame, m_bAddKeys, mod->Target, LC_CK_TARGET);
+			if (pCamera->GetTargetPosition() != mod->Target)
+				pCamera->ChangeKey(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, mod->Target, LC_CK_TARGET);
 
-			if (Camera->m_Roll != mod->Roll)
-				Camera->ChangeKey(m_ActiveModel->m_CurFrame, m_bAddKeys, &mod->Roll, LC_CK_ROLL);
+			if (pCamera->GetUpVector() != mod->Up)
+				pCamera->ChangeKey(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, mod->Up, LC_CK_UP);
 
-			Camera->m_Name = mod->name;
-			Camera->m_FOV = mod->fovy;
-			Camera->m_NearDist = mod->znear;
-			Camera->m_FarDist = mod->zfar;
-			Camera->UpdatePosition(m_ActiveModel->m_CurFrame);
-			UpdateAllViews();
+			pCamera->m_fovy = mod->fovy;
+			pCamera->m_zNear = mod->znear;
+			pCamera->m_zFar = mod->zfar;
+			pCamera->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
+			UpdateAllViews ();
 		} break;
 
 		case LC_LIGHT_MODIFIED:
@@ -3563,21 +3394,10 @@ void Project::HandleNotify(LC_NOTIFY id, unsigned long param)
 	}
 }
 
-void Project::ProcessMessage(lcMessageType Message, void* Data)
+void Project::HandleMessage(int Message, void* Data)
 {
-	switch (Message)
+	if (Message == LC_MSG_FOCUS_CHANGED)
 	{
-	case LC_MSG_FOCUS_OBJECT_CHANGED:
-		UpdateSelection();
-		break;
-
-	case LC_MSG_MOUSE_CAPTURE_LOST:
-		if (m_nTracking != LC_TRACK_NONE)
-			StopTracking(false);
-		break;
-
-	default:
-		break;
 	}
 }
 
@@ -3613,7 +3433,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 			if (SystemDoDialog(LC_DLG_FILE_MERGE_PROJECT, filename))
 			{
-				lcFileDisk file;
+				FileDisk file;
 				if (file.Open(filename, "rb"))
 				{
 //				CWaitCursor wait;
@@ -3634,25 +3454,25 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 		case LC_FILE_SAVEAS:
 		{
-			DoSave(NULL);
+			DoSave(NULL, true);
 		} break;
 
 		case LC_FILE_PICTURE:
 		{
 			LC_IMAGEDLG_OPTS opts;
 			opts.from = 1;
-			opts.to = m_Animation ? m_ActiveModel->m_TotalFrames : GetLastStep();
-			opts.multiple = m_Animation;
+			opts.to = m_bAnimation ? m_nTotalFrames : GetLastStep();
+			opts.multiple = m_bAnimation;
 			opts.imopts.background[0] = (unsigned char)(m_fBackground[0]*255);
 			opts.imopts.background[1] = (unsigned char)(m_fBackground[1]*255);
 			opts.imopts.background[2] = (unsigned char)(m_fBackground[2]*255);
 
 			if (SystemDoDialog(LC_DLG_PICTURE_SAVE, &opts))
 			{
-				if (m_Animation)
-					opts.to = min(opts.to, m_ActiveModel->m_TotalFrames);
+				if (m_bAnimation)
+					opts.to = min(opts.to, m_nTotalFrames);
 				else
-					opts.to = min(opts.to, GetLastStep());
+					opts.to = min(opts.to, 255);
 				opts.from = max(1, opts.from);
 
 				if (opts.multiple)
@@ -3665,7 +3485,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 					}
 				}
 				else
-					opts.from = opts.to = m_ActiveModel->m_CurFrame;
+					opts.from = opts.to = m_bAnimation ? m_nCurFrame : m_nCurStep;
 
 				Image* images = new Image[opts.to-opts.from+1];
 				CreateImages (images, opts.width, opts.height, opts.from, opts.to, false);
@@ -3675,12 +3495,12 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 				if (ptr != NULL)
 				{
 					strncpy(ext, ptr+1, 3);
-					_strlwr(ext);
+					strlwr(ext);
 				}
 
 				if (strcmp(ext, "avi") == 0)
 				{
-					SaveVideo(opts.filename, images, opts.to-opts.from+1, m_Animation ? m_nFPS : 60.0f/opts.imopts.pause);
+					SaveVideo(opts.filename, images, opts.to-opts.from+1, m_bAnimation ? m_nFPS : 60.0f/opts.imopts.pause);
         }
 				else
 				{
@@ -3706,7 +3526,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 		case LC_FILE_3DS:
 		{
-#if LC_WINDOWS
+#ifdef LC_WINDOWS
 			Export3DStudio();
 #endif
 		} break;
@@ -3756,15 +3576,14 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
       opts.liststep = (ul & LC_HTML_LISTSTEP) != 0;
       opts.highlight = (ul & LC_HTML_HIGHLIGHT) != 0;
       opts.htmlext = (ul & LC_HTML_HTMLEXT) != 0;
-      strcpy(opts.path, Sys_ProfileLoadString("Default", "HTML Path", ""));
 
 			if (SystemDoDialog(LC_DLG_HTML, &opts))
 			{
 				FILE* f;
 				const char *ext, *htmlext;
 				char fn[LC_MAXPATH];
-				u32 i;
-				u32 last = GetLastStep();
+				int i;
+				unsigned short last = GetLastStep();
 
         // Save HTML options
         ul = 0;
@@ -3808,6 +3627,29 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
           strcat (opts.path, "/");
         Sys_ProfileSaveString ("Default", "HTML Path", opts.path);
 
+/*
+				// Create destination folder
+        char *MyPath = strdup(dlg.m_strFolder);
+        char *p = MyPath;
+        int psave;
+        while(*p)
+        {
+          while(*p && *p != '\\')
+						++p;
+
+					psave = *p;
+					if (*p == '\\')
+						*p = 0;
+
+					if (strlen(MyPath) > 3)
+						CreateDirectory(MyPath, NULL);
+
+					*p = psave;
+					if (*p)
+						++p;
+				}
+				free(MyPath);
+*/
         main_window->BeginWait ();
 
 				if (opts.singlepage)
@@ -3816,11 +3658,6 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 					strcat (fn, m_strTitle);
           strcat (fn, htmlext);
 					f = fopen (fn, "wt");
-                                        if (f == NULL)
-                                        {
-                                                perror(fn);
-						return;
-                                        }
 					fprintf (f, "<HTML>\n<HEAD>\n<TITLE>Instructions for %s</TITLE>\n</HEAD>\n<BR>\n<CENTER>\n", m_strTitle);
 
 					for (i = 1; i <= last; i++)
@@ -3847,11 +3684,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 						strcat (fn, "-index");
             strcat (fn, htmlext);
 						f = fopen (fn, "wt");
-        	                                if (f == NULL)
-        	                                {
-        	                                        perror(fn);
-							return;
-        	                                }
+
 						fprintf(f, "<HTML>\n<HEAD>\n<TITLE>Instructions for %s</TITLE>\n</HEAD>\n<BR>\n<CENTER>\n", m_strTitle);
 
 						for (i = 1; i <= last; i++)
@@ -3869,11 +3702,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 					{
 						sprintf(fn, "%s%s-%02d%s", opts.path, m_strTitle, i, htmlext);
 						f = fopen(fn, "wt");
-	                                        if (f == NULL)
-	                                        {
-	                                                perror(fn);
-							return;
-	                                        }
+
 						fprintf(f, "<HTML>\n<HEAD>\n<TITLE>%s - Step %02d</TITLE>\n</HEAD>\n<BR>\n<CENTER>\n", m_strTitle, i);
 						fprintf(f, "<IMG SRC=\"%s-%02d%s\" ALT=\"Step %02d\" WIDTH=%d HEIGHT=%d><BR><BR>\n", 
 							m_strTitle, i, ext, i, opts.imdlg.width, opts.imdlg.height);
@@ -3905,11 +3734,6 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 						strcat (fn, "-pieces");
             strcat (fn, htmlext);
 						f = fopen (fn, "wt");
-	                                        if (f == NULL)
-	                                        {
-	                                                perror(fn);
-							return;
-	                                        }
 						fprintf (f, "<HTML>\n<HEAD>\n<TITLE>Pieces used by %s</TITLE>\n</HEAD>\n<BR>\n<CENTER>\n", m_strTitle);
 				
 						CreateHTMLPieceList(f, 0, opts.images, ext);
@@ -3944,19 +3768,19 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 					float aspect = (float)cx/(float)cy;
 					glViewport(0, 0, cx, cy);
 
-					lcPiece *p1, *p2;
+					Piece *p1, *p2;
 					PieceInfo* pInfo;
-					for (p1 = m_ActiveModel->m_Pieces; p1; p1 = (lcPiece*)p1->m_Next)
+					for (p1 = m_pPieces; p1; p1 = p1->m_pNext)
 					{
 						bool bSkip = false;
-						pInfo = p1->m_PieceInfo;
+						pInfo = p1->GetPieceInfo();
 
-						for (p2 = m_ActiveModel->m_Pieces; p2; p2 = (lcPiece*)p2->m_Next)
+						for (p2 = m_pPieces; p2; p2 = p2->m_pNext)
 						{
 							if (p2 == p1)
 								break;
 
-							if (p2->m_PieceInfo == pInfo)
+							if (p2->GetPieceInfo() == pInfo)
 							{
 								bSkip = true;
 								break;
@@ -3974,6 +3798,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 						glDepthFunc(GL_LEQUAL);
 						glClearColor(1,1,1,1); 
 						glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+						glColorMaterial(GL_FRONT, GL_AMBIENT_AND_DIFFUSE);
 						glEnable(GL_COLOR_MATERIAL);
 						glDisable (GL_DITHER);
 						glShadeModel(GL_FLAT);
@@ -3984,18 +3809,18 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 						glEnable(GL_LIGHTING);
 						glEnable(GL_LIGHT0);
 						glEnable(GL_DEPTH_TEST);
-						pInfo->RenderPiece(g_App->m_SelectedColor);
+						pInfo->RenderPiece(m_nCurColor);
 						glFinish();
 
 						Image image;
-            image.FromOpenGL (cx, cy);
+						image.FromOpenGL (cx, cy);
 
 						sprintf(fn, "%s%s%s", opts.path, pInfo->m_strName, ext);
 						image.FileSave (fn, &opts.imdlg.imopts);
 					}
 					Sys_FinishMemoryRender (render);
 				}
-        main_window->EndWait ();
+				main_window->EndWait ();
 			}
 		} break;
 
@@ -4003,365 +3828,416 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 		case LC_FILE_POVRAY:
 		{
 			LC_POVRAYDLG_OPTS opts;
+
 			if (!SystemDoDialog(LC_DLG_POVRAY, &opts))
 				break;
 
-//	CWaitCursor wc;
-			char fn[LC_MAXPATH], tmp[10], *ptr;
-			unsigned long u;
-			PieceInfo* pInfo;
-			lcPiece* pPiece;
-			FILE* f;
-			char *conv = (char*)malloc (9*lcGetPiecesLibrary()->GetPieceCount ());
-			char *flags = (char*)malloc (lcGetPiecesLibrary()->GetPieceCount ());
-			memset (conv, 0, 9*lcGetPiecesLibrary()->GetPieceCount());
-			memset (flags, 0, lcGetPiecesLibrary()->GetPieceCount());
+			FileDisk POVFile;
+			char Line[1024];
 
-			// read LGEO conversion table
-			if (strlen (opts.libpath))
-			{
-				strcpy (fn, opts.libpath);
-				strcat (fn, "l2p_elmt.tab");
-				f = fopen(fn, "rb");
-
-				if (f == NULL)
-				{
-					free (conv);
-					free (flags);
-					SystemDoMessageBox("Could not find LGEO.", LC_MB_OK|LC_MB_ICONERROR);
-					return;
-				}
-
-				unsigned char bt[4];
-				while (fread (&bt, 4, 1, f))
-				{
-					u = (((unsigned char)(bt[3])|((unsigned short)(bt[2]) << 8))|
-						(((unsigned long)(bt[1])) << 16)) + bt[0] * 16581375;
-					sprintf(tmp, "%d", (int)u);
-					pInfo = lcGetPiecesLibrary()->FindPieceInfo(tmp);
-
-					fread(&tmp, 9, 1, f);
-					if (tmp[8] != 0)
-						fread(&tmp[9], 1, 1, f);
-
-					if (pInfo != NULL)
-					{
-						int idx = lcGetPiecesLibrary()->GetPieceIndex (pInfo);
-						memcpy (&conv[idx*9], &tmp[1], 9);
-						flags[idx] = tmp[0];
-					}
-				}
-				fclose (f);
-
-				strcpy(fn, opts.libpath);
-				strcat(fn, "l2p_ptrn.tab");
-				f = fopen(fn, "rb");
-
-				if (f == NULL)
-				{
-					SystemDoMessageBox("Could not find LGEO.", LC_MB_OK|LC_MB_ICONERROR);
-					free (conv);
-					free (flags);
-					return;
-				}
-
-				u = 0;
-				do 
-				{
-					if ((tmp[u] == 0) && (u != 0))
-					{
-						u = 0;
-						pInfo = lcGetPiecesLibrary()->FindPieceInfo(tmp);
-						fread(&tmp, 8, 1, f);
-
-						if (pInfo != NULL)
-						{
-							int idx = lcGetPiecesLibrary()->GetPieceIndex (pInfo);
-							memcpy(&conv[idx*9], tmp, 9);
-						}
-					}
-					else
-						u++;
-				}	
-				while (fread(&tmp[u], 1, 1, f));
-				fclose(f);
-			}
-
-			strcpy(fn, opts.outpath);
-			if ((ptr = strrchr (fn, '.')))
-				*ptr = 0;
-			strcat (fn, ".inc");
-			f = fopen(fn, "wt");
-
-			if (!f)
+			if (!POVFile.Open(opts.outpath, "wt"))
 			{
 				SystemDoMessageBox("Could not open file for writing.", LC_MB_OK|LC_MB_ICONERROR);
 				break;
+			}
+
+			PiecesLibrary* Library = lcGetPiecesLibrary();
+			char* PieceTable = new char[Library->GetPieceCount() * LC_PIECE_NAME_LEN];
+			int* PieceFlags = new int[Library->GetPieceCount()];
+			char ColorTable[LC_MAXCOLORS][64];
+
+			memset(PieceTable, 0, Library->GetPieceCount() * LC_PIECE_NAME_LEN);
+			memset(PieceFlags, 0, Library->GetPieceCount() * sizeof(int));
+
+			enum
+			{
+				LGEO_PIECE_LGEO  = 0x01,
+				LGEO_PIECE_AR    = 0x02,
+				LGEO_PIECE_SLOPE = 0x04,
+			};
+
+			enum
+			{
+				LGEO_COLOR_SOLID       = 0x01,
+				LGEO_COLOR_TRANSPARENT = 0x02,
+				LGEO_COLOR_CHROME      = 0x04,
+				LGEO_COLOR_PEARL       = 0x08,
+				LGEO_COLOR_METALLIC    = 0x10,
+				LGEO_COLOR_RUBBER      = 0x20,
+				LGEO_COLOR_GLITTER     = 0x40,
+			};
+
+			// Parse LGEO tables.
+			if (opts.libpath[0])
+			{
+				FileDisk TableFile, ColorFile;
+				char Filename[LC_MAXPATH];
+
+				int Length = strlen(opts.libpath);
+
+				if ((opts.libpath[Length - 1] != '\\') && (opts.libpath[Length - 1] != '/'))
+					strcat(opts.libpath, "/");
+
+				strcpy(Filename, opts.libpath);
+				strcat(Filename, "lg_elements.lst");
+
+				if (!TableFile.Open(Filename, "rt"))
+				{
+					delete[] PieceTable;
+					delete[] PieceFlags;
+					SystemDoMessageBox("Could not find LGEO files.", LC_MB_OK | LC_MB_ICONERROR);
+					break;
+				}
+
+				while (TableFile.ReadLine(Line, sizeof(Line)))
+				{
+					char Src[1024], Dst[1024], Flags[1024];
+
+					if (*Line == ';')
+						continue;
+
+					if (sscanf(Line,"%s%s%s", Src, Dst, Flags) != 3)
+						continue;
+
+					strupr(Src);
+
+					PieceInfo* Info = Library->FindPieceInfo(Src);
+					if (!Info)
+						continue;
+
+					int Index = Library->GetPieceIndex(Info);
+
+					if (strchr(Flags, 'L'))
+					{
+						PieceFlags[Index] |= LGEO_PIECE_LGEO;
+						sprintf(PieceTable + Index * LC_PIECE_NAME_LEN, "lg_%s", Dst);
+					}
+
+					if (strchr(Flags, 'A'))
+					{
+						PieceFlags[Index] |= LGEO_PIECE_AR;
+						sprintf(PieceTable + Index * LC_PIECE_NAME_LEN, "ar_%s", Dst);
+					}
+
+					if (strchr(Flags, 'S'))
+						PieceFlags[Index] |= LGEO_PIECE_SLOPE;
+				}
+
+				strcpy(Filename, opts.libpath);
+				strcat(Filename, "lg_colors.lst");
+
+				if (!ColorFile.Open(Filename, "rt"))
+				{
+					delete[] PieceTable;
+					delete[] PieceFlags;
+					SystemDoMessageBox("Could not find LGEO files.", LC_MB_OK | LC_MB_ICONERROR);
+					break;
+				}
+
+				while (ColorFile.ReadLine(Line, sizeof(Line)))
+				{
+					char Name[1024], Flags[1024];
+					int Code;
+
+					if (*Line == ';')
+						continue;
+
+					if (sscanf(Line,"%d%s%s", &Code, Name, Flags) != 3)
+						continue;
+
+					int Color = ConvertColor(Code);
+					if (Color > LC_MAXCOLORS)
+						continue;
+
+					strcpy(ColorTable[Color], Name);
+				}
 			}
 
 			const char* OldLocale = setlocale(LC_NUMERIC, "C");
-			fputs("// Stuff that doesn't need to be changed\n\n", f);
 
-			if (strlen(opts.libpath))
-				fputs("#include \"lg_color.inc\"\n#include \"lg_defs.inc\"\n\n", f);
-
-			// Add include files
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+			// Add includes.
+			if (opts.libpath[0])
 			{
-				lcPiece* pNext;
+				POVFile.WriteLine("#include \"lg_defs.inc\"\n#include \"lg_color.inc\"\n\n");
 
-				for (pNext = m_ActiveModel->m_Pieces; pNext; pNext = (lcPiece*)pNext->m_Next)
+				for (Piece* piece = m_pPieces; piece; piece = piece->m_pNext)
 				{
-					pInfo = pNext->m_PieceInfo;
+					PieceInfo* Info = piece->GetPieceInfo();
 
-					if (pNext == pPiece)
+					for (Piece* FirstPiece = m_pPieces; FirstPiece; FirstPiece = FirstPiece->m_pNext)
 					{
-						int idx = lcGetPiecesLibrary()->GetPieceIndex (pInfo);
-						char pat[] = "patterns/";
-						if (conv[idx*9+1] != 'p')
-							strcpy(pat, "");
+						if (FirstPiece->GetPieceInfo() != Info)
+							continue;
 
-						if (conv[idx*9] != 0)
-							fprintf(f, "#include \"%s%s.inc\"\n", pat, &conv[idx*9]);
-						break;
-					}
+						if (FirstPiece != piece)
+							break;
 
-					if (pInfo == pPiece->m_PieceInfo)
-						break;
-				}
-			}
+						int Index = Library->GetPieceIndex(Info);
 
-			// TODO: table doesn't match new colors in 0.76
-			const char* lg_colors[28] = { "red", "Orange", "green", "mint", "blue", "LightBlue", "yellow", 
-				"white", "dark_grey", "black", "brown", "pink", "purple", "gold_chrome", "clear_red",
-				"clear_neon_orange", "clear_green", "clear_neon_yellow", "clear_blue", "clear_cyan", 
-				"clear_yellow", "clear", "grey", "tan", "LightBrown", "rose", "Turquoise", "chrome" };
-
-			const float mycol[4][4] = { { 1.0f, 0.5f, 0.2f, 1 }, { 0.2f, 0.4f, 0.9f, 5 }, 
-				{ 0.6f, 0.4f, 0.4f, 24 }, { 0.1f, 0.7f, 0.8f, 26 }};
-
-			if (strlen(opts.libpath))
-			{
-				for (u = 0; u < 4; u++)
-				{
-					char altname[256];
-					strcpy(altname, g_ColorList[(int)mycol[u][3]].Name);
-					while (char* ptr = (char*)strchr(altname, ' '))
-						*ptr = '_';
-
-					fprintf(f, "\n#declare lg_%s = texture {\n pigment { rgb <%.2f, %.2f, %.2f> }\n finish {\n  ambient 0.1\n  phong 0.3\n  phong_size 20\n }\n}\n",
-						altname, mycol[u][0], mycol[u][1], mycol[u][2]);
-				}
-			}
-			else
-			{
-				fputs("#include \"colors.inc\"\n\n", f);
-
-				for (int u = 0; u < lcNumColors; u++)
-					fprintf(f, "\n#declare lg_%s = texture {\n pigment { rgbf <%.2f, %.2f, %.2f, %.2f> }\n finish {\n  ambient 0.1\n  phong 0.3\n  phong_size 20\n }\n}\n",
-						lg_colors[u], g_ColorList[u].Value[0], g_ColorList[u].Value[1], g_ColorList[u].Value[2], ((g_ColorList[u].Value[3] == 1.0f) ? 0.0f : 0.9f));
-			}
-
-			// if not in lgeo, create it
-			fputs("\n// The next objects (if any) were generated by LeoCAD.\n\n", f);
-
-			bool* ExportList = new bool[lcGetPiecesLibrary()->GetPieceCount()];
-			memset(ExportList, 0, sizeof(bool)*lcGetPiecesLibrary()->GetPieceCount());
-
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
-			{
-				pInfo = pPiece->m_PieceInfo;
-				int idx = lcGetPiecesLibrary()->GetPieceIndex(pInfo);
-				if (conv[idx*9] != 0)
-					continue;
-
-				ExportList[idx] = true;
-			}
-
-			for (int idx = 0; idx < lcGetPiecesLibrary()->GetPieceCount(); idx++)
-			{
-				if (!ExportList[idx])
-					continue;
-
-				pInfo = lcGetPiecesLibrary()->GetPieceInfo(idx);
-
-				char name[20];
-				strcpy(name, pInfo->m_strName);
-				while ((ptr = strchr(name, '-')))
-					*ptr = '_';
-				fprintf(f, "#declare lc_%s = union {\n", name);
-
-				void* indices = pInfo->m_Mesh->m_IndexBuffer->MapBuffer(GL_READ_ONLY_ARB);
-				float* verts = (float*)pInfo->m_Mesh->m_VertexBuffer->MapBuffer(GL_READ_ONLY_ARB);
-
-				for (int SectionIndex = 0; SectionIndex < pInfo->m_Mesh->m_SectionCount; SectionIndex++)
-				{
-					lcMeshSection* Section = &pInfo->m_Mesh->m_Sections[SectionIndex];
-
-					if (Section->PrimitiveType != GL_TRIANGLES)
-						continue;
-
-					if (pInfo->m_Mesh->m_IndexType == GL_UNSIGNED_INT)
-					{
-						fputs(" mesh {\n", f);
-						u32* IndexPtr = (u32*)((char*)indices + Section->IndexOffset);
-						for (u32 c = 0; c < Section->IndexCount; c += 3)
+						if (PieceTable[Index * LC_PIECE_NAME_LEN])
 						{
-							int i0 = IndexPtr[c+0] * 3;
-							int i1 = IndexPtr[c+1] * 3;
-							int i2 = IndexPtr[c+2] * 3;
-
-							fprintf(f, "  triangle { <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f> }\n",
-							        -verts[i0+1], -verts[i0], verts[i0+2],
-							        -verts[i1+1], -verts[i1], verts[i1+2],
-							        -verts[i2+1], -verts[i2], verts[i2+2]);
+							sprintf(Line, "#include \"%s.inc\"\n", PieceTable + Index * LC_PIECE_NAME_LEN);
+							POVFile.WriteLine(Line);
 						}
 
-						if (Section->ColorIndex != LC_COLOR_DEFAULT && Section->ColorIndex != LC_COLOR_EDGE)
-							fprintf (f, "  texture { lg_%s }\n", lg_colors[Section->ColorIndex]);
-						fputs(" }\n", f);
+						break;
+					}
+				}
+
+				POVFile.WriteLine("\n");
+			}
+			else
+				POVFile.WriteLine("#include \"colors.inc\"\n\n");
+
+			// Add color definitions.
+			for (int ColorIdx = 0; ColorIdx < LC_MAXCOLORS; ColorIdx++)
+			{
+				if (ColorIdx > 13 && ColorIdx < 22)
+				{
+					sprintf(Line, "#declare lc_%s = texture { pigment { rgb <%d/255, %d/255, %d/255> filter 0.9 } finish { ambient 0.3 diffuse 0.2 reflection 0.25 phong 0.3 phong_size 60 } }\n",
+						    altcolornames[ColorIdx], ColorArray[ColorIdx][0], ColorArray[ColorIdx][1], ColorArray[ColorIdx][2]);
+				}
+				else
+				{
+					sprintf(Line, "#declare lc_%s = texture { pigment { rgb <%d/255, %d/255, %d/255> } finish { ambient 0.1 phong 0.2 phong_size 20 } }\n",
+						    altcolornames[ColorIdx], ColorArray[ColorIdx][0], ColorArray[ColorIdx][1], ColorArray[ColorIdx][2]);
+				}
+
+				POVFile.WriteLine(Line);
+
+				if (!ColorTable[ColorIdx][0])
+					sprintf(ColorTable[ColorIdx], "lc_%s", altcolornames[ColorIdx]);
+			}
+
+			POVFile.WriteLine("\n");
+
+			// Add pieces not included in LGEO.
+			for (Piece* piece = m_pPieces; piece; piece = piece->m_pNext)
+			{
+				PieceInfo* Info = piece->GetPieceInfo();
+				int Index = Library->GetPieceIndex(Info);
+
+				if (PieceTable[Index * LC_PIECE_NAME_LEN])
+					continue;
+
+				char Name[LC_PIECE_NAME_LEN];
+				char* Ptr;
+
+				strcpy(Name, Info->m_strName);
+				while ((Ptr = strchr(Name, '-')))
+					*Ptr = '_';
+
+				sprintf(PieceTable + Index * LC_PIECE_NAME_LEN, "lc_%s", Name);
+				sprintf(Line, "#declare lc_%s = union {\n", Name);
+				POVFile.WriteLine(Line);
+
+				for (lcuint16 g = 0; g < Info->m_nGroupCount; g++)
+				{
+					if (Info->m_nFlags & LC_PIECE_LONGDATA_INDICES)
+					{
+						lcuint32* info = (lcuint32*)Info->m_pGroups[g].drawinfo;
+						lcuint32 count, curcolor, colors = *info;
+						info++;
+
+						while (colors--)
+						{
+							curcolor = *info;
+							info++;
+
+							// Skip if color only has lines.
+							if ((*info == 0) && (info[1] == 0))
+							{
+								info += 2;
+								info += *info + 1;
+								continue;
+							}
+
+							POVFile.WriteLine(" mesh {\n");
+
+							for (count = *info, info++; count; count -= 4)
+							{
+								sprintf(Line, "  triangle { <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f> }\n",
+									-Info->m_fVertexArray[info[0]*3+1], -Info->m_fVertexArray[info[0]*3], Info->m_fVertexArray[info[0]*3+2],
+									-Info->m_fVertexArray[info[1]*3+1], -Info->m_fVertexArray[info[1]*3], Info->m_fVertexArray[info[1]*3+2],
+									-Info->m_fVertexArray[info[2]*3+1], -Info->m_fVertexArray[info[2]*3], Info->m_fVertexArray[info[2]*3+2]);
+								POVFile.WriteLine(Line);
+								sprintf(Line, "  triangle { <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f> }\n",
+									-Info->m_fVertexArray[info[2]*3+1], -Info->m_fVertexArray[info[2]*3], Info->m_fVertexArray[info[2]*3+2],
+									-Info->m_fVertexArray[info[3]*3+1], -Info->m_fVertexArray[info[3]*3], Info->m_fVertexArray[info[3]*3+2],
+									-Info->m_fVertexArray[info[0]*3+1], -Info->m_fVertexArray[info[0]*3], Info->m_fVertexArray[info[0]*3+2]);
+								POVFile.WriteLine(Line);
+								info += 4;
+							}
+
+							for (count = *info, info++; count; count -= 3)
+							{
+								sprintf(Line, "  triangle { <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f> }\n",
+									-Info->m_fVertexArray[info[0]*3+1], -Info->m_fVertexArray[info[0]*3], Info->m_fVertexArray[info[0]*3+2],
+									-Info->m_fVertexArray[info[1]*3+1], -Info->m_fVertexArray[info[1]*3], Info->m_fVertexArray[info[1]*3+2],
+									-Info->m_fVertexArray[info[2]*3+1], -Info->m_fVertexArray[info[2]*3], Info->m_fVertexArray[info[2]*3+2]);
+								POVFile.WriteLine(Line);
+								info += 3;
+							}
+							info += *info + 1;
+
+							if (curcolor != LC_COL_DEFAULT && curcolor != LC_COL_EDGES)
+							{
+								sprintf(Line, "material { texture { %s normal { bumps 0.1 scale 2 } } }", ColorTable[curcolor]);
+								POVFile.WriteLine(Line);
+							}
+
+							POVFile.WriteLine(" }\n");
+						}
 					}
 					else
 					{
-						fputs(" mesh {\n", f);
-						u16* IndexPtr = (u16*)((char*)indices + Section->IndexOffset);
-						for (u32 c = 0; c < Section->IndexCount; c += 3)
+						unsigned short* info = (unsigned short*)Info->m_pGroups[g].drawinfo;
+						unsigned short count, curcolor, colors = *info;
+						info++;
+
+						while (colors--)
 						{
-							int i0 = IndexPtr[c+0] * 3;
-							int i1 = IndexPtr[c+1] * 3;
-							int i2 = IndexPtr[c+2] * 3;
+							curcolor = *info;
+							info++;
 
-							fprintf(f, "  triangle { <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f> }\n",
-							        -verts[i0+1], -verts[i0], verts[i0+2],
-							        -verts[i1+1], -verts[i1], verts[i1+2],
-							        -verts[i2+1], -verts[i2], verts[i2+2]);
+							// Skip if color only has lines.
+							if ((*info == 0) && (info[1] == 0))
+							{
+								info += 2;
+								info += *info + 1;
+								continue;
+							}
+
+							POVFile.WriteLine(" mesh {\n");
+
+							for (count = *info, info++; count; count -= 4)
+							{
+								sprintf(Line, "  triangle { <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f> }\n",
+									-Info->m_fVertexArray[info[0]*3+1], -Info->m_fVertexArray[info[0]*3], Info->m_fVertexArray[info[0]*3+2],
+									-Info->m_fVertexArray[info[1]*3+1], -Info->m_fVertexArray[info[1]*3], Info->m_fVertexArray[info[1]*3+2],
+									-Info->m_fVertexArray[info[2]*3+1], -Info->m_fVertexArray[info[2]*3], Info->m_fVertexArray[info[2]*3+2]);
+								POVFile.WriteLine(Line);
+								sprintf(Line, "  triangle { <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f> }\n",
+									-Info->m_fVertexArray[info[2]*3+1], -Info->m_fVertexArray[info[2]*3], Info->m_fVertexArray[info[2]*3+2],
+									-Info->m_fVertexArray[info[3]*3+1], -Info->m_fVertexArray[info[3]*3], Info->m_fVertexArray[info[3]*3+2],
+									-Info->m_fVertexArray[info[0]*3+1], -Info->m_fVertexArray[info[0]*3], Info->m_fVertexArray[info[0]*3+2]);
+								POVFile.WriteLine(Line);
+								info += 4;
+							}
+
+							for (count = *info, info++; count; count -= 3)
+							{
+								sprintf(Line, "  triangle { <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f> }\n",
+									-Info->m_fVertexArray[info[0]*3+1], -Info->m_fVertexArray[info[0]*3], Info->m_fVertexArray[info[0]*3+2],
+									-Info->m_fVertexArray[info[1]*3+1], -Info->m_fVertexArray[info[1]*3], Info->m_fVertexArray[info[1]*3+2],
+									-Info->m_fVertexArray[info[2]*3+1], -Info->m_fVertexArray[info[2]*3], Info->m_fVertexArray[info[2]*3+2]);
+								POVFile.WriteLine(Line);
+								info += 3;
+							}
+							info += *info + 1;
+
+							if (curcolor != LC_COL_DEFAULT && curcolor != LC_COL_EDGES)
+							{
+								sprintf(Line, "material { texture { %s normal { bumps 0.1 scale 2 } } }", ColorTable[curcolor]);
+								POVFile.WriteLine(Line);
+							}
+
+							POVFile.WriteLine(" }\n");
 						}
-
-						if (Section->ColorIndex != LC_COLOR_DEFAULT && Section->ColorIndex != LC_COLOR_EDGE)
-							fprintf (f, "  texture { lg_%s }\n", lg_colors[Section->ColorIndex]);
-						fputs(" }\n", f);
 					}
 				}
-				fputs("}\n\n", f);
 
-				pInfo->m_Mesh->m_IndexBuffer->UnmapBuffer();
-				pInfo->m_Mesh->m_VertexBuffer->UnmapBuffer();
+				POVFile.WriteLine("}\n\n");
+
+				sprintf(Line, "#declare lc_%s_clear = lc_%s\n\n", Name, Name);
+				POVFile.WriteLine(Line);
 			}
 
-			delete[] ExportList;
+			float eye[3], target[3], up[3];
+			m_ActiveView->m_Camera->GetEyePos(eye);
+			m_ActiveView->m_Camera->GetTargetPos(target);
+			m_ActiveView->m_Camera->GetUpVec(up);
 
-			fclose(f);
-			if ((ptr = strrchr (fn, '.')))
-				*ptr = 0;
-			strcat (fn, ".pov");
-			f = fopen(fn, "wt");
-
-			if (!f)
-			{
-				SystemDoMessageBox("Could not open file for writing.", LC_MB_OK|LC_MB_ICONERROR);
-				setlocale(LC_NUMERIC, OldLocale);
-				break;
-			}
-
-			if ((ptr = strrchr (fn, '.')))
-				*ptr = 0;
-			ptr = strrchr (fn, '\\');
-			if (!ptr)
-				ptr = strrchr (fn, '/');
-			if (ptr)
-				ptr++;
-			else
-				ptr = fn;
-
-			fprintf(f, "// File created by LeoCAD\n//\n\n#include \"%s.inc\"\n", ptr);
-			Vector3 eye = m_ActiveView->GetViewpoint()->mPosition;
-			Vector3 target = m_ActiveView->GetViewpoint()->mTarget;
-			Vector3 up = Vector3(m_ActiveView->GetViewpoint()->mViewWorld[1]);
-
-			fprintf(f, "\ncamera {\n  sky<%1g,%1g,%1g>\n  location <%1g, %1g, %1g>\n  look_at <%1g, %1g, %1g>\n  angle %.0f\n}\n\n",
-				up[0], up[1], up[2], eye[1], eye[0], eye[2], target[1], target[0], target[2], m_ActiveView->GetViewpoint()->mFOV);
-			fprintf(f, "background { color rgb <%1g, %1g, %1g> }\n\nlight_source { <0, 0, 20> White shadowless }\n\n",
+			sprintf(Line, "camera {\n  sky<%1g,%1g,%1g>\n  location <%1g, %1g, %1g>\n  look_at <%1g, %1g, %1g>\n  angle %.0f\n}\n\n",
+				up[0], up[1], up[2], eye[1], eye[0], eye[2], target[1], target[0], target[2], m_ActiveView->m_Camera->m_fovy);
+			POVFile.WriteLine(Line);
+			sprintf(Line, "background { color rgb <%1g, %1g, %1g> }\n\nlight_source { <0, 0, 20> White shadowless }\n\n",
 				m_fBackground[0], m_fBackground[1], m_fBackground[2]);
+			POVFile.WriteLine(Line);
 
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+			for (Piece* piece = m_pPieces; piece; piece = piece->m_pNext)
 			{
-				float fl[12];
-				char name[20];
-				int idx = lcGetPiecesLibrary()->GetPieceIndex(pPiece->m_PieceInfo);
+				int Index = Library->GetPieceIndex(piece->GetPieceInfo());
+				float fl[12], pos[3], rot[4];
+				int Color;
 
-				if (conv[idx*9] == 0)
-				{
-					char* ptr;
-					sprintf(name, "lc_%s", pPiece->m_PieceInfo->m_strName);
-					while ((ptr = strchr(name, '-')))
-						*ptr = '_';
-				}
-				else
-				{
-					strcpy (name, &conv[idx*9]);
-					if (LC_COLOR_TRANSLUCENT(pPiece->m_Color))
-						strcat(name, "_clear");			
-				}
+				Color = piece->GetColor();
+				const char* Suffix = (Color > 13 && Color < 22) ? "_clear" : "";
 
-				Matrix mat(pPiece->m_AxisAngle, pPiece->m_Position);
-				const Vector3& Position = pPiece->m_Position;
+				piece->GetPosition(pos);
+				piece->GetRotation(rot);
+				Matrix mat(rot, pos);
 				mat.ToLDraw(fl);
 
-				// Slope needs to be handled correctly
-				if (flags[idx] == 1)
-					fprintf (f, "merge {\n object {\n  %s\n  texture { lg_%s }\n }\n"
-						 " object {\n  %s_slope\n  texture { lg_%s normal { bumps 0.3 scale 0.02 } }\n }\n"
-						 " matrix <%.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f>\n}\n",
-						name, lg_colors[pPiece->m_Color], &conv[idx*9], lg_colors[pPiece->m_Color],
-						 -fl[11], -fl[5], fl[8], -fl[9], -fl[3], fl[6],
-						 -fl[10], -fl[4], fl[7], Position[1], Position[0], Position[2]);
+				if (PieceFlags[Index] & LGEO_PIECE_SLOPE)
+				{
+					sprintf(Line, "merge {\n object {\n  %s%s\n  texture { %s }\n }\n"
+					        " object {\n  %s_slope\n  texture { %s normal { bumps 0.3 scale 0.02 } }\n }\n"
+					        " matrix <%.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f>\n}\n",
+					        PieceTable + Index * LC_PIECE_NAME_LEN, Suffix, &ColorTable[Color][0], PieceTable + Index * LC_PIECE_NAME_LEN, ColorTable[Color],
+					       -fl[11], -fl[5], fl[8], -fl[9], -fl[3], fl[6], -fl[10], -fl[4], fl[7], pos[1], pos[0], pos[2]);
+				}
 				else
-					fprintf(f, "object {\n %s\n texture { lg_%s }\n matrix <%.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f>\n}\n",
-						name, lg_colors[pPiece->m_Color], -fl[11], -fl[5], fl[8], -fl[9], -fl[3], fl[6],
-						-fl[10], -fl[4], fl[7], Position[1], Position[0], Position[2]);
+				{
+					sprintf(Line, "object {\n %s%s\n texture { %s }\n matrix <%.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f>\n}\n",
+					        PieceTable + Index * LC_PIECE_NAME_LEN, Suffix, &ColorTable[Color][0], -fl[11], -fl[5], fl[8], -fl[9], -fl[3], fl[6], -fl[10], -fl[4], fl[7], pos[1], pos[0], pos[2]);
+				}
+
+				POVFile.WriteLine(Line);
 			}
-			fclose (f);
-			free (conv);
-			free (flags);
+
+			delete[] PieceTable;
+			delete[] PieceFlags;
 			setlocale(LC_NUMERIC, OldLocale);
 
 			if (opts.render)
 			{
-#if LC_WINDOWS
-				// TODO: Linux support
-				char buf[600];
-				char tmp[LC_MAXPATH], out[LC_MAXPATH];
-				sprintf(out, "%s.pov", fn);
-				GetShortPathName(out, out, LC_MAXPATH);
-				GetShortPathName(opts.libpath, tmp, LC_MAXPATH);
-				sprintf (buf, "+L%s +I%s", tmp, out);
-				ptr = strrchr (out, '\\');
-				if (ptr)
-					*(ptr+1) = 0;
-				ShellExecute(::GetDesktopWindow(), "open", opts.povpath, buf, out, SW_SHOWNORMAL);
+#ifdef LC_WINDOWS
+				char CmdLine[LC_MAXPATH * 3 + 100];
+
+				if (opts.libpath[0])
+					sprintf(CmdLine, "\"+L%slg\\\" \"+L%sar\\\" \"+I%s\"", opts.libpath, opts.libpath, opts.outpath);
+				else
+					sprintf(CmdLine, "\"+I%s\"", opts.outpath);
+					
+				ShellExecute(::GetDesktopWindow(), "open", opts.povpath, CmdLine, NULL, SW_SHOWNORMAL);
+#endif
+
+#ifdef LC_LINUX
+				pid_t pID = fork();
+
+				if (pID == 0)
+				{
+					char InputArg[LC_MAXPATH + 16];
+
+					sprintf(InputArg, "+I%s", opts.outpath);
+
+					if (opts.libpath[0])
+					{
+						char LibArg1[LC_MAXPATH + 16], LibArg2[LC_MAXPATH + 16];
+
+						sprintf(LibArg1, "+L%slg/", opts.libpath);
+						sprintf(LibArg2, "+L%sar/", opts.libpath);
+
+						execl(opts.povpath, opts.povpath, InputArg, LibArg1, LibArg2, NULL);
+					}
+					else
+						execl(opts.povpath, opts.povpath, InputArg, NULL);
+
+					exit(0);
+				}
 #endif
 			}
-		} break;
-
-		// Export to VRML97, exchange x -> z, z -> y, y -> x, 
-		case LC_FILE_VRML97:
-		{
-			char filename[LC_MAXPATH];
-			if (!SystemDoDialog(LC_DLG_VRML97, filename))
-				break;
-
-			exportVRML97File(filename);
-		} break;
-
-		// Export to X3DV for rigid body component
-                // exchange x -> z, z -> y, y -> x, 
-		case LC_FILE_X3DV:
-		{
-			char filename[LC_MAXPATH];
-			if (!SystemDoDialog(LC_DLG_X3DV, filename))
-				break;
-
-			exportX3DVFile(filename);
 		} break;
 
 		case LC_FILE_WAVEFRONT:
@@ -4373,7 +4249,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 			char buf[LC_MAXPATH], *ptr;
 			FILE* stream = fopen(filename, "wt");
 			unsigned long vert = 1, i;
-			lcPiece* pPiece;
+			Piece* pPiece;
 
 			strcpy(buf, m_strPathName);
 			ptr = strrchr(buf, '\\');
@@ -4415,209 +4291,96 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 			FILE* mat = fopen(buf, "wt");
 			fputs("# Colors used by LeoCAD\n# You need to add transparency values\n#\n\n", mat);
-			for (int i = 0; i < lcNumColors; i++)
-			{
-				char altname[256];
-				strcpy(altname, g_ColorList[i].Name);
-				while (char* ptr = (char*)strchr(altname, ' '))
-					*ptr = '_';
-
-				fprintf(mat, "newmtl %s\nKd %.2f %.2f %.2f\n\n", altname, g_ColorList[i].Value[0], g_ColorList[i].Value[1], g_ColorList[i].Value[2]);
-			}
+			for (i = 0; i < LC_MAXCOLORS; i++)
+				fprintf(mat, "newmtl %s\nKd %.2f %.2f %.2f\n\n", altcolornames[i], (float)FlatColorArray[i][0]/255, (float)FlatColorArray[i][1]/255, (float)FlatColorArray[i][2]/255);
 			fclose(mat);
 
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 			{
-				PieceInfo* pInfo = pPiece->m_PieceInfo;
+				float pos[3], rot[4], tmp[3];
+				pPiece->GetPosition(pos);
+				pPiece->GetRotation(rot);
+				Matrix mat(rot, pos);
+				PieceInfo* pInfo = pPiece->GetPieceInfo();
 
-				float* VertexPtr = (float*)pInfo->m_Mesh->m_VertexBuffer->MapBuffer(GL_READ_ONLY_ARB);
-
-				for (int v = 0; v < pInfo->m_Mesh->m_VertexCount*3; v += 3)
+				for (i = 0; i < pInfo->m_nVertexCount*3; i += 3)
 				{
-					Vector3 tmp = Mul31(Vector3(VertexPtr[v+0], VertexPtr[v+1], VertexPtr[v+2]), pPiece->m_ModelWorld);
+					mat.TransformPoint(tmp, &pInfo->m_fVertexArray[i]);
 					fprintf(stream, "v %.2f %.2f %.2f\n", tmp[0], tmp[1], tmp[2]);
 				}
 				fputs("#\n\n", stream);
-
-				pInfo->m_Mesh->m_VertexBuffer->UnmapBuffer();
 			}
 
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 			{
-				strcpy(buf, pPiece->m_Name);
+				strcpy(buf, pPiece->GetName());
 				for (i = 0; i < strlen(buf); i++)
 					if ((buf[i] == '#') || (buf[i] == ' '))
 						buf[i] = '_';
 
 				fprintf(stream, "g %s\n", buf);
-				pPiece->m_PieceInfo->WriteWavefront(stream, pPiece->m_Color, &vert);
+				pPiece->GetPieceInfo()->WriteWavefront(stream, pPiece->GetColor(), &vert);
 			}
 
 			fclose(stream);
 		} break;
 
-		case LC_MODEL_NEW:
+		case LC_FILE_PROPERTIES:
 		{
-			bool MovePieces = false;
-
-			if (m_ActiveModel->AnyPiecesSelected())
-				if (SystemDoMessageBox("Would you like to move the selected pieces to the new model?", LC_MB_YESNO|LC_MB_ICONQUESTION) == LC_YES)
-					MovePieces = true;
-
-			int Max = 0;
-
-			// Find out the number of the last model added.
-			for (int i = 0; i < m_ModelList.GetSize(); i++)
-			{
-				int Num;
-
-				if (sscanf((char*)m_ModelList[i]->m_Name, "New Model %d", &Num) == 1)
-					if (Num > Max)
-						Max = Num;
-			}
-
-			char Name[256];
-			sprintf(Name, "New Model %d", Max + 1);
-
-			// Prompt the user for the model properties.
 			LC_PROPERTIESDLG_OPTS opts;
 
-			opts.Name = Name;
-			opts.Author = Sys_ProfileLoadString("Default", "User", "LeoCAD");
-			opts.PiecesUsed = NULL;
+			opts.strTitle = m_strTitle;
+			strcpy(opts.strAuthor, m_strAuthor);
+			strcpy(opts.strDescription, m_strDescription);
+			strcpy(opts.strComments, m_strComments);
+			opts.strFilename = m_strPathName;
 
-			if (MovePieces)
+			opts.lines = lcGetPiecesLibrary()->GetPieceCount();
+			opts.count = (unsigned short*)malloc(lcGetPiecesLibrary()->GetPieceCount()*LC_MAXCOLORS*sizeof(unsigned short));
+			memset (opts.count, 0, lcGetPiecesLibrary()->GetPieceCount()*LC_MAXCOLORS*sizeof(unsigned short));
+			opts.names = (char**)malloc(lcGetPiecesLibrary()->GetPieceCount()*sizeof(char*));
+			for (int i = 0; i < lcGetPiecesLibrary()->GetPieceCount(); i++)
+				opts.names[i] = lcGetPiecesLibrary()->GetPieceInfo (i)->m_strDescription;
+
+			for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 			{
-				PiecesLibrary* Lib = lcGetPiecesLibrary();
-				m_ActiveModel->GetPiecesUsed(opts.PiecesUsed);
+				int idx = lcGetPiecesLibrary()->GetPieceIndex (pPiece->GetPieceInfo ());
+				opts.count[idx*LC_MAXCOLORS+pPiece->GetColor()]++;
 			}
 
 			if (SystemDoDialog(LC_DLG_PROPERTIES, &opts))
 			{
-				// Create and add new model.
-				lcModel* Model = new lcModel();
-				Model->SetName(opts.Name);
-				Model->m_Author = opts.Author;
-				Model->m_Description = opts.Description;
-				Model->m_Comments = opts.Comments;
-
-				if (MovePieces)
+				if (strcmp(m_strAuthor, opts.strAuthor) ||
+					strcmp(m_strDescription, opts.strDescription) ||
+					strcmp(m_strComments, opts.strComments))
 				{
-					for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; )
-					{
-						lcPiece* Next = (lcPiece*)Piece->m_Next;
-
-						if (Piece->IsSelected())
-						{
-							m_ActiveModel->RemovePiece(Piece);
-							Model->AddPiece(Piece);
-						}
-
-						Piece = Next;
-					}
-
-					lcPiece* Piece = new lcPiece(Model->m_PieceInfo);
-					Piece->Initialize(0, 0, 0, m_ActiveModel->m_CurFrame, LC_COLOR_DEFAULT);
-					Piece->SetUniqueName(m_ActiveModel->m_Pieces, Piece->m_PieceInfo->m_strDescription);
-					m_ActiveModel->AddPiece(Piece);
-					Piece->UpdatePosition(m_ActiveModel->m_CurFrame);
-
-					Model->UpdateMesh();
-					Model->m_CurFrame = m_ActiveModel->m_CurFrame;
-				}
-
-				AddModel(Model);
-				SetActiveModel(Model);
-
-				SetModifiedFlag(true);
-				CheckPoint("Adding Model");
-				SystemUpdateModelMenu(m_ModelList, m_ActiveModel);
-				UpdateAllViews();
-			}
-		} break;
-
-		case LC_MODEL_DELETE:
-		{
-			DeleteModel(m_ModelList[nParam]);
-		} break;
-
-		case LC_MODEL_SET_ACTIVE:
-		{
-			if ((int)nParam < m_ModelList.GetSize())
-			{
-				SetActiveModel(m_ModelList[nParam]);
-			}
-		} break;
-
-		case LC_MODEL_PROPERTIES:
-		{
-			LC_PROPERTIESDLG_OPTS opts;
-
-			// Text fields.
-			opts.Name = m_ActiveModel->m_Name;
-			opts.Author = m_ActiveModel->m_Author;
-			opts.Description = m_ActiveModel->m_Description;
-			opts.Comments = m_ActiveModel->m_Comments;
-
-			// Scene options.
-			opts.SceneFlags = m_nScene;
-			opts.FogDensity = m_fFogDensity;
-			opts.BackgroundImage = m_strBackground;
-			memcpy(opts.BackgroundColor, m_fBackground, sizeof(m_fBackground));
-			memcpy(opts.FogColor, m_fFogColor, sizeof(m_fFogColor));
-			memcpy(opts.AmbientColor, m_fAmbient, sizeof(m_fAmbient));
-			memcpy(opts.Gradient1, m_fGradient1, sizeof(m_fGradient1));
-			memcpy(opts.Gradient2, m_fGradient2, sizeof(m_fGradient2));
-
-			// Pieces list.
-			m_ActiveModel->GetPiecesUsed(opts.PiecesUsed);
-
-			if (SystemDoDialog(LC_DLG_PROPERTIES, &opts))
-			{
-				if ((m_ActiveModel->m_Author != opts.Author) || (m_ActiveModel->m_Description != opts.Description) ||
-				    (m_ActiveModel->m_Comments!= opts.Comments) || (m_ActiveModel->m_Name != opts.Name))
-				{
-					m_ActiveModel->SetName(opts.Name);
-					m_ActiveModel->m_Author = opts.Author;
-					m_ActiveModel->m_Description = opts.Description;
-					m_ActiveModel->m_Comments = opts.Comments;
-					SystemUpdateModelMenu(m_ModelList, m_ActiveModel);
+					strcpy(m_strAuthor, opts.strAuthor);
+					strcpy(m_strDescription, opts.strDescription);
+					strcpy(m_strComments, opts.strComments);
 					SetModifiedFlag(true);
 				}
-
-				if ((m_nScene != opts.SceneFlags) || (m_fFogDensity != opts.FogDensity) || strcmp(m_strBackground, opts.BackgroundImage) ||
-				    memcmp(m_fBackground, opts.BackgroundColor, sizeof(m_fBackground)) || memcmp(m_fFogColor, opts.FogColor, sizeof(m_fFogColor)) ||
-				    memcmp(m_fAmbient, opts.AmbientColor, sizeof(m_fAmbient)) || memcmp(m_fGradient1, opts.Gradient1, sizeof(m_fGradient1)) ||
-				    memcmp(m_fGradient2, opts.Gradient2, sizeof(m_fGradient2)))
-				{
-					m_nScene = opts.SceneFlags;
-					m_fFogDensity = opts.FogDensity;
-					strcpy(m_strBackground, opts.BackgroundImage);
-					memcpy(m_fBackground, opts.BackgroundColor, sizeof(m_fBackground));
-					memcpy(m_fFogColor, opts.FogColor, sizeof(m_fFogColor));
-					memcpy(m_fAmbient, opts.AmbientColor, sizeof(m_fAmbient));
-					memcpy(m_fGradient1, opts.Gradient1, sizeof(m_fGradient1));
-					memcpy(m_fGradient2, opts.Gradient2, sizeof(m_fGradient2));
-
-					for (int i = 0; i < m_ViewList.GetSize (); i++)
-					{
-						m_ViewList[i]->MakeCurrent ();
-						RenderInitialize();
-					}
-
-					UpdateAllViews();
-				}
 			}
+
+			free(opts.count);
+			free(opts.names);
 		} break;
 
-		case LC_MODEL_LIST:
+		case LC_FILE_TERRAIN:
 		{
-			SystemDoDialog(LC_DLG_MODEL_LIST, NULL);
+			Terrain* temp = new Terrain();
+			*temp = *m_pTerrain;
+
+			if (SystemDoDialog(LC_DLG_TERRAIN, temp))
+			{
+				*m_pTerrain = *temp;
+				m_pTerrain->LoadTexture(true);
+			}
+			delete temp;
 		} break;
 
 		case LC_FILE_LIBRARY:
 		{
-			lcFileMem file;
+			FileMem file;
 			FileSave(&file, true);
 
 			if (SystemDoDialog(LC_DLG_LIBRARY, NULL))
@@ -4632,8 +4395,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 		case LC_FILE_RECENT:
 		{
-			if (!OpenProject(main_window->GetMRU(nParam)))
-				main_window->RemoveFromMRU(nParam);
+			OpenProject(main_window->GetMRU(nParam));
 		} break;
 
 		case LC_EDIT_UNDO:
@@ -4703,45 +4465,45 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 		{
 			if (m_pClipboard[m_nCurClipboard] != NULL)
 				delete m_pClipboard[m_nCurClipboard];
-			m_pClipboard[m_nCurClipboard] = new lcFileMem;
+			m_pClipboard[m_nCurClipboard] = new FileMem;
 
 			int i = 0;
-			lcPiece* pPiece;
-			lcCamera* pCamera;
-			lcGroup* pGroup;
-//			lcLight* pLight;
+			Piece* pPiece;
+			Camera* pCamera;
+			Group* pGroup;
+//			Light* pLight;
 
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 				if (pPiece->IsSelected())
 					i++;
 			m_pClipboard[m_nCurClipboard]->Write(&i, sizeof(i));
 
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 				if (pPiece->IsSelected())
-					pPiece->FileSave(*m_pClipboard[m_nCurClipboard], m_ActiveModel->m_Groups);
+					pPiece->FileSave(*m_pClipboard[m_nCurClipboard], m_pGroups);
 
-			for (i = 0, pGroup = m_ActiveModel->m_Groups; pGroup; pGroup = pGroup->m_Next)
+			for (i = 0, pGroup = m_pGroups; pGroup; pGroup = pGroup->m_pNext)
 				i++;
 			m_pClipboard[m_nCurClipboard]->Write(&i, sizeof(i));
 
-			for (pGroup = m_ActiveModel->m_Groups; pGroup; pGroup = pGroup->m_Next)
-				pGroup->FileSave(m_pClipboard[m_nCurClipboard], m_ActiveModel->m_Groups);
+			for (pGroup = m_pGroups; pGroup; pGroup = pGroup->m_pNext)
+				pGroup->FileSave(m_pClipboard[m_nCurClipboard], m_pGroups);
 
-			for (i = 0, pCamera = m_ActiveModel->m_Cameras; pCamera; pCamera = (lcCamera*)pCamera->m_Next)
+			for (i = 0, pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
 				if (pCamera->IsSelected())
 					i++;
 			m_pClipboard[m_nCurClipboard]->Write(&i, sizeof(i));
 
-			for (pCamera = m_ActiveModel->m_Cameras; pCamera; pCamera = (lcCamera*)pCamera->m_Next)
+			for (pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
 				if (pCamera->IsSelected())
 					pCamera->FileSave(*m_pClipboard[m_nCurClipboard]);
 /*
-			for (i = 0, pLight = m_Lights; pLight; pLight = pLight->m_Next)
+			for (i = 0, pLight = m_pLights; pLight; pLight = pLight->m_pNext)
 				if (pLight->IsSelected())
 					i++;
 			m_pClipboard[m_nCurClipboard]->Write(&i, sizeof(i));
 
-			for (pLight = m_Lights; pLight; pLight = pLight->m_Next)
+			for (pLight = m_pLights; pLight; pLight = pLight->m_pNext)
 				if (pLight->IsSelected())
 					pLight->FileSave(m_pClipboard[m_nCurClipboard]);
 */
@@ -4761,8 +4523,8 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 		case LC_EDIT_PASTE:
 		{
 			int i, j;
-			lcPiece* pPasted = NULL;
-			lcFile* file = m_pClipboard[m_nCurClipboard];
+			Piece* pPasted = NULL;
+			File* file = m_pClipboard[m_nCurClipboard];
 			if (file == NULL)
 				break;
 			file->Seek(0, SEEK_SET);
@@ -4771,14 +4533,14 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 			file->Read(&i, sizeof(i));
 			while (i--)
 			{
-				char name[9];
-				lcPiece* pPiece = new lcPiece(NULL);
+				char name[LC_PIECE_NAME_LEN];
+				Piece* pPiece = new Piece(NULL);
 				pPiece->FileLoad(*file, name);
 				PieceInfo* pInfo = lcGetPiecesLibrary()->FindPieceInfo(name);
 				if (pInfo)
 				{
 					pPiece->SetPieceInfo(pInfo);
-					pPiece->m_Next = pPasted;
+					pPiece->m_pNext = pPasted;
 					pPasted = pPiece;
 				}
 				else 
@@ -4786,21 +4548,22 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 			}
 
 			file->Read(&i, sizeof(i));
-			lcPiece* pPiece;
-			lcGroup** groups = (lcGroup**)malloc(i*sizeof(lcGroup**));
+			Piece* pPiece;
+			Group** groups = (Group**)malloc(i*sizeof(Group**));
 			for (j = 0; j < i; j++)
 			{
-				groups[j] = new lcGroup();
+				groups[j] = new Group();
 				groups[j]->FileLoad(file);
 			}
 
 			while (pPasted)
 			{
 				pPiece = pPasted;
-				pPasted = (lcPiece*)pPasted->m_Next;
-				pPiece->SetUniqueName(m_ActiveModel->m_Pieces, pPiece->m_PieceInfo->m_strDescription);
-				pPiece->m_TimeShow = m_ActiveModel->m_CurFrame;
-				m_ActiveModel->AddPiece(pPiece);
+				pPasted = pPasted->m_pNext;
+				pPiece->CreateName(m_pPieces);
+				pPiece->SetFrameShow(m_nCurFrame);
+				pPiece->SetStepShow(m_nCurStep);
+				AddPiece(pPiece);
 				pPiece->Select(true, false, false);
 
 				j = LC_POINTER_TO_INT(pPiece->GetGroup());
@@ -4812,17 +4575,17 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 			for (j = 0; j < i; j++)
 			{
-				int g = LC_POINTER_TO_INT(groups[j]->m_Group);
-				groups[j]->m_Group = (g != -1) ? groups[g] : NULL;
+				int g = LC_POINTER_TO_INT(groups[j]->m_pGroup);
+				groups[j]->m_pGroup = (g != -1) ? groups[g] : NULL;
 			}
 
 			for (j = 0; j < i; j++)
 			{
-				lcGroup* pGroup;
+				Group* pGroup;
 				bool add = false;
-				for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+				for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 				{
-					for (pGroup = pPiece->GetGroup(); pGroup; pGroup = pGroup->m_Group)
+					for (pGroup = pPiece->GetGroup(); pGroup; pGroup = pGroup->m_pGroup)
 						if (pGroup == groups[j])
 						{
 							add = true;
@@ -4837,15 +4600,15 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 				{
 					int a, max = 0;
 
-					for (pGroup = m_ActiveModel->m_Groups; pGroup; pGroup = pGroup->m_Next)
+					for (pGroup = m_pGroups; pGroup; pGroup = pGroup->m_pNext)
 						if (strncmp("Pasted Group #", pGroup->m_strName, 14) == 0)
 							if (sscanf(pGroup->m_strName + 14, "%d", &a) == 1)
 								if (a > max) 
 									max = a;
 
 					sprintf(groups[j]->m_strName, "Pasted Group #%.2d", max+1);
-					groups[j]->m_Next = m_ActiveModel->m_Groups;
-					m_ActiveModel->m_Groups = groups[j];
+					groups[j]->m_pNext = m_pGroups;
+					m_pGroups = groups[j];
 				}
 				else
 					delete groups[j];
@@ -4853,18 +4616,17 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 			
 			free(groups);
 
-			lcCamera* pCamera = m_ActiveModel->m_Cameras;
-			while (pCamera->m_Next)
-				pCamera = (lcCamera*)pCamera->m_Next;
+			Camera* pCamera = m_pCameras;
+			while (pCamera->m_pNext)
+				pCamera = pCamera->m_pNext;
 			file->Read(&i, sizeof(i));
 
 			while (i--)
 			{
-				pCamera = new lcCamera();
-				m_ActiveModel->AddCamera(pCamera);
+				pCamera = new Camera(8, pCamera);
 				pCamera->FileLoad(*file);
 				pCamera->Select(true, false, false);
-				pCamera->m_Target->Select(true, false, false);
+				pCamera->GetTarget ()->Select(true, false, false);
 			}
 
 			// TODO: lights
@@ -4878,9 +4640,9 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 		case LC_EDIT_SELECT_ALL:
 		{
-			lcPiece* pPiece;
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
-				if (pPiece->IsVisible(m_ActiveModel->m_CurFrame))
+			Piece* pPiece;
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				if (pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation))
 					pPiece->Select(true, false, false);
 
 //	pFrame->UpdateInfo();
@@ -4891,16 +4653,16 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 		case LC_EDIT_SELECT_NONE:
 		{
 			SelectAndFocusNone(false);
-			lcPostMessage(LC_MSG_FOCUS_OBJECT_CHANGED, NULL);
+                        messenger->Dispatch (LC_MSG_FOCUS_CHANGED, NULL);
 			UpdateSelection();
 			UpdateAllViews();
 		} break;
 		
 		case LC_EDIT_SELECT_INVERT:
 		{
-			lcPiece* pPiece;
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
-				if (pPiece->IsVisible(m_ActiveModel->m_CurFrame))
+			Piece* pPiece;
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				if (pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation))
 				{
                                   if (pPiece->IsSelected())
                                     pPiece->Select(false, false, false);
@@ -4908,34 +4670,34 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
                                     pPiece->Select(true, false, false);
 				}
 
-			lcPostMessage(LC_MSG_FOCUS_OBJECT_CHANGED, NULL);
+                        messenger->Dispatch (LC_MSG_FOCUS_CHANGED, NULL);
 			UpdateSelection();
 			UpdateAllViews();
 		} break;
 
 		case LC_EDIT_SELECT_BYNAME:
 		{
-			lcPiece* pPiece;
-			lcCamera* pCamera;
-			lcLight* pLight;
-			lcGroup* pGroup;
+			Piece* pPiece;
+			Camera* pCamera;
+			Light* pLight;
+			Group* pGroup;
 			int i = 0;
 
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
-				if (pPiece->IsVisible(m_ActiveModel->m_CurFrame))
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				if (pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation))
 					i++;
 
-			for (pCamera = m_ActiveModel->m_Cameras; pCamera; pCamera = (lcCamera*)pCamera->m_Next)
-				if (pCamera != m_ActiveView->GetCamera1())
+			for (pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+				if (pCamera != m_ActiveView->m_Camera)
 					if (pCamera->IsVisible())
 						i++;
 
-			for (pLight = m_ActiveModel->m_Lights; pLight; pLight = (lcLight*)pLight->m_Next)
+			for (pLight = m_pLights; pLight; pLight = pLight->m_pNext)
 				if (pLight->IsVisible())
 					i++;
 
 			// TODO: add only groups with visible pieces
-			for (pGroup = m_ActiveModel->m_Groups; pGroup; pGroup = pGroup->m_Next)
+			for (pGroup = m_pGroups; pGroup; pGroup = pGroup->m_pNext)
 				i++;
 
 			if (i == 0)
@@ -4947,31 +4709,31 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 			LC_SEL_DATA* opts = (LC_SEL_DATA*)malloc((i+1)*sizeof(LC_SEL_DATA));
 			i = 0;
 
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
-				if (pPiece->IsVisible(m_ActiveModel->m_CurFrame))
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				if (pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation))
 				{
-					opts[i].name = pPiece->m_Name;
+					opts[i].name = pPiece->GetName();
 					opts[i].type = LC_SELDLG_PIECE;
 					opts[i].selected = pPiece->IsSelected();
 					opts[i].pointer = pPiece;
 					i++;
 				}
 
-			for (pCamera = m_ActiveModel->m_Cameras; pCamera; pCamera = (lcCamera*)pCamera->m_Next)
-				if (pCamera != m_ActiveView->GetCamera1())
+			for (pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+				if (pCamera != m_ActiveView->m_Camera)
 					if (pCamera->IsVisible())
 					{
-						opts[i].name = pCamera->m_Name;
+						opts[i].name = pCamera->GetName();
 						opts[i].type = LC_SELDLG_CAMERA;
 						opts[i].selected = pCamera->IsSelected();
 						opts[i].pointer = pCamera;
 						i++;
 					}
 
-			for (pLight = m_ActiveModel->m_Lights; pLight; pLight = (lcLight*)pLight->m_Next)
+			for (pLight = m_pLights; pLight; pLight = pLight->m_pNext)
 				if (pLight->IsVisible())
 				{
-					opts[i].name = pLight->m_Name;
+					opts[i].name = pLight->GetName();
 					opts[i].type = LC_SELDLG_LIGHT;
 					opts[i].selected = pLight->IsSelected();
 					opts[i].pointer = pLight;
@@ -4979,7 +4741,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 				}
 
 			// TODO: add only groups with visible pieces
-			for (pGroup = m_ActiveModel->m_Groups; pGroup; pGroup = pGroup->m_Next)
+			for (pGroup = m_pGroups; pGroup; pGroup = pGroup->m_pNext)
 			{
 				opts[i].name = pGroup->m_strName;
 				opts[i].type = LC_SELDLG_GROUP;
@@ -5003,24 +4765,24 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 					{
 						case LC_SELDLG_PIECE:
 						{
-							((lcPiece*)opts[i].pointer)->Select(true, false, false);
+							((Piece*)opts[i].pointer)->Select(true, false, false);
 						} break;
 
 						case LC_SELDLG_CAMERA:
 						{
-							((lcCamera*)opts[i].pointer)->Select(true, false, false);
+							((Camera*)opts[i].pointer)->Select(true, false, false);
 						} break;
 
 						case LC_SELDLG_LIGHT:
 						{
-							((lcLight*)opts[i].pointer)->Select(true, false, false);
+							((Light*)opts[i].pointer)->Select(true, false, false);
 						} break;
 
 						case LC_SELDLG_GROUP:
 						{
-							pGroup = (lcGroup*)opts[i].pointer;
+							pGroup = (Group*)opts[i].pointer;
 							pGroup = pGroup->GetTopGroup();
-							for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+							for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 								if (pPiece->GetTopGroup() == pGroup)
 									pPiece->Select(true, false, false);
 						} break;
@@ -5035,62 +4797,41 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 			free(opts);
 		} break;
 
-		case LC_EDIT_SELECT_BYCOLOR:
-		{
-			SelectAndFocusNone(false);
-
-			for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-			{
-				if (Piece->m_Color != g_App->m_SelectedColor || !Piece->IsVisible(m_ActiveModel->m_CurFrame))
-					continue;
-
-				lcGroup* Group = Piece->GetTopGroup();
-				if (Group)
-				{
-					for (lcPiece* GroupPiece = m_ActiveModel->m_Pieces; GroupPiece; GroupPiece = (lcPiece*)GroupPiece->m_Next)
-						if ((GroupPiece->IsVisible(m_ActiveModel->m_CurFrame)) && (GroupPiece->GetTopGroup() == Group))
-							GroupPiece->Select (true, false, false);
-				}
-				else
-					Piece->Select(true, false, false);
-			}
-
-			UpdateSelection();
-			UpdateAllViews();
-//	pFrame->UpdateInfo();
-		} break;
-
 		case LC_PIECE_INSERT:
 		{
-			lcPiece* Last = NULL;
-			lcPiece* Piece = new lcPiece(g_App->m_PiecePreview->m_Selection);
+			if (m_pCurPiece == NULL)
+				break;
+			Piece* pLast = NULL;
+			Piece* pPiece = new Piece(m_pCurPiece);
 
-			for (Last = m_ActiveModel->m_Pieces; Last; Last = (lcPiece*)Last->m_Next)
-				if ((Last->IsFocused()) || (Last->m_Next == NULL))
+			for (pLast = m_pPieces; pLast; pLast = pLast->m_pNext)
+				if ((pLast->IsFocused()) || (pLast->m_pNext == NULL))
 					break;
 
-			if (Last != NULL)
+			if (pLast != NULL)
 			{
 				Vector3 Pos;
 				Vector4 Rot;
 
-				GetPieceInsertPosition(Last, Pos, Rot);
+				GetPieceInsertPosition(pLast, Pos, Rot);
 
-				Piece->Initialize(Pos[0], Pos[1], Pos[2], m_ActiveModel->m_CurFrame, g_App->m_SelectedColor);
+				pPiece->Initialize(Pos[0], Pos[1], Pos[2], m_nCurStep, m_nCurFrame, m_nCurColor);
 
-				Piece->ChangeKey(m_ActiveModel->m_CurFrame, false, Rot, LC_PK_ROTATION);
-				Piece->UpdatePosition(m_ActiveModel->m_CurFrame);
+				pPiece->ChangeKey(m_nCurStep, false, false, Rot, LC_PK_ROTATION);
+				pPiece->ChangeKey(m_nCurFrame, true, false, Rot, LC_PK_ROTATION);
+				pPiece->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
 			}
 			else
-				Piece->Initialize(0, 0, 0, m_ActiveModel->m_CurFrame, g_App->m_SelectedColor);
+				pPiece->Initialize(0, 0, 0, m_nCurStep, m_nCurFrame, m_nCurColor);
 
 			SelectAndFocusNone(false);
-			Piece->SetUniqueName(m_ActiveModel->m_Pieces, Piece->m_PieceInfo->m_strDescription);
-			m_ActiveModel->AddPiece(Piece);
-			Piece->Select (true, true, false);
-			lcPostMessage(LC_MSG_FOCUS_OBJECT_CHANGED, Piece);
+			pPiece->CreateName(m_pPieces);
+			AddPiece(pPiece);
+			pPiece->CalculateConnections(m_pConnections, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, true, true);
+			pPiece->Select (true, true, false);
+			messenger->Dispatch (LC_MSG_FOCUS_CHANGED, pPiece);
 			UpdateSelection();
-			SystemPieceComboAdd(g_App->m_PiecePreview->m_Selection->m_strDescription);
+			SystemPieceComboAdd(m_pCurPiece->m_strDescription);
 
 			if (m_nSnap & LC_DRAW_MOVE)
 				SetAction(LC_ACTION_MOVE);
@@ -5105,7 +4846,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 		{
 			if (RemoveSelectedObjects())
 			{
-				lcPostMessage(LC_MSG_FOCUS_OBJECT_CHANGED, NULL);
+                          messenger->Dispatch (LC_MSG_FOCUS_CHANGED, NULL);
 				UpdateSelection();
 				UpdateAllViews();
 				SetModifiedFlag(true);
@@ -5127,51 +4868,52 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 					if (Wizard.m_Info[i] == NULL)
 						continue;
 
-					Vector4& Position = Wizard.m_Matrices[i][3];  
-					Vector4 Rotation = MatrixToAxisAngle(Wizard.m_Matrices[i]);  
-					lcPiece* Piece = new lcPiece(Wizard.m_Info[i]);
+					Matrix mat;
+					Piece* pPiece = new Piece(Wizard.m_Info[i]);
 
-					Piece->Initialize(Position[0], Position[1], Position[2], m_ActiveModel->m_CurFrame, Wizard.m_Colors[i]);
-					Piece->SetUniqueName(m_ActiveModel->m_Pieces, Piece->m_PieceInfo->m_strDescription);
-					m_ActiveModel->AddPiece(Piece);
-					Piece->Select(true, false, false);
+					Vector4& Position = Wizard.m_Matrices[i][3];
+					Vector4 Rotation = Wizard.m_Matrices[i].ToAxisAngle();
+					Rotation[3] *= LC_RTOD;
+					pPiece->Initialize(Position[0], Position[1], Position[2], m_nCurStep, m_nCurFrame, Wizard.m_Colors[i]);
+					pPiece->CreateName(m_pPieces);
+					AddPiece(pPiece);
+					pPiece->Select(true, false, false);
 
-					Piece->ChangeKey(1, false, Rotation, LC_PK_ROTATION);
-					Piece->UpdatePosition(m_ActiveModel->m_CurFrame);
+					pPiece->ChangeKey(1, false, false, Rotation, LC_PK_ROTATION);
+					pPiece->ChangeKey(1, true, false, Rotation, LC_PK_ROTATION);
+					pPiece->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
+					pPiece->CalculateConnections(m_pConnections, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, false, true);
 
 					SystemPieceComboAdd(Wizard.m_Info[i]->m_strDescription);
 				}
 
+				float bs[6] = { 10000, 10000, 10000, -10000, -10000, -10000 };
 				int max = 0;
 
-				lcGroup* pGroup;
-				for (pGroup = m_ActiveModel->m_Groups; pGroup; pGroup = pGroup->m_Next)
+				Group* pGroup;
+				for (pGroup = m_pGroups; pGroup; pGroup = pGroup->m_pNext)
 					if (strncmp (pGroup->m_strName, "Minifig #", 9) == 0)
 						if (sscanf(pGroup->m_strName, "Minifig #%d", &i) == 1)
 							if (i > max)
 								max = i;
-				pGroup = new lcGroup;
+				pGroup = new Group;
 				sprintf(pGroup->m_strName, "Minifig #%.2d", max+1);
 
-				pGroup->m_Next = m_ActiveModel->m_Groups;
-				m_ActiveModel->m_Groups = pGroup;
+				pGroup->m_pNext = m_pGroups;
+				m_pGroups = pGroup;
 
-				BoundingBox Box;
-				Box.Reset();
-
-				for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-					if (Piece->IsSelected())
+				for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+					if (pPiece->IsSelected())
 					{
-						Piece->SetGroup(pGroup);
-						Piece->MergeBoundingBox(&Box);
+						pPiece->SetGroup(pGroup);
+						pPiece->CompareBoundingBox(bs);
 					}
 
-				Vector3 Center = Box.GetCenter();
-				pGroup->m_fCenter[0] = Center[0];
-				pGroup->m_fCenter[1] = Center[1];
-				pGroup->m_fCenter[2] = Center[2];
+				pGroup->m_fCenter[0] = (bs[0]+bs[3])/2;
+				pGroup->m_fCenter[1] = (bs[1]+bs[4])/2;
+				pGroup->m_fCenter[2] = (bs[2]+bs[5])/2;
 
-				lcPostMessage(LC_MSG_FOCUS_OBJECT_CHANGED, NULL);
+				messenger->Dispatch (LC_MSG_FOCUS_CHANGED, NULL);
 				UpdateSelection();
 				UpdateAllViews();
 				SetModifiedFlag(true);
@@ -5212,31 +4954,28 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 					opts.fMove[2] *= 0.08f;
 				}
 
-				lcPiece *pPiece, *pFirst = NULL, *pLast = NULL;
+				Piece *pPiece, *pFirst = NULL, *pLast = NULL;
+				float bs[6] = { 10000, 10000, 10000, -10000, -10000, -10000 };
 				int sel = 0;
 				unsigned long i, j, k;
 
-				BoundingBox Box;
-				Box.Reset();
-
-				for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+				for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 					if (pPiece->IsSelected())
 					{
-						pPiece->MergeBoundingBox(&Box);
+						pPiece->CompareBoundingBox(bs);
 						sel++;
 					}
 
-				Vector3 Center = Box.GetCenter();
-
-				for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+				for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 				{
 					if (!pPiece->IsSelected())
 						continue;
 
 					for (i = 0; i < opts.n1DCount; i++)
 					{
-						Vector3 pos = pPiece->m_Position;
-						Vector4 param = pPiece->m_AxisAngle;
+						float pos[3], param[4];
+						pPiece->GetRotation(param);
+						pPiece->GetPosition(pos);
 						Matrix mat(param, pos);
 
 						if (sel == 1)
@@ -5249,9 +4988,9 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 						}
 						else
 						{
-							mat.RotateCenter(i*opts.fRotate[0],1,0,0,Center[0],Center[1],Center[2]);
-							mat.RotateCenter(i*opts.fRotate[1],0,1,0,Center[0],Center[1],Center[2]);
-							mat.RotateCenter(i*opts.fRotate[2],0,0,1,Center[0],Center[1],Center[2]);
+							mat.RotateCenter(i*opts.fRotate[0],1,0,0,(bs[0]+bs[3])/2,(bs[1]+bs[4])/2,(bs[2]+bs[5])/2);
+							mat.RotateCenter(i*opts.fRotate[1],0,1,0,(bs[0]+bs[3])/2,(bs[1]+bs[4])/2,(bs[2]+bs[5])/2);
+							mat.RotateCenter(i*opts.fRotate[2],0,0,1,(bs[0]+bs[3])/2,(bs[1]+bs[4])/2,(bs[2]+bs[5])/2);
 						}
 						mat.ToAxisAngle(param);
 						mat.GetTranslation(pos);
@@ -5260,14 +4999,16 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 						{
 							if (pLast)
 							{
-								pLast->m_Next = new lcPiece(pPiece->m_PieceInfo);
-								pLast = (lcPiece*)pLast->m_Next;
+								pLast->m_pNext = new Piece(pPiece->GetPieceInfo());
+								pLast = pLast->m_pNext;
 							}
 							else
-								pLast = pFirst = new lcPiece(pPiece->m_PieceInfo);
+								pLast = pFirst = new Piece(pPiece->GetPieceInfo());
 
-							pLast->Initialize(pos[0]+i*opts.fMove[0], pos[1]+i*opts.fMove[1], pos[2]+i*opts.fMove[2], m_ActiveModel->m_CurFrame, pPiece->m_Color);
-							pLast->ChangeKey(1, false, param, LC_PK_ROTATION);
+							pLast->Initialize(pos[0]+i*opts.fMove[0], pos[1]+i*opts.fMove[1], pos[2]+i*opts.fMove[2], 
+								m_nCurStep, m_nCurFrame, pPiece->GetColor());
+							pLast->ChangeKey(1, false, false, param, LC_PK_ROTATION);
+							pLast->ChangeKey(1, true, false, param, LC_PK_ROTATION);
 						}
 
 						if (opts.nArrayDimension == 0)
@@ -5279,14 +5020,16 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 							{
 								if (pLast)
 								{
-									pLast->m_Next = new lcPiece(pPiece->m_PieceInfo);
-									pLast = (lcPiece*)pLast->m_Next;
+									pLast->m_pNext = new Piece(pPiece->GetPieceInfo());
+									pLast = pLast->m_pNext;
 								}
 								else
-									pLast = pFirst = new lcPiece(pPiece->m_PieceInfo);
+									pLast = pFirst = new Piece(pPiece->GetPieceInfo());
 
-								pLast->Initialize(pos[0]+i*opts.fMove[0]+j*opts.f2D[0], pos[1]+i*opts.fMove[1]+j*opts.f2D[1], pos[2]+i*opts.fMove[2]+j*opts.f2D[2], m_ActiveModel->m_CurFrame, pPiece->m_Color);
-								pLast->ChangeKey(1, false, param, LC_PK_ROTATION);
+								pLast->Initialize(pos[0]+i*opts.fMove[0]+j*opts.f2D[0], pos[1]+i*opts.fMove[1]+j*opts.f2D[1], pos[2]+i*opts.fMove[2]+j*opts.f2D[2],
+									m_nCurStep, m_nCurFrame, pPiece->GetColor());
+								pLast->ChangeKey(1, false, false, param, LC_PK_ROTATION);
+								pLast->ChangeKey(1, true, false, param, LC_PK_ROTATION);
 							}
 
 							if (opts.nArrayDimension == 1)
@@ -5296,14 +5039,16 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 							{
 								if (pLast)
 								{
-									pLast->m_Next = new lcPiece(pPiece->m_PieceInfo);
-									pLast = (lcPiece*)pLast->m_Next;
+									pLast->m_pNext = new Piece(pPiece->GetPieceInfo());
+									pLast = pLast->m_pNext;
 								}
 								else
-									pLast = pFirst = new lcPiece(pPiece->m_PieceInfo);
+									pLast = pFirst = new Piece(pPiece->GetPieceInfo());
 
-								pLast->Initialize(pos[0]+i*opts.fMove[0]+j*opts.f2D[0]+k*opts.f3D[0], pos[1]+i*opts.fMove[1]+j*opts.f2D[1]+k*opts.f3D[1], pos[2]+i*opts.fMove[2]+j*opts.f2D[2]+k*opts.f3D[2], m_ActiveModel->m_CurFrame, pPiece->m_Color);
-								pLast->ChangeKey(1, false, param, LC_PK_ROTATION);
+								pLast->Initialize(pos[0]+i*opts.fMove[0]+j*opts.f2D[0]+k*opts.f3D[0], pos[1]+i*opts.fMove[1]+j*opts.f2D[1]+k*opts.f3D[1], pos[2]+i*opts.fMove[2]+j*opts.f2D[2]+k*opts.f3D[2],
+									m_nCurStep, m_nCurFrame, pPiece->GetColor());
+								pLast->ChangeKey(1, false, false, param, LC_PK_ROTATION);
+								pLast->ChangeKey(1, true, false, param, LC_PK_ROTATION);
 							}
 						}
 					}
@@ -5311,10 +5056,11 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 				while (pFirst)
 				{
-					pPiece = (lcPiece*)pFirst->m_Next;
-					pFirst->SetUniqueName(m_ActiveModel->m_Pieces, pFirst->m_PieceInfo->m_strDescription);
-					pFirst->UpdatePosition(m_ActiveModel->m_CurFrame);
-					m_ActiveModel->AddPiece(pFirst);
+					pPiece = pFirst->m_pNext;
+					pFirst->CreateName(m_pPieces);
+					pFirst->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
+					AddPiece(pFirst);
+					pFirst->CalculateConnections(m_pConnections, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, false, true);
 					pFirst = pPiece;
 				}
 
@@ -5327,13 +5073,33 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 			}
 		} break;
 
+		case LC_PIECE_COPYKEYS:
+		{
+			float move[3], rot[4];
+			Piece* pPiece;
+
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				if (pPiece->IsSelected())
+				{
+					pPiece->CalculateSingleKey (m_bAnimation ? m_nCurStep : m_nCurFrame, !m_bAnimation, LC_PK_POSITION, move);
+					pPiece->CalculateSingleKey (m_bAnimation ? m_nCurStep : m_nCurFrame, !m_bAnimation, LC_PK_ROTATION, rot);
+					pPiece->ChangeKey(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, move, LC_PK_POSITION);
+					pPiece->ChangeKey(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, rot, LC_PK_ROTATION);
+				}
+
+			// TODO: cameras and lights
+
+			CalculateStep();
+			UpdateAllViews();
+		} break;
+
 		case LC_PIECE_GROUP:
 		{
-			lcGroup* pGroup;
+			Group* pGroup;
 			int i, max = 0;
 			char name[65];
 
-			for (pGroup = m_ActiveModel->m_Groups; pGroup; pGroup = pGroup->m_Next)
+			for (pGroup = m_pGroups; pGroup; pGroup = pGroup->m_pNext)
 				if (strncmp (pGroup->m_strName, "Group #", 7) == 0)
 					if (sscanf(pGroup->m_strName, "Group #%d", &i) == 1)
 						if (i > max)
@@ -5342,25 +5108,22 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 			if (SystemDoDialog(LC_DLG_GROUP, name))
 			{
-				pGroup = new lcGroup();
+				pGroup = new Group();
 				strcpy(pGroup->m_strName, name);
-				pGroup->m_Next = m_ActiveModel->m_Groups;
-				m_ActiveModel->m_Groups = pGroup;
+				pGroup->m_pNext = m_pGroups;
+				m_pGroups = pGroup;
+				float bs[6] = { 10000, 10000, 10000, -10000, -10000, -10000 };
 
-				BoundingBox Box;
-				Box.Reset();
-
-				for (lcPiece* pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+				for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 					if (pPiece->IsSelected())
 					{
 						pPiece->DoGroup(pGroup);
-						pPiece->MergeBoundingBox(&Box);
+						pPiece->CompareBoundingBox(bs);
 					}
-
-				Vector3 Center = Box.GetCenter();
-				pGroup->m_fCenter[0] = Center[0];
-				pGroup->m_fCenter[1] = Center[1];
-				pGroup->m_fCenter[2] = Center[2];
+	
+				pGroup->m_fCenter[0] = (bs[0]+bs[3])/2;
+				pGroup->m_fCenter[1] = (bs[1]+bs[4])/2;
+				pGroup->m_fCenter[2] = (bs[2]+bs[5])/2;
 
 				RemoveEmptyGroups();
 				SetModifiedFlag(true);
@@ -5370,48 +5133,48 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 		case LC_PIECE_UNGROUP:
 		{
-			lcGroup* pList = NULL;
-			lcGroup* pGroup;
-			lcGroup* tmp;
-			lcPiece* pPiece;
+			Group* pList = NULL;
+			Group* pGroup;
+			Group* tmp;
+			Piece* pPiece;
 
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 				if (pPiece->IsSelected())
 				{
 					pGroup = pPiece->GetTopGroup();
 
 					// Check if we already removed the group
-					for (tmp = pList; tmp; tmp = tmp->m_Next)
+					for (tmp = pList; tmp; tmp = tmp->m_pNext)
 						if (pGroup == tmp)
 							pGroup = NULL;
 
 					if (pGroup != NULL)
 					{
 						// First remove the group from the array
-						for (tmp = m_ActiveModel->m_Groups; tmp->m_Next; tmp = tmp->m_Next)
-							if (tmp->m_Next == pGroup)
+						for (tmp = m_pGroups; tmp->m_pNext; tmp = tmp->m_pNext)
+							if (tmp->m_pNext == pGroup)
 							{
-								tmp->m_Next = pGroup->m_Next;
+								tmp->m_pNext = pGroup->m_pNext;
 								break;
 							}
 
-						if (pGroup == m_ActiveModel->m_Groups)
-							m_ActiveModel->m_Groups = pGroup->m_Next;
+						if (pGroup == m_pGroups)
+							m_pGroups = pGroup->m_pNext;
 
 						// Now add it to the list of top groups
-						pGroup->m_Next = pList;
+						pGroup->m_pNext = pList;
 						pList = pGroup;
 					}
 				}
 
 			while (pList)
 			{
-				for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+				for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 					if (pPiece->IsSelected())
 						pPiece->UnGroup(pList);
 
 				pGroup = pList;
-				pList = pList->m_Next;
+				pList = pList->m_pNext;
 				delete pGroup;
 			}
 
@@ -5422,10 +5185,10 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 		case LC_PIECE_GROUP_ADD:
 		{
-			lcGroup* pGroup = NULL;
-			lcPiece* pPiece;
+			Group* pGroup = NULL;
+			Piece* pPiece;
 
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 				if (pPiece->IsSelected())
 				{
 					pGroup = pPiece->GetTopGroup();
@@ -5435,7 +5198,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 			if (pGroup != NULL)
 			{
-				for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+				for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 					if (pPiece->IsFocused())
 					{
 						pPiece->SetGroup(pGroup);
@@ -5450,9 +5213,9 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 		case LC_PIECE_GROUP_REMOVE:
 		{
-			lcPiece* pPiece;
+			Piece* pPiece;
 
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 				if (pPiece->IsFocused())
 				{
 					pPiece->UnGroup(NULL);
@@ -5467,32 +5230,32 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 		case LC_PIECE_GROUP_EDIT:
 		{
 			int i;
-			lcGroup* pGroup;
-			lcPiece* pPiece;
+			Group* pGroup;
+			Piece* pPiece;
 			LC_GROUPEDITDLG_OPTS opts;
 
-			for (i = 0, pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+			for (i = 0, pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 				i++;
 			opts.piececount = i;
-			opts.pieces = (lcPiece**)malloc(i*sizeof(lcPiece*));
-			opts.piecesgroups = (lcGroup**)malloc(i*sizeof(lcGroup*));
+			opts.pieces = (Piece**)malloc(i*sizeof(Piece*));
+			opts.piecesgroups = (Group**)malloc(i*sizeof(Group*));
 
-			for (i = 0, pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next, i++)
+			for (i = 0, pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext, i++)
 			{
 				opts.pieces[i] = pPiece;
 				opts.piecesgroups[i] = pPiece->GetGroup();
 			}
 
-			for (i = 0, pGroup = m_ActiveModel->m_Groups; pGroup; pGroup = pGroup->m_Next)
+			for (i = 0, pGroup = m_pGroups; pGroup; pGroup = pGroup->m_pNext)
 				i++;
 			opts.groupcount = i;
-			opts.groups = (lcGroup**)malloc(i*sizeof(lcGroup*));
-			opts.groupsgroups = (lcGroup**)malloc(i*sizeof(lcGroup*));
+			opts.groups = (Group**)malloc(i*sizeof(Group*));
+			opts.groupsgroups = (Group**)malloc(i*sizeof(Group*));
 
-			for (i = 0, pGroup = m_ActiveModel->m_Groups; pGroup; pGroup = pGroup->m_Next, i++)
+			for (i = 0, pGroup = m_pGroups; pGroup; pGroup = pGroup->m_pNext, i++)
 			{
 				opts.groups[i] = pGroup;
-				opts.groupsgroups[i] = pGroup->m_Group;
+				opts.groupsgroups[i] = pGroup->m_pGroup;
 			}
 
 			if (SystemDoDialog(LC_DLG_EDITGROUPS, &opts))
@@ -5501,7 +5264,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 					opts.pieces[i]->SetGroup(opts.piecesgroups[i]);
 
 				for (i = 0; i < opts.groupcount; i++)
-					opts.groups[i]->m_Group = opts.groupsgroups[i];
+					opts.groups[i]->m_pGroup = opts.groupsgroups[i];
 
 				RemoveEmptyGroups();
 				SelectAndFocusNone(false);
@@ -5520,48 +5283,62 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 		case LC_PIECE_HIDE_SELECTED:
 		{
-			for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-				if (Piece->IsSelected())
-					Piece->Hide();
+			Piece* pPiece;
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				if (pPiece->IsSelected())
+					pPiece->Hide();
 			UpdateSelection();
-			lcPostMessage(LC_MSG_FOCUS_OBJECT_CHANGED, NULL);
+			messenger->Dispatch (LC_MSG_FOCUS_CHANGED, NULL);
 			UpdateAllViews();
 		} break;
 
 		case LC_PIECE_HIDE_UNSELECTED:
 		{
-			for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-				if (!Piece->IsSelected())
-					Piece->Hide();
+			Piece* pPiece;
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				if (!pPiece->IsSelected())
+					pPiece->Hide();
 			UpdateSelection();
 			UpdateAllViews();
 		} break;
 
 		case LC_PIECE_UNHIDE_ALL:
 		{
-			for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-				Piece->UnHide();
+			Piece* pPiece;
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				pPiece->UnHide();
 			UpdateSelection();
 			UpdateAllViews();
 		} break;
 
 		case LC_PIECE_PREVIOUS:
 		{
-			bool Redraw = false;
+			bool redraw = false;
 
-			for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-			{
-				if (Piece->IsSelected())
+			for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				if (pPiece->IsSelected())
 				{
-					if (Piece->m_TimeShow > 1)
+					if (m_bAnimation)
 					{
-						Piece->m_TimeShow--;
-						Redraw = true;
+						unsigned short t = pPiece->GetFrameShow();
+						if (t > 1)
+						{
+							redraw = true;
+							pPiece->SetFrameShow(t-1);
+						}
+					}
+					else
+					{
+						unsigned char t = pPiece->GetStepShow();
+						if (t > 1)
+						{
+							redraw = true;
+							pPiece->SetStepShow(t-1);
+						}
 					}
 				}
-			}
 
-			if (Redraw)
+			if (redraw)
 			{
 				SetModifiedFlag(true);
 				CheckPoint("Modifying");
@@ -5571,26 +5348,38 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 		case LC_PIECE_NEXT:
 		{
-			bool Redraw = false;
-			u32 MaxTime = m_Animation ? m_ActiveModel->m_TotalFrames : LC_OBJECT_TIME_MAX;
+			bool redraw = false;
 
-			for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-			{
-				if (!Piece->IsSelected())
-					continue;
-
-				u32 t = Piece->m_TimeShow;
-				if (t < MaxTime)
+			for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				if (pPiece->IsSelected())
 				{
-					Piece->m_TimeShow++;
-					Redraw = true;
+					if (m_bAnimation)
+					{
+						unsigned short t = pPiece->GetFrameShow();
+						if (t < m_nTotalFrames)
+						{
+							redraw = true;
+							pPiece->SetFrameShow(t+1);
 
-					if (Piece->IsSelected() && t == m_ActiveModel->m_CurFrame)
-						Piece->Select(false, false, false);
+							if (pPiece->IsSelected () && t == m_nCurFrame)
+								pPiece->Select (false, false, false);
+						}
+					}
+					else
+					{
+						unsigned char t = pPiece->GetStepShow();
+						if (t < 255)
+						{
+							redraw = true;
+							pPiece->SetStepShow(t+1);
+
+							if (pPiece->IsSelected () && t == m_nCurStep)
+								pPiece->Select (false, false, false);
+						}
+					}
 				}
-			}
 
-			if (Redraw)
+			if (redraw)
 			{
 				SetModifiedFlag(true);
 				CheckPoint("Modifying");
@@ -5599,186 +5388,10 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 			}
 		} break;
 
-		case LC_PIECE_FIND_NEXT:
-		{
-			lcObject* Focus = GetFocusObject();
-			lcPiece* Start;
-			PieceInfo* Info;
-
-			if (!Focus || !Focus->IsPiece())
-			{
-				Info = g_App->m_PiecePreview->m_Selection;
-				Start = m_ActiveModel->m_Pieces;
-			}
-			else
-			{
-				Info = ((lcPiece*)Focus)->m_PieceInfo;
-				Start = (lcPiece*)Focus->m_Next;
-			}
-
-			for (lcPiece* Piece = Start; Piece; Piece = (lcPiece*)Piece->m_Next)
-			{
-				if (!Piece->IsVisible(m_ActiveModel->m_CurFrame))
-					continue;
-
-				if (Piece->m_PieceInfo != Info)
-					continue;
-
-				SelectAndFocusNone(false);
-				Piece->Select(true, true, false);
-				lcGroup* Group = ((lcPiece*)Piece)->GetTopGroup();
-				if (Group)
-				{
-					for (Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-						if ((Piece->IsVisible(m_ActiveModel->m_CurFrame)) && (Piece->GetTopGroup() == Group))
-							Piece->Select(true, false, false);
-				}
-
-				UpdateSelection();
-				UpdateAllViews();
-				SystemUpdateFocus(Piece);
-
-				break;
-			}
-		} break;
-
-		case LC_PIECE_FIND_PREVIOUS:
-		{
-			lcObject* Focus = GetFocusObject();
-			PieceInfo* Info;
-
-			if (!Focus || !Focus->IsPiece())
-				Info = g_App->m_PiecePreview->m_Selection;
-			else
-				Info = ((lcPiece*)Focus)->m_PieceInfo;
-
-			lcPiece* Last = NULL;
-			for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece && Piece != Focus; Piece = (lcPiece*)Piece->m_Next)
-			{
-				if (!Piece->IsVisible(m_ActiveModel->m_CurFrame))
-					continue;
-
-				if (Piece->m_PieceInfo != Info)
-					continue;
-
-				Last = Piece;
-			}
-
-			if (Last)
-			{
-				SelectAndFocusNone(false);
-				Last->Select(true, true, false);
-				lcGroup* Group = ((lcPiece*)Last)->GetTopGroup();
-				if (Group)
-				{
-					for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-						if ((Piece->IsVisible(m_ActiveModel->m_CurFrame)) && (Piece->GetTopGroup() == Group))
-							Piece->Select(true, false, false);
-				}
-
-				UpdateSelection();
-				UpdateAllViews();
-				SystemUpdateFocus(Last);
-
-				break;
-			}
-		} break;
-
-		case LC_PIECE_FIND_NEXT_IN_STEP:
-		{
-			lcObject* Focus = GetFocusObject();
-			lcPiece* Start;
-			PieceInfo* Info;
-
-			if (!Focus || !Focus->IsPiece())
-			{
-				Info = g_App->m_PiecePreview->m_Selection;
-				Start = m_ActiveModel->m_Pieces;
-			}
-			else
-			{
-				Info = ((lcPiece*)Focus)->m_PieceInfo;
-				Start = (lcPiece*)Focus->m_Next;
-			}
-
-			for (lcPiece* Piece = Start; Piece; Piece = (lcPiece*)Piece->m_Next)
-			{
-				if (!Piece->IsVisible(m_ActiveModel->m_CurFrame))
-					continue;
-
-				if (Piece->m_TimeShow != m_ActiveModel->m_CurFrame)
-					continue;
-
-				if (Piece->m_PieceInfo != Info)
-					continue;
-
-				SelectAndFocusNone(false);
-				Piece->Select(true, true, false);
-				lcGroup* Group = ((lcPiece*)Piece)->GetTopGroup();
-				if (Group)
-				{
-					for (Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-						if ((Piece->IsVisible(m_ActiveModel->m_CurFrame)) && (Piece->GetTopGroup() == Group))
-							Piece->Select(true, false, false);
-				}
-
-				UpdateSelection();
-				UpdateAllViews();
-				SystemUpdateFocus(Piece);
-
-				break;
-			}
-		} break;
-
-		case LC_PIECE_FIND_PREVIOUS_IN_STEP:
-		{
-			lcObject* Focus = GetFocusObject();
-			PieceInfo* Info;
-
-			if (!Focus || !Focus->IsPiece())
-				Info = g_App->m_PiecePreview->m_Selection;
-			else
-				Info = ((lcPiece*)Focus)->m_PieceInfo;
-
-			lcPiece* Last = NULL;
-			for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece && Piece != Focus; Piece = (lcPiece*)Piece->m_Next)
-			{
-				if (!Piece->IsVisible(m_ActiveModel->m_CurFrame))
-					continue;
-
-				if (Piece->m_TimeShow != m_ActiveModel->m_CurFrame)
-					continue;
-
-				if (Piece->m_PieceInfo != Info)
-					continue;
-
-				Last = Piece;
-			}
-
-			if (Last)
-			{
-				SelectAndFocusNone(false);
-				Last->Select(true, true, false);
-				lcGroup* Group = ((lcPiece*)Last)->GetTopGroup();
-				if (Group)
-				{
-					for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-						if ((Piece->IsVisible(m_ActiveModel->m_CurFrame)) && (Piece->GetTopGroup() == Group))
-							Piece->Select(true, false, false);
-				}
-
-				UpdateSelection();
-				UpdateAllViews();
-				SystemUpdateFocus(Last);
-
-				break;
-			}
-		} break;
-
 		case LC_VIEW_PREFERENCES:
 		{
 			LC_PREFERENCESDLG_OPTS opts;
-			opts.nMouse = g_App->m_MouseSensitivity;
+			opts.nMouse = m_nMouse;
 			opts.nSaveInterval = m_nAutosave;
 			strcpy(opts.strUser, Sys_ProfileLoadString ("Default", "User", ""));
 			strcpy(opts.strPath, m_strModelsPath);
@@ -5786,12 +5399,21 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 			opts.fLineWidth = m_fLineWidth;
 			opts.nSnap = m_nSnap;
 			opts.nAngleSnap = m_nAngleSnap;
+			opts.nGridSize = m_nGridSize;
+			opts.nScene = m_nScene;
+			opts.fDensity = m_fFogDensity;
+			strcpy(opts.strBackground, m_strBackground);
+			memcpy(opts.fBackground, m_fBackground, sizeof(m_fBackground));
+			memcpy(opts.fFog, m_fFogColor, sizeof(m_fFogColor));
+			memcpy(opts.fAmbient, m_fAmbient, sizeof(m_fAmbient));
+			memcpy(opts.fGrad1, m_fGradient1, sizeof(m_fGradient1));
+			memcpy(opts.fGrad2, m_fGradient2, sizeof(m_fGradient2));
 			strcpy(opts.strFooter, m_strFooter);
 			strcpy(opts.strHeader, m_strHeader);
 
 			if (SystemDoDialog(LC_DLG_PREFERENCES, &opts))
 			{
-				g_App->m_MouseSensitivity = opts.nMouse;
+				m_nMouse = opts.nMouse;
 				m_nAutosave = opts.nSaveInterval;
 				strcpy(m_strModelsPath, opts.strPath);
 				Sys_ProfileSaveString ("Default", "User", opts.strUser);
@@ -5799,6 +5421,15 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 				m_fLineWidth = opts.fLineWidth;
 				m_nSnap = opts.nSnap;
 				m_nAngleSnap = opts.nAngleSnap;
+				m_nGridSize = opts.nGridSize;
+				m_nScene = opts.nScene;
+				m_fFogDensity = opts.fDensity;
+				strcpy(m_strBackground, opts.strBackground);
+				memcpy(m_fBackground, opts.fBackground, sizeof(m_fBackground));
+				memcpy(m_fFogColor, opts.fFog, sizeof(m_fFogColor));
+				memcpy(m_fAmbient, opts.fAmbient, sizeof(m_fAmbient));
+				memcpy(m_fGradient1, opts.fGrad1, sizeof(m_fGradient1));
+				memcpy(m_fGradient2, opts.fGrad2, sizeof(m_fGradient2));
 				strcpy(m_strFooter, opts.strFooter);
 				strcpy(m_strHeader, opts.strHeader);
 				SystemUpdateSnap(m_nSnap);
@@ -5816,7 +5447,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 		case LC_VIEW_ZOOM:
 		{
-			m_ActiveView->GetViewpoint()->Zoom(m_ActiveModel->m_CurFrame, m_bAddKeys, 0, nParam);
+			m_ActiveView->m_Camera->DoZoom(nParam, m_nMouse, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys);
 			SystemUpdateFocus(NULL);
 			UpdateOverlayScale();
 			UpdateAllViews();
@@ -5824,7 +5455,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 		case LC_VIEW_ZOOMIN:
 		{
-			m_ActiveView->GetViewpoint()->Zoom(m_ActiveModel->m_CurFrame, m_bAddKeys, 0, -1);
+			m_ActiveView->m_Camera->DoZoom(-1, m_nMouse, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys);
 			SystemUpdateFocus(NULL);
 			UpdateOverlayScale();
 			UpdateAllViews();
@@ -5832,7 +5463,7 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 		case LC_VIEW_ZOOMOUT:
 		{
-			m_ActiveView->GetViewpoint()->Zoom(m_ActiveModel->m_CurFrame, m_bAddKeys, 0, 1);
+			m_ActiveView->m_Camera->DoZoom(1, m_nMouse, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys);
 			SystemUpdateFocus(NULL);
 			UpdateOverlayScale();
 			UpdateAllViews();
@@ -5854,21 +5485,44 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 				LastView = FirstView + 1;
 			}
 
-			lcObjArray<Vector3> Points;
-			Vector3 Center;
+			float bs[6] = { 10000, 10000, 10000, -10000, -10000, -10000 };
 
-			m_ActiveModel->GetPointsOfInterest(Points, Center);
+			for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				if (pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation))
+					pPiece->CompareBoundingBox(bs);
+
+			Vector3 Center((bs[0] + bs[3]) / 2, (bs[1] + bs[4]) / 2, (bs[2] + bs[5]) / 2);
+
+			ObjArray<Vector3> Points;
+			Points.Add(Vector3(bs[0], bs[1], bs[5]));
+			Points.Add(Vector3(bs[3], bs[1], bs[5]));
+			Points.Add(Vector3(bs[0], bs[1], bs[2]));
+			Points.Add(Vector3(bs[3], bs[4], bs[5]));
+			Points.Add(Vector3(bs[3], bs[4], bs[2]));
+			Points.Add(Vector3(bs[0], bs[4], bs[2]));
+			Points.Add(Vector3(bs[0], bs[4], bs[5]));
+			Points.Add(Vector3(bs[3], bs[1], bs[2]));
 
 			for (int vp = FirstView; vp < LastView; vp++)
 			{
 				View* view = m_ViewList[vp];
-				lcViewpoint* Viewpoint = view->GetViewpoint();
 
-				Viewpoint->SetPosition(m_ActiveModel->m_CurFrame, m_bAddKeys, Viewpoint->mPosition + Center - Viewpoint->mTarget);
-				Viewpoint->SetTarget(m_ActiveModel->m_CurFrame, m_bAddKeys, Center);
-				Viewpoint->CalculateMatrices();
+				int Viewport[4] = { 0, 0, view->GetWidth(), view->GetHeight() };
 
-				Viewpoint->ZoomExtents(m_ActiveModel->m_CurFrame, m_bAddKeys, view, Points);
+				float Aspect = (float)Viewport[2]/(float)Viewport[3];
+				Camera* Cam = view->m_Camera;
+
+				Vector3 Position(Cam->GetEyePosition() + Center - Cam->GetTargetPosition());
+
+				Matrix44 ModelView, Projection;
+				ModelView.CreateLookAt(Position, Center, Cam->GetUpVector());
+				Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
+
+				Position = ZoomExtents(Position, ModelView, Projection, &Points[0], Points.GetSize());
+
+				Cam->ChangeKey(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, Position, LC_CK_EYE);
+				Cam->ChangeKey(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, Center, LC_CK_TARGET);
+				Cam->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
 			}
 
 			SystemUpdateFocus(NULL);
@@ -5876,244 +5530,258 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 			UpdateAllViews();
 		} break;
 
-		case LC_VIEW_VIEWPORTS:
-		{
-			// Predefined viewports (must match the menu).
-			const char* Viewports[14] =
-			{
-				"V4|Main", // 1
-				"SV49V4|MainV4|Left", // 2V
-				"SH49V4|MainV4|Left", // 2H
-				"SH20V4|LeftV4|Main", // 2HT
-				"SH80V4|MainV4|Left", // 2HB
-				"SV49SH49V3|TopV4|LeftV4|Main", // 3VL
-				"SV49V4|MainSH49V3|TopV4|Left", // 3VR
-				"SH49SV49V3|TopV4|LeftV4|Main", // 3HB
-				"SH49V4|MainSV49V3|TopV4|Left", // 3HT
-				"SV32SH32V3|TopSH49V4|LeftV5|FrontV4|Main", // 4VL
-				"SV65V4|MainSH32V3|TopSH49V4|LeftV5|Front", // 4VR
-				"SH32SV32V3|TopSV49V4|LeftV5|FrontV4|Main", // 4HT
-				"SH65V4|MainSV32V3|TopSV49V4|LeftV5|Front", // 4HB
-				"SH49SV49V4|MainV3|TopSV49V4|LeftV5|Front"  // 4
-			};
-
-			LC_ASSERT((nParam >= 0) && (nParam < 14), "Invalid view parameter.");
-
-			lcCamera* OldCamera = m_ActiveView->GetCamera1();
-
-			main_window->SetViewLayout(Viewports[nParam]);
-
-			SystemUpdateCurrentCamera(OldCamera, m_ActiveView->GetCamera1(), m_ActiveModel->m_Cameras);
-			UpdateOverlayScale();
-		} break;
-
 		case LC_VIEW_STEP_NEXT:
 		{
-			m_ActiveModel->m_CurFrame++;
+			if (m_bAnimation)
+				m_nCurFrame++;
+			else
+				m_nCurStep++;
 
 			CalculateStep();
 			UpdateSelection();
 			SystemUpdateFocus(NULL);
 			UpdateAllViews();
 
-			SystemUpdateTime(m_Animation, m_ActiveModel->m_CurFrame, m_Animation ? m_ActiveModel->m_TotalFrames : LC_OBJECT_TIME_MAX);
+			if (m_bAnimation)
+				SystemUpdateTime(m_bAnimation, m_nCurFrame, m_nTotalFrames);
+			else
+				SystemUpdateTime(m_bAnimation, m_nCurStep, 255);
 		} break;
 		
 		case LC_VIEW_STEP_PREVIOUS:
 		{
-			m_ActiveModel->m_CurFrame--;
+			if (m_bAnimation)
+				m_nCurFrame--;
+			else
+				m_nCurStep--;
 
 			CalculateStep();
 			UpdateSelection();
 			SystemUpdateFocus(NULL);
 			UpdateAllViews();
 
-			SystemUpdateTime(m_Animation, m_ActiveModel->m_CurFrame, m_Animation ? m_ActiveModel->m_TotalFrames : LC_OBJECT_TIME_MAX);
+			if (m_bAnimation)
+				SystemUpdateTime(m_bAnimation, m_nCurFrame, m_nTotalFrames);
+			else
+				SystemUpdateTime(m_bAnimation, m_nCurStep, 255);
 		} break;
 		
 		case LC_VIEW_STEP_FIRST:
 		{
-			m_ActiveModel->m_CurFrame = 1;
+			if (m_bAnimation)
+				m_nCurFrame = 1;
+			else
+				m_nCurStep = 1;
 
 			CalculateStep();
 			UpdateSelection();
 			SystemUpdateFocus(NULL);
 			UpdateAllViews();
 
-			SystemUpdateTime(m_Animation, m_ActiveModel->m_CurFrame, m_Animation ? m_ActiveModel->m_TotalFrames : LC_OBJECT_TIME_MAX);
+			if (m_bAnimation)
+				SystemUpdateTime(m_bAnimation, m_nCurFrame, m_nTotalFrames);
+			else
+				SystemUpdateTime(m_bAnimation, m_nCurStep, 255);
 		} break;
 
 		case LC_VIEW_STEP_LAST:
 		{
-			if (m_Animation)
-				m_ActiveModel->m_CurFrame = m_ActiveModel->m_TotalFrames;
+			if (m_bAnimation)
+				m_nCurFrame = m_nTotalFrames;
 			else
-				m_ActiveModel->m_CurFrame = GetLastStep();
+				m_nCurStep = GetLastStep ();
 
 			CalculateStep();
 			UpdateSelection();
 			SystemUpdateFocus(NULL);
 			UpdateAllViews();
 
-			SystemUpdateTime(m_Animation, m_ActiveModel->m_CurFrame, m_Animation ? m_ActiveModel->m_TotalFrames : LC_OBJECT_TIME_MAX);
+			if (m_bAnimation)
+				SystemUpdateTime(m_bAnimation, m_nCurFrame, m_nTotalFrames);
+			else
+				SystemUpdateTime(m_bAnimation, m_nCurStep, 255);
 		} break;
 
 		case LC_VIEW_STEP_CHOOSE:
 		{
 			SystemDoDialog(LC_DLG_STEPCHOOSE, NULL);
-			SystemUpdateTime(m_Animation, m_ActiveModel->m_CurFrame, m_Animation ? m_ActiveModel->m_TotalFrames : LC_OBJECT_TIME_MAX);
+			if (m_bAnimation)
+				SystemUpdateTime(m_bAnimation, m_nCurFrame, m_nTotalFrames);
+			else
+				SystemUpdateTime(m_bAnimation, m_nCurStep, 255);
 		} break;
 
 		case LC_VIEW_STEP_SET:
 		{
-			if (m_Animation)
-				m_ActiveModel->m_CurFrame = lcMin(nParam, m_ActiveModel->m_TotalFrames);
+			if (m_bAnimation)
+				m_nCurFrame = (nParam < m_nTotalFrames) ? (unsigned short)nParam : m_nTotalFrames;
 			else
-				m_ActiveModel->m_CurFrame = nParam;
+				m_nCurStep = (nParam < 255) ? (unsigned char)nParam : 255;
 
 			CalculateStep();
 			UpdateSelection();
 			SystemUpdateFocus(NULL);
 			UpdateAllViews();
 
-			SystemUpdateTime(m_Animation, m_ActiveModel->m_CurFrame, m_Animation ? m_ActiveModel->m_TotalFrames : LC_OBJECT_TIME_MAX);
-		} break;
-
-		case LC_VIEW_STEP_INSERT:
-		{
-			for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-				Piece->InsertTime(m_ActiveModel->m_CurFrame, 1);
-
-			for (lcCamera* Camera = m_ActiveModel->m_Cameras; Camera; Camera = (lcCamera*)Camera->m_Next)
-				Camera->InsertTime(m_ActiveModel->m_CurFrame, 1);
-
-			for (lcLight* Light = m_ActiveModel->m_Lights; Light; Light = (lcLight*)Light->m_Next)
-				Light->InsertTime(m_ActiveModel->m_CurFrame, 1);
-
-			SetModifiedFlag(true);
-			if (m_Animation)
-				CheckPoint("Adding Frame");
+			if (m_bAnimation)
+				SystemUpdateTime(m_bAnimation, m_nCurFrame, m_nTotalFrames);
 			else
-				CheckPoint("Adding Step");
-			CalculateStep();
-			UpdateAllViews();
-			UpdateSelection();
+				SystemUpdateTime(m_bAnimation, m_nCurStep, 255);
 		} break;
 
-		case LC_VIEW_STEP_DELETE:
-		{
-			for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-				Piece->RemoveTime(m_ActiveModel->m_CurFrame, 1);
+    case LC_VIEW_STEP_INSERT:
+    {
+      for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+        pPiece->InsertTime (m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, 1);
 
-			for (lcCamera* Camera = m_ActiveModel->m_Cameras; Camera; Camera = (lcCamera*)Camera->m_Next)
-				Camera->RemoveTime(m_ActiveModel->m_CurFrame, 1);
+      for (Camera* pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+        pCamera->InsertTime (m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, 1);
 
-			for (lcLight* Light = m_ActiveModel->m_Lights; Light; Light = (lcLight*)Light->m_Next)
-				Light->RemoveTime(m_ActiveModel->m_CurFrame, 1);
+      for (Light* pLight = m_pLights; pLight; pLight = pLight->m_pNext)
+        pLight->InsertTime (m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, 1);
 
-			SetModifiedFlag(true);
-			if (m_Animation)
-				CheckPoint ("Removing Frame");
-			else
-			CheckPoint("Removing Step");
-			CalculateStep();
-			UpdateAllViews();
-			UpdateSelection();
-		} break;
+      SetModifiedFlag (true);
+      if (m_bAnimation)
+        CheckPoint ("Adding Frame");
+      else
+        CheckPoint ("Adding Step");
+			CalculateStep ();
+      UpdateAllViews ();
+      UpdateSelection ();
+    } break;
+
+    case LC_VIEW_STEP_DELETE:
+    {
+      for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+        pPiece->RemoveTime (m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, 1);
+
+      for (Camera* pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+        pCamera->RemoveTime (m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, 1);
+
+      for (Light* pLight = m_pLights; pLight; pLight = pLight->m_pNext)
+        pLight->RemoveTime (m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, 1);
+
+      SetModifiedFlag (true);
+      if (m_bAnimation)
+        CheckPoint ("Removing Frame");
+      else
+        CheckPoint ("Removing Step");
+			CalculateStep ();
+      UpdateAllViews ();
+      UpdateSelection ();
+    } break;
 
 		case LC_VIEW_STOP:
 		{
-			m_PlayingAnimation = false;
-			SystemUpdatePlay(true, false);
+			m_bStopRender = true;
 		} break;
 
 		case LC_VIEW_PLAY:
 		{ 
 			SelectAndFocusNone(false);
 			UpdateSelection();
+			m_bStopRender = false;
 			SystemUpdatePlay(false, true);
-			m_LastFrameTime = SystemGetTicks();
-			m_PlayingAnimation = true;
+			long time = SystemGetTicks();
+			unsigned short tics;
+			float rate = 1000.0f/m_nFPS;
+
+			while (!m_bStopRender)
+			{
+				tics = (unsigned short)(SystemGetTicks() - time);
+				if (tics < rate)
+					continue; // nothing to do
+
+				time = SystemGetTicks();
+				m_nCurFrame += (unsigned short)((float)tics/rate);
+				while (m_nCurFrame > m_nTotalFrames)
+					m_nCurFrame -= m_nTotalFrames;
+				CalculateStep();
+				SystemUpdateTime(true, m_nCurFrame, m_nTotalFrames);
+                UpdateAllViews();
+				SystemPumpMessages();
+			}
+			SystemUpdatePlay(true, false);
+			SystemUpdateFocus(NULL);
 		} break;
 
 		case LC_VIEW_CAMERA_FRONT:
 		{
-			HandleCommand(LC_VIEW_CAMERA_MENU, LC_VIEWPOINT_FRONT);
+			HandleCommand(LC_VIEW_CAMERA_MENU, LC_CAMERA_FRONT);
 		} break;
 
 		case LC_VIEW_CAMERA_BACK:
 		{
-			HandleCommand(LC_VIEW_CAMERA_MENU, LC_VIEWPOINT_BACK);
+			HandleCommand(LC_VIEW_CAMERA_MENU, LC_CAMERA_BACK);
 		} break;
 
 		case LC_VIEW_CAMERA_TOP:
 		{
-			HandleCommand(LC_VIEW_CAMERA_MENU, LC_VIEWPOINT_TOP);
+			HandleCommand(LC_VIEW_CAMERA_MENU, LC_CAMERA_TOP);
 		} break;
 
 		case LC_VIEW_CAMERA_BOTTOM:
 		{
-			HandleCommand(LC_VIEW_CAMERA_MENU, LC_VIEWPOINT_BOTTOM);
+			HandleCommand(LC_VIEW_CAMERA_MENU, LC_CAMERA_UNDER);
 		} break;
 
 		case LC_VIEW_CAMERA_LEFT:
 		{
-			HandleCommand(LC_VIEW_CAMERA_MENU, LC_VIEWPOINT_LEFT);
+			HandleCommand(LC_VIEW_CAMERA_MENU, LC_CAMERA_LEFT);
 		} break;
 
 		case LC_VIEW_CAMERA_RIGHT:
 		{
-			HandleCommand(LC_VIEW_CAMERA_MENU, LC_VIEWPOINT_RIGHT);
+			HandleCommand(LC_VIEW_CAMERA_MENU, LC_CAMERA_RIGHT);
 		} break;
 
 		case LC_VIEW_CAMERA_MAIN:
 		{
-			HandleCommand(LC_VIEW_CAMERA_MENU, LC_VIEWPOINT_HOME);
+			HandleCommand(LC_VIEW_CAMERA_MENU, LC_CAMERA_MAIN);
 		} break;
 
 		case LC_VIEW_CAMERA_MENU:
 		{
-			lcCamera* Camera = m_ActiveModel->m_Cameras;
+			Camera* pCamera = m_pCameras;
 
 			while (nParam--)
-				Camera = (lcCamera*)Camera->m_Next;
+				pCamera = pCamera->m_pNext;
 
-			SystemUpdateCurrentCamera(m_ActiveView->GetCamera1(), Camera, m_ActiveModel->m_Cameras);
-			m_ActiveView->SetCamera1(Camera);
+			SystemUpdateCurrentCamera(m_ActiveView->m_Camera, pCamera, m_pCameras);
+			m_ActiveView->m_Camera = pCamera;
 			UpdateOverlayScale();
 			UpdateAllViews();
 		} break;
 
 		case LC_VIEW_CAMERA_RESET:
 		{
-			m_ActiveModel->ResetCameras();
+			Camera* pCamera;
+			int i;
 
-			for (int i = 0; i < m_ViewList.GetSize(); i++)
-				m_ViewList[i]->UpdateCamera();
+			while (m_pCameras)
+			{
+				pCamera = m_pCameras;
+				m_pCameras = m_pCameras->m_pNext;
+				delete pCamera;
+			}
 
-			SystemUpdateCameraMenu(m_ActiveModel->m_Cameras);
-			SystemUpdateCurrentCamera(NULL, m_ActiveView->GetCamera1(), m_ActiveModel->m_Cameras);
+			for (m_pCameras = pCamera = NULL, i = 0; i < 7; i++)
+			{
+				pCamera = new Camera(i, pCamera);
+				if (m_pCameras == NULL)
+					m_pCameras = pCamera;
+			}
+
+			for (int ViewIdx = 0; ViewIdx < m_ViewList.GetSize(); ViewIdx++)
+				m_ViewList[ViewIdx]->m_Camera = pCamera;
+
+			SystemUpdateCameraMenu(m_pCameras);
+			SystemUpdateCurrentCamera(NULL, m_ActiveView->m_Camera, m_pCameras);
 			SystemUpdateFocus(NULL);
 			UpdateOverlayScale();
 			UpdateAllViews();
 			SetModifiedFlag(true);
 			CheckPoint("Reset Cameras");
-		} break;
-
-		case LC_VIEW_AUTOPAN:
-		{
-			short x = (short)nParam;
-			short y = (short)((nParam >> 16) & 0xFFFF);
-
-			x -= x > 0 ? 5 : -5;
-			y -= y > 0 ? 5 : -5;
-
-			m_ActiveView->GetViewpoint()->Pan(m_ActiveModel->m_CurFrame, m_bAddKeys, x/4, y/4);
-			m_nDownX = x;
-			m_nDownY = y;
-			UpdateOverlayScale();
-			SystemUpdateFocus(NULL);
-			UpdateAllViews();
 		} break;
 
 		case LC_HELP_ABOUT:
@@ -6123,20 +5791,23 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 
 		case LC_TOOLBAR_ANIMATION:
 		{
-			m_Animation = !m_Animation;
+			m_bAnimation = !m_bAnimation;
 
 			CalculateStep();
 			SystemUpdateFocus(NULL);
 			UpdateAllViews();
 
-			SystemUpdateAnimation(m_Animation, m_bAddKeys);
-			SystemUpdateTime(m_Animation, m_ActiveModel->m_CurFrame, m_Animation ? m_ActiveModel->m_TotalFrames : LC_OBJECT_TIME_MAX);
+			SystemUpdateAnimation(m_bAnimation, m_bAddKeys);
+			if (m_bAnimation)
+				SystemUpdateTime(m_bAnimation, m_nCurFrame, m_nTotalFrames);
+			else
+				SystemUpdateTime(m_bAnimation, m_nCurStep, 255);
 		} break;
 		
 		case LC_TOOLBAR_ADDKEYS:
 		{
 			m_bAddKeys = !m_bAddKeys;
-			SystemUpdateAnimation(m_Animation, m_bAddKeys);
+			SystemUpdateAnimation(m_bAnimation, m_bAddKeys);
 		} break;
 
 		// Change snap X, Y, Z, All, None or Angle.
@@ -6353,19 +6024,10 @@ void Project::HandleCommand(LC_COMMANDS id, unsigned long nParam)
 			SetAction(LC_ACTION_ROTATE_VIEW);
 		} break;
 
-		case LC_EDIT_ACTION_ORBIT:
-		{
-			SetAction(LC_ACTION_ORBIT);
-		} break;
-
 		case LC_EDIT_ACTION_ROLL:
 		{
 			SetAction(LC_ACTION_ROLL);
 		} break;
-
-
-		default:
-			break;
 	}
 }
 
@@ -6380,7 +6042,8 @@ void Project::SetAction(int nAction)
 	m_nCurAction = nAction;
 	SystemUpdateAction(m_nCurAction, m_PreviousAction);
 
-	if ((m_nCurAction == LC_ACTION_MOVE) || (m_nCurAction == LC_ACTION_ROTATE) || (m_nCurAction == LC_ACTION_ORBIT))
+	if ((m_nCurAction == LC_ACTION_MOVE) || (m_nCurAction == LC_ACTION_ROTATE) ||
+	    (m_nCurAction == LC_ACTION_ROTATE_VIEW))
 	{
 		ActivateOverlay();
 
@@ -6404,74 +6067,74 @@ void Project::SetAction(int nAction)
 void Project::RemoveEmptyGroups()
 {
 	bool recurse = false;
-	lcGroup *g1, *g2;
-	lcPiece* pPiece;
+	Group *g1, *g2;
+	Piece* pPiece;
 	int ref;
 
-	for (g1 = m_ActiveModel->m_Groups; g1;)
+	for (g1 = m_pGroups; g1;)
 	{
 		ref = 0;
 
-		for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+		for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 			if (pPiece->GetGroup() == g1)
 				ref++;
 
-		for (g2 = m_ActiveModel->m_Groups; g2; g2 = g2->m_Next)
-			if (g2->m_Group == g1)
+		for (g2 = m_pGroups; g2; g2 = g2->m_pNext)
+			if (g2->m_pGroup == g1)
 				ref++;
 
 		if (ref < 2)
 		{
 			if (ref != 0)
 			{
-				for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+				for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 					if (pPiece->GetGroup() == g1)
-						pPiece->SetGroup(g1->m_Group);
+						pPiece->SetGroup(g1->m_pGroup);
 
-				for (g2 = m_ActiveModel->m_Groups; g2; g2 = g2->m_Next)
-					if (g2->m_Group == g1)
-						g2->m_Group = g1->m_Group;
+				for (g2 = m_pGroups; g2; g2 = g2->m_pNext)
+					if (g2->m_pGroup == g1)
+						g2->m_pGroup = g1->m_pGroup;
 			}
 
-			if (g1 == m_ActiveModel->m_Groups)
+			if (g1 == m_pGroups)
 			{
-				m_ActiveModel->m_Groups = g1->m_Next;
+				m_pGroups = g1->m_pNext;
 				delete g1;
-				g1 = m_ActiveModel->m_Groups;
+				g1 = m_pGroups;
 			}
 			else
 			{
-				for (g2 = m_ActiveModel->m_Groups; g2; g2 = g2->m_Next)
-					if (g2->m_Next == g1)
+				for (g2 = m_pGroups; g2; g2 = g2->m_pNext)
+					if (g2->m_pNext == g1)
 					{
-						g2->m_Next = g1->m_Next;
+						g2->m_pNext = g1->m_pNext;
 						break;
 					}
 
 				delete g1;
-				g1 = g2->m_Next;
+				g1 = g2->m_pNext;
 			}
 
 			recurse = true;
 		}
 		else
-			g1 = g1->m_Next;
+			g1 = g1->m_pNext;
 	}
 
 	if (recurse)
 		RemoveEmptyGroups();
 }
 
-lcGroup* Project::AddGroup(const char* name, lcGroup* pParent, float x, float y, float z)
+Group* Project::AddGroup (const char* name, Group* pParent, float x, float y, float z)
 {
-  lcGroup *pNewGroup = new lcGroup();
+  Group *pNewGroup = new Group();
 
   if (name == NULL)
   {
     int i, max = 0;
     char str[65];
 
-    for (lcGroup *pGroup = m_ActiveModel->m_Groups; pGroup; pGroup = pGroup->m_Next)
+    for (Group *pGroup = m_pGroups; pGroup; pGroup = pGroup->m_pNext)
       if (strncmp (pGroup->m_strName, "Group #", 7) == 0)
         if (sscanf(pGroup->m_strName, "Group #%d", &i) == 1)
           if (i > max)
@@ -6483,159 +6146,126 @@ lcGroup* Project::AddGroup(const char* name, lcGroup* pParent, float x, float y,
   else
     strcpy (pNewGroup->m_strName, name);
 
-  pNewGroup->m_Next = m_ActiveModel->m_Groups;
-  m_ActiveModel->m_Groups = pNewGroup;
+  pNewGroup->m_pNext = m_pGroups;
+  m_pGroups = pNewGroup;
 
   pNewGroup->m_fCenter[0] = x;
   pNewGroup->m_fCenter[1] = y;
   pNewGroup->m_fCenter[2] = z;
-  pNewGroup->m_Group = pParent;
+  pNewGroup->m_pGroup = pParent;
 
   return pNewGroup;
 }
 
-void Project::ToggleObjectSelectedState(lcObject* Object, bool AllowMultiple)
-{
-	if (Object)
-	{
-		switch (Object->GetType())
-		{
-			case LC_OBJECT_PIECE:
-			{
-				lcPiece* Piece = (lcPiece*)Object;
-				lcGroup* Group = Piece->GetTopGroup();
-				bool Focus = Piece->IsFocused();
-
-				SelectAndFocusNone(AllowMultiple);
-
-				// If a piece has focus deselect it, otherwise set the focus.
-				Piece->Select(!Focus, !Focus, false);
-
-				if (Group)
-					for (Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-						if (Piece->GetTopGroup() == Group)
-							Piece->Select(!Focus, false, false);
-			} break;
-
-			case LC_OBJECT_CAMERA:
-			case LC_OBJECT_CAMERA_TARGET:
-			case LC_OBJECT_LIGHT:
-			case LC_OBJECT_LIGHT_TARGET:
-			{
-				SelectAndFocusNone(AllowMultiple);
-				Object->Select(true, true, AllowMultiple);
-			} break;
-		}
-	}
-	else
-		SelectAndFocusNone(AllowMultiple);
-
-	UpdateSelection();
-	UpdateAllViews();
-	SystemUpdateFocus(Object);
-}
-
 void Project::SelectAndFocusNone(bool bFocusOnly)
 {
-	lcPiece* Piece;
-	lcCamera* Camera;
-	lcLight* Light;
+  Piece* pPiece;
+  Camera* pCamera;
+  Light* pLight;
 
-	for (Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-		Piece->Select (false, bFocusOnly, false);
+  for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+    pPiece->Select (false, bFocusOnly, false);
 
-	for (Camera = m_ActiveModel->m_Cameras; Camera; Camera = (lcCamera*)Camera->m_Next)
-	{
-		Camera->Select(false, bFocusOnly, false);
-		Camera->m_Target->Select(false, bFocusOnly, false);
-	}
+  for (pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+  {
+    pCamera->Select (false, bFocusOnly, false);
+    pCamera->GetTarget ()->Select (false, bFocusOnly, false);
+  }
 
-	for (Light = m_ActiveModel->m_Lights; Light; Light = (lcLight*)Light->m_Next)
-	{
-		Light->Select(false, bFocusOnly, false);
-		if (Light->GetTarget())
-			Light->GetTarget()->Select(false, bFocusOnly, false);
-	}
+  for (pLight = m_pLights; pLight; pLight = pLight->m_pNext)
+  {
+    pLight->Select (false, bFocusOnly, false);
+    if (pLight->GetTarget ())
+      pLight->GetTarget ()->Select (false, bFocusOnly, false);
+  }
 //	AfxGetMainWnd()->PostMessage(WM_LC_UPDATE_INFO, NULL, OT_PIECE);
 }
 
 bool Project::GetSelectionCenter(Vector3& Center) const
 {
+	float bs[6] = { 10000, 10000, 10000, -10000, -10000, -10000 };
 	bool Selected = false;
 
-	BoundingBox Box;
-	Box.Reset();
-
-	for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
+	for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 	{
-		if (Piece->IsSelected())
+		if (pPiece->IsSelected())
 		{
-			Piece->MergeBoundingBox(&Box);
+			pPiece->CompareBoundingBox(bs);
 			Selected = true;
 		}
 	}
 
-	Center = Box.GetCenter();
+	Center = Vector3((bs[0] + bs[3]) * 0.5f, (bs[1] + bs[4]) * 0.5f, (bs[2] + bs[5]) * 0.5f);
 
 	return Selected;
+}
+
+Camera* Project::GetCamera(int i)
+{
+	Camera* pCamera;
+
+	for (pCamera = m_pCameras; i-- > 0 && pCamera; pCamera = pCamera->m_pNext)
+		;
+	return pCamera;
 }
 
 void Project::ConvertToUserUnits(Vector3& Value) const
 {
 	if ((m_nSnap & LC_DRAW_CM_UNITS) == 0)
-		Value /= 0.08f;
+		Value /= 0.04f;
 }
 
 void Project::ConvertFromUserUnits(Vector3& Value) const
 {
 	if ((m_nSnap & LC_DRAW_CM_UNITS) == 0)
-		Value *= 0.08f;
+		Value *= 0.04f;
 }
 
 bool Project::GetFocusPosition(Vector3& Position) const
 {
-	lcPiece* pPiece;
-	lcCamera* pCamera;
+	Piece* pPiece;
+	Camera* pCamera;
+	float* pos = &Position[0];
 
-	for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 		if (pPiece->IsFocused())
 		{
-			Position = pPiece->m_Position;
+			pPiece->GetPosition(pos);
 			return true;
 		}
 
-	for (pCamera = m_ActiveModel->m_Cameras; pCamera; pCamera = (lcCamera*)pCamera->m_Next)
+	for (pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
 	{
 		if (pCamera->IsEyeFocused())
 		{
-			Position = pCamera->m_Position;
+			pCamera->GetEyePos(pos);
 			return true;
 		}
 
 		if (pCamera->IsTargetFocused())
 		{
-			Position = pCamera->m_TargetPosition;
+			pCamera->GetTargetPos(pos);
 			return true;
 		}
 	}
 
 	// TODO: light
 
-	Position = Vector3(0, 0, 0);
+	pos[0] = pos[1] = pos[2] = 0.0f;
 
 	return false;
 }
 
 // Returns the object that currently has focus.
-lcObject* Project::GetFocusObject() const
+Object* Project::GetFocusObject() const
 {
-	for (lcPiece* pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+	for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 	{
 		if (pPiece->IsFocused())
 			return pPiece;
 	}
 
-	for (lcCamera* pCamera = m_ActiveModel->m_Cameras; pCamera; pCamera = (lcCamera*)pCamera->m_Next)
+	for (Camera* pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
 	{
 		if (pCamera->IsEyeFocused() || pCamera->IsTargetFocused())
 			return pCamera;
@@ -6647,36 +6277,28 @@ lcObject* Project::GetFocusObject() const
 }
 
 // Find a good starting position/orientation relative to an existing piece.
-void Project::GetPieceInsertPosition(lcPiece* OffsetPiece, Vector3& Position, Vector4& Rotation)
+void Project::GetPieceInsertPosition(Piece* OffsetPiece, Vector3& Position, Vector4& Rotation)
 {
-	Vector3 Dist(0, 0, 0);
-
-	if (OffsetPiece)
-		Dist[2] += OffsetPiece->m_PieceInfo->m_BoundingBox.m_Max[2];
-
-	PieceInfo* Selection = g_App->m_PiecePreview->m_Selection;
-	if (Selection)
-		Dist[2] -= Selection->m_BoundingBox.m_Min[2];
-
+	Vector3 Dist(0, 0, OffsetPiece->GetPieceInfo()->m_fDimensions[2] - m_pCurPiece->m_fDimensions[5]);
 	SnapVector(Dist);
 
-	if (OffsetPiece)
-	{
-		Position = Mul31(Dist, OffsetPiece->m_ModelWorld);
-		Rotation = OffsetPiece->m_AxisAngle;
-	}
-	else
-	{
-		Position = Dist;
-		Rotation = Vector4(0, 0, 1, 0);
-	}
+	float pos[3], rot[4];
+	OffsetPiece->GetPosition(pos);
+	OffsetPiece->GetRotation(rot);
+
+	Matrix mat(rot, pos);
+	mat.Translate(Dist[0], Dist[1], Dist[2]);
+	mat.GetTranslation(pos);
+
+	Position = Vector3(pos[0], pos[1], pos[2]);
+	Rotation = Vector4(rot[0], rot[1], rot[2], rot[3]);
 }
 
 // Try to find a good starting position/orientation for a new piece.
-void Project::GetPieceInsertPosition(int MouseX, int MouseY, Vector3& Position, Vector4& Rotation)
+void Project::GetPieceInsertPosition(View* view, int MouseX, int MouseY, Vector3& Position, Vector4& Rotation)
 {
-	// See if the mouse is over a piece.
-	lcPiece* HitPiece = (lcPiece*)FindObjectFromPoint(MouseX, MouseY, true);
+	// Check if the mouse is over a piece.
+	Piece* HitPiece = (Piece*)FindObjectFromPoint(view, MouseX, MouseY, true);
 
 	if (HitPiece)
 	{
@@ -6685,21 +6307,22 @@ void Project::GetPieceInsertPosition(int MouseX, int MouseY, Vector3& Position, 
 	}
 
 	// Try to hit the base grid.
-	lcViewpoint* Viewpoint = m_ActiveView->GetViewpoint();
+	int Viewport[4] = { 0, 0, view->GetWidth(), view->GetHeight() };
+
+	float Aspect = (float)Viewport[2]/(float)Viewport[3];
+	Camera* Cam = view->m_Camera;
 
 	// Build the matrices.
-	Matrix44 Projection = m_ActiveView->GetProjectionMatrix();
+	Matrix44 ModelView, Projection;
+	ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+	Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
 
 	Vector3 ClickPoints[2] = { Vector3((float)m_nDownX, (float)m_nDownY, 0.0f), Vector3((float)m_nDownX, (float)m_nDownY, 1.0f) };
-	UnprojectPoints(ClickPoints, 2, Viewpoint->mWorldView, Projection, m_ActiveView->mViewport);
+	UnprojectPoints(ClickPoints, 2, ModelView, Projection, Viewport);
 
 	Vector3 Intersection;
-	if (LinePlaneIntersection(&Intersection, ClickPoints[0], ClickPoints[1], Vector4(0, 0, 1, 0)))
+	if (LinePlaneIntersection(Intersection, ClickPoints[0], ClickPoints[1], Vector4(0, 0, 1, 0)))
 	{
-		PieceInfo* Selection = g_App->m_PiecePreview->m_Selection;
-		if (Selection)
-			Intersection[2] -= Selection->m_BoundingBox.m_Min[2];
-
 		SnapVector(Intersection);
 		Position = Intersection;
 		Rotation = Vector4(0, 0, 1, 0);
@@ -6707,45 +6330,61 @@ void Project::GetPieceInsertPosition(int MouseX, int MouseY, Vector3& Position, 
 	}
 
 	// Couldn't find a good position, so just place the piece somewhere near the camera.
-	Position = UnprojectPoint(Vector3((float)m_nDownX, (float)m_nDownY, 0.9f), Viewpoint->mWorldView, Projection, m_ActiveView->mViewport);
+	Position = UnprojectPoint(Vector3((float)m_nDownX, (float)m_nDownY, 0.9f), ModelView, Projection, Viewport);
 	Rotation = Vector4(0, 0, 1, 0);
 }
 
-lcObject* Project::FindObjectFromPoint(int x, int y, bool PiecesOnly)
+Object* Project::FindObjectFromPoint(View* view, int x, int y, bool PiecesOnly)
 {
-	Matrix44 Projection = m_ActiveView->GetProjectionMatrix();
-	const Matrix44& ModelView = m_ActiveView->GetViewpoint()->mWorldView;
+	int Viewport[4] = { 0, 0, view->GetWidth(), view->GetHeight() };
+	float Aspect = (float)Viewport[2]/(float)Viewport[3];
+	Camera* Cam = view->m_Camera;
 
-	Vector3 Start = UnprojectPoint(Vector3((float)x, (float)y, 0.0f), ModelView, Projection, m_ActiveView->mViewport);
-	Vector3 End = UnprojectPoint(Vector3((float)x, (float)y, 1.0f), ModelView, Projection, m_ActiveView->mViewport);
+	Matrix44 ModelView, Projection;
+	ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+	Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
 
-	lcClickLine ClickLine;
-	ClickLine.Start = Start;
-	ClickLine.End = End;
-	ClickLine.Dist = FLT_MAX;
-	ClickLine.Object = NULL;
+	Vector3 Start = UnprojectPoint(Vector3((float)x, (float)y, 0.0f), ModelView, Projection, Viewport);
+	Vector3 End = UnprojectPoint(Vector3((float)x, (float)y, 1.0f), ModelView, Projection, Viewport);
 
-	for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-		if (Piece->IsVisible(m_ActiveModel->m_CurFrame))
-			Piece->ClosestLineIntersect(ClickLine);
+	LC_CLICKLINE ClickLine;
+
+	ClickLine.a1 = Start[0];
+	ClickLine.b1 = Start[1];
+	ClickLine.c1 = Start[2];
+	ClickLine.a2 = End[0] - Start[0];
+	ClickLine.b2 = End[1] - Start[1];
+	ClickLine.c2 = End[2] - Start[2];
+	ClickLine.mindist = FLT_MAX;
+	ClickLine.pClosest = NULL;
+
+	for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+		if (pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation))
+			pPiece->MinIntersectDist(&ClickLine);
 
 	if (!PiecesOnly)
 	{
-		for (lcCamera* Camera = m_ActiveModel->m_Cameras; Camera; Camera = (lcCamera*)Camera->m_Next)
-			if (Camera != m_ActiveView->GetCamera1() && Camera->IsVisible())
-				Camera->ClosestLineIntersect(ClickLine);
+		for (Camera* pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+			if (pCamera != view->m_Camera)
+				pCamera->MinIntersectDist(&ClickLine);
 
-		for (lcLight* Light = m_ActiveModel->m_Lights; Light; Light = (lcLight*)Light->m_Next)
-			if (Light->IsVisible())
-				Light->ClosestLineIntersect(ClickLine);
+		for (Light* pLight = m_pLights; pLight; pLight = pLight->m_pNext)
+			pLight->MinIntersectDist(&ClickLine);
 	}
 
-	return (lcObject*)ClickLine.Object;
+	return ClickLine.pClosest;
 }
 
-void Project::FindObjectsInBox(float x1, float y1, float x2, float y2, lcPtrArray<lcObject>& Objects)
+void Project::FindObjectsInBox(float x1, float y1, float x2, float y2, PtrArray<Object>& Objects)
 {
-	lcViewpoint* Viewpoint = m_ActiveView->GetViewpoint();
+	int Viewport[4] = { 0, 0, m_ActiveView->GetWidth(), m_ActiveView->GetHeight() };
+	float Aspect = (float)Viewport[2]/(float)Viewport[3];
+	Camera* Cam = m_ActiveView->m_Camera;
+
+	// Build the matrices.
+	Matrix44 ModelView, Projection;
+	ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+	Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
 
 	// Find out the top-left and bottom-right corners in screen coordinates.
 	float Left, Top, Bottom, Right;
@@ -6779,18 +6418,17 @@ void Project::FindObjectsInBox(float x1, float y1, float x2, float y2, lcPtrArra
 		Vector3(Right, Top, 0), Vector3(Left, Top, 1), Vector3(Right, Bottom, 1)
 	};
 
-	Matrix44 Projection = m_ActiveView->GetProjectionMatrix();
-	UnprojectPoints(Corners, 6, Viewpoint->mWorldView, Projection, m_ActiveView->mViewport);
+	UnprojectPoints(Corners, 6, ModelView, Projection, Viewport);
 
 	// Build the box planes.
 	Vector4 Planes[6];
 
-	Planes[0] = Vector4(Normalize(Cross(Corners[4] - Corners[0], Corners[1] - Corners[0]))); // Left
-	Planes[1] = Vector4(Normalize(Cross(Corners[5] - Corners[2], Corners[3] - Corners[2]))); // Right
-	Planes[2] = Vector4(Normalize(Cross(Corners[3] - Corners[0], Corners[4] - Corners[0]))); // Top
-	Planes[3] = Vector4(Normalize(Cross(Corners[1] - Corners[2], Corners[5] - Corners[2]))); // Bottom
-	Planes[4] = Vector4(Normalize(Cross(Corners[1] - Corners[0], Corners[3] - Corners[0]))); // Front
-	Planes[5] = Vector4(Normalize(Cross(Corners[1] - Corners[2], Corners[3] - Corners[2]))); // Back
+	Planes[0] = Cross3(Corners[4] - Corners[0], Corners[1] - Corners[0]).Normalize(); // Left
+	Planes[1] = Cross3(Corners[5] - Corners[2], Corners[3] - Corners[2]).Normalize(); // Right
+	Planes[2] = Cross3(Corners[3] - Corners[0], Corners[4] - Corners[0]).Normalize(); // Top
+	Planes[3] = Cross3(Corners[1] - Corners[2], Corners[5] - Corners[2]).Normalize(); // Bottom
+	Planes[4] = Cross3(Corners[1] - Corners[0], Corners[3] - Corners[0]).Normalize(); // Front
+	Planes[5] = Cross3(Corners[1] - Corners[2], Corners[3] - Corners[2]).Normalize(); // Back
 
 	Planes[0][3] = -Dot3(Planes[0], Corners[0]);
 	Planes[1][3] = -Dot3(Planes[1], Corners[5]);
@@ -6800,32 +6438,16 @@ void Project::FindObjectsInBox(float x1, float y1, float x2, float y2, lcPtrArra
 	Planes[5][3] = -Dot3(Planes[5], Corners[5]);
 
 	// Check if any objects are inside the volume.
-	for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece != NULL; Piece = (lcPiece*)Piece->m_Next)
+	for (Piece* piece = m_pPieces; piece != NULL; piece = piece->m_pNext)
 	{
-		if (!Piece->IsVisible(m_ActiveModel->m_CurFrame))
-			continue;
-
-		if (Piece->IntersectsVolume(Planes, 6))
-			Objects.Add(Piece);
+		if (piece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation))
+		{
+			if (piece->IntersectsVolume(Planes, 6))
+				Objects.Add(piece);
+		}
 	}
 
-	for (lcCamera* Camera = m_ActiveModel->m_Cameras; Camera != NULL; Camera = (lcCamera*)Camera->m_Next)
-	{
-		if (!Camera->IsVisible())
-			continue;
-
-		if (Camera->IntersectsVolume(Planes, 6))
-			Objects.Add(Camera);
-	}
-
-	for (lcLight* Light = m_ActiveModel->m_Lights; Light != NULL; Light = (lcLight*)Light->m_Next)
-	{
-		if (!Light->IsVisible())
-			continue;
-
-		if (Light->IntersectsVolume(Planes, 6))
-			Objects.Add(Light);
-	}
+	// TODO: lights and cameras.
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -6870,7 +6492,7 @@ bool Project::StopTracking(bool bAccept)
 				if (((float)m_nDownX != m_fTrack[0]) && ((float)m_nDownY != m_fTrack[1]))
 				{
 					// Find objects inside the rectangle.
-					lcPtrArray<lcObject> Objects;
+					PtrArray<Object> Objects;
 					FindObjectsInBox((float)m_nDownX, (float)m_nDownY, m_fTrack[0], m_fTrack[1], Objects);
 
 					// Deselect old pieces.
@@ -6882,11 +6504,11 @@ bool Project::StopTracking(bool bAccept)
 					{
 						if (Objects[i]->GetType() == LC_OBJECT_PIECE)
 						{
-							lcGroup* pGroup = ((lcPiece*)Objects[i])->GetTopGroup();
+							Group* pGroup = ((Piece*)Objects[i])->GetTopGroup();
 							if (pGroup != NULL)
 							{
-								for (lcPiece* pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
-									if ((pPiece->IsVisible(m_ActiveModel->m_CurFrame)) &&
+								for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+									if ((pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation)) &&
 											(pPiece->GetTopGroup() == pGroup))
 										pPiece->Select (true, false, false);
 							}
@@ -6919,8 +6541,8 @@ bool Project::StopTracking(bool bAccept)
 
 			case LC_ACTION_CAMERA:
 			{
-				SystemUpdateCameraMenu(m_ActiveModel->m_Cameras);
-				SystemUpdateCurrentCamera(NULL, m_ActiveView->GetCamera1(), m_ActiveModel->m_Cameras);
+				SystemUpdateCameraMenu(m_pCameras);
+				SystemUpdateCurrentCamera(NULL, m_ActiveView->m_Camera, m_pCameras);
 				SetModifiedFlag(true);
 				CheckPoint("Inserting");
 			} break;
@@ -6940,7 +6562,6 @@ bool Project::StopTracking(bool bAccept)
 			case LC_ACTION_ZOOM:
 			case LC_ACTION_PAN:
 			case LC_ACTION_ROTATE_VIEW:
-			case LC_ACTION_ORBIT:
 			case LC_ACTION_ROLL:
 			{
 				// For some reason the scene doesn't get redrawn when changing a camera but it does
@@ -6951,6 +6572,15 @@ bool Project::StopTracking(bool bAccept)
 
 			case LC_ACTION_ZOOM_REGION:
 			{
+				int Viewport[4] = { 0, 0, m_ActiveView->GetWidth(), m_ActiveView->GetHeight() };
+				float Aspect = (float)Viewport[2]/(float)Viewport[3];
+				Camera* Cam = m_ActiveView->m_Camera;
+
+				// Build the matrices.
+				Matrix44 ModelView, Projection;
+				ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+				Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
+
 				// Find out the top-left and bottom-right corners in screen coordinates.
 				float Left, Top, Bottom, Right;
 
@@ -6980,24 +6610,22 @@ bool Project::StopTracking(bool bAccept)
 				Vector3 Points[3] =
 				{
 					Vector3((Left + Right) / 2, (Top + Bottom) / 2, 0.9f),
-					Vector3((float)m_ActiveView->mViewport[2] / 2.0f, (float)m_ActiveView->mViewport[3] / 2.0f, 0.9f),
-					Vector3((float)m_ActiveView->mViewport[2] / 2.0f, (float)m_ActiveView->mViewport[3] / 2.0f, 0.1f),
+					Vector3((float)Viewport[2] / 2.0f, (float)Viewport[3] / 2.0f, 0.9f),
+					Vector3((float)Viewport[2] / 2.0f, (float)Viewport[3] / 2.0f, 0.1f),
 				};
 
-				lcViewpoint* Viewpoint = m_ActiveView->GetViewpoint();
-				Matrix44 Projection = m_ActiveView->GetProjectionMatrix();
-				UnprojectPoints(Points, 3, Viewpoint->mWorldView, Projection, m_ActiveView->mViewport);
+				UnprojectPoints(Points, 3, ModelView, Projection, Viewport);
 
 				// Center camera.
-				Vector3 Eye = Viewpoint->mPosition;
+				Vector3 Eye = Cam->GetEyePosition();
 				Eye = Eye + (Points[0] - Points[1]);
 
-				Vector3 Target = Viewpoint->mTarget;
+				Vector3 Target = Cam->GetTargetPosition();
 				Target = Target + (Points[0] - Points[1]);
 
 				// Zoom in/out.
-				float RatioX = (Right - Left) / m_ActiveView->mViewport[2];
-				float RatioY = (Top - Bottom) / m_ActiveView->mViewport[3];
+				float RatioX = (Right - Left) / Viewport[2];
+				float RatioY = (Top - Bottom) / Viewport[3];
 				float ZoomFactor = -max(RatioX, RatioY) + 0.75f;
 
 				Vector3 Dir = Points[1] - Points[2];
@@ -7005,9 +6633,9 @@ bool Project::StopTracking(bool bAccept)
 				Target = Target + Dir * ZoomFactor;
 
 				// Change the camera and redraw.
-				Viewpoint->SetPosition(m_ActiveModel->m_CurFrame, m_bAddKeys, Eye);
-				Viewpoint->SetTarget(m_ActiveModel->m_CurFrame, m_bAddKeys, Target);
-				Viewpoint->CalculateMatrices();
+			  Cam->ChangeKey(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, Eye, LC_CK_EYE);
+			  Cam->ChangeKey(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, Target, LC_CK_TARGET);
+			  Cam->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
 
 				SystemUpdateFocus(NULL);
 				UpdateAllViews();
@@ -7052,31 +6680,38 @@ void Project::StartTracking(int mode)
   if (m_pTrackFile != NULL)
     m_pTrackFile->SetLength (0);
   else
-  	m_pTrackFile = new lcFileMem;
+  	m_pTrackFile = new FileMem;
 
 	FileSave(m_pTrackFile, true);
 }
 
 void Project::GetSnapIndex(int* SnapXY, int* SnapZ, int* SnapAngle) const
 {
-	*SnapXY = (m_nMoveSnap & 0xff);
-	*SnapZ = ((m_nMoveSnap >> 8) & 0xff);
+	if (SnapXY)
+		*SnapXY = (m_nMoveSnap & 0xff);
 
-	if (m_nSnap & LC_DRAW_SNAP_A)
+	if (SnapZ)
+		*SnapZ = ((m_nMoveSnap >> 8) & 0xff);
+
+	if (SnapAngle)
 	{
-		int Angles[] = { 0, 1, 5, 10, 15, 30, 45, 60, 90, 180 };
-		*SnapAngle = -1;
-		for (u32 i = 0; i < sizeof(Angles)/sizeof(Angles[0]); i++)
+		if (m_nSnap & LC_DRAW_SNAP_A)
 		{
-			if (m_nAngleSnap == Angles[i])
+			int Angles[] = { 0, 1, 5, 10, 15, 30, 45, 60, 90, 180 };
+			*SnapAngle = -1;
+
+			for (int i = 0; i < sizeof(Angles)/sizeof(Angles[0]); i++)
 			{
-				*SnapAngle = i;
-				break;
+				if (m_nAngleSnap == Angles[i])
+				{
+					*SnapAngle = i;
+					break;
+				}
 			}
 		}
+		else
+			SnapAngle = 0;
 	}
-	else
-		SnapAngle = 0;
 }
 
 void Project::GetSnapDistance(float* SnapXY, float* SnapZ) const
@@ -7084,8 +6719,8 @@ void Project::GetSnapDistance(float* SnapXY, float* SnapZ) const
 	const float SnapXYTable[] = { 0.01f, 0.04f, 0.2f, 0.32f, 0.4f, 0.8f, 1.6f, 2.4f, 3.2f, 6.4f };
 	const float SnapZTable[] = { 0.01f, 0.04f, 0.2f, 0.32f, 0.4f, 0.8f, 0.96f, 1.92f, 3.84f, 7.68f };
 
-	int SXY, SZ, SA;
-	GetSnapIndex(&SXY, &SZ, &SA);
+	int SXY, SZ;
+	GetSnapIndex(&SXY, &SZ, NULL);
 
 	SXY = min(SXY, 9);
 	SZ = min(SZ, 9);
@@ -7110,8 +6745,8 @@ void Project::GetSnapDistanceText(char* SnapXY, char* SnapZ) const
 		const char* SnapXYText[] = { "0", "1/20S", "1/4S", "1F", "1/2S", "1S", "2S", "3S", "4S", "8S" };
 		const char* SnapZText[] = { "0", "1/20S", "1/4S", "1F", "1/2S", "1S", "1B", "2B", "4B", "8B" };
 
-		int SXY, SZ, SA;
-		GetSnapIndex(&SXY, &SZ, &SA);
+		int SXY, SZ;
+		GetSnapIndex(&SXY, &SZ, NULL);
 
 		SXY = min(SXY, 9);
 		SZ = min(SZ, 9);
@@ -7131,12 +6766,12 @@ void Project::SnapVector(Vector3& Delta, Vector3& Leftover) const
 		int i = (int)(Delta[0] / SnapXY);
 		Leftover[0] = Delta[0] - (SnapXY * i);
 
-		if (Leftover[0] -SnapXY / 2 > 0.001f)
+		if (Leftover[0] > SnapXY / 2)
 		{
 			Leftover[0] -= SnapXY;
 			i++;
 		}
-		else if (Leftover[0] + SnapXY / 2 < 0.001f)
+		else if (Leftover[0] < -SnapXY / 2)
 		{
 			Leftover[0] += SnapXY;
 			i--;
@@ -7150,12 +6785,12 @@ void Project::SnapVector(Vector3& Delta, Vector3& Leftover) const
 		int i = (int)(Delta[1] / SnapXY);
 		Leftover[1] = Delta[1] - (SnapXY * i);
 
-		if (Leftover[1] - SnapXY / 2 > 0.001f)
+		if (Leftover[1] > SnapXY / 2)
 		{
 			Leftover[1] -= SnapXY;
 			i++;
 		}
-		else if (Leftover[1] + SnapXY / 2 < 0.001f)
+		else if (Leftover[1] < -SnapXY / 2)
 		{
 			Leftover[1] += SnapXY;
 			i--;
@@ -7169,12 +6804,12 @@ void Project::SnapVector(Vector3& Delta, Vector3& Leftover) const
 		int i = (int)(Delta[2] / SnapZ);
 		Leftover[2] = Delta[2] - (SnapZ * i);
 
-		if (Leftover[2] - SnapZ / 2 > 0.001f)
+		if (Leftover[2] > SnapZ / 2)
 		{
 			Leftover[2] -= SnapZ;
 			i++;
 		}
-		else if (Leftover[2] + SnapZ / 2 < 0.001f)
+		else if (Leftover[2] < -SnapZ / 2)
 		{
 			Leftover[2] += SnapZ;
 			i--;
@@ -7215,42 +6850,59 @@ bool Project::MoveSelectedObjects(Vector3& Move, Vector3& Remainder, bool Snap)
 
 	// Snap.
 	if (Snap)
+	{
 		SnapVector(Move, Remainder);
 
-	if (LengthSquared(Move) < 0.00001f)
-		return false;
+		if (Move.LengthSquared() < 0.001f)
+			return false;
+	}
 
 	// Transform the translation if we're in relative mode.
 	if ((m_nSnap & LC_DRAW_GLOBAL_SNAP) == 0)
 	{
-		lcObject* Focus = GetFocusObject();
+		Object* Focus = GetFocusObject();
 
 		if ((Focus != NULL) && Focus->IsPiece())
 		{
-			Move = Mul30(Move, ((lcPiece*)Focus)->m_ModelWorld);
+			float Rot[4];
+			((Piece*)Focus)->GetRotation(Rot);
+
+			Matrix33 RotMat;
+			RotMat.CreateFromAxisAngle(Vector3(Rot[0], Rot[1], Rot[2]), Rot[3] * LC_DTOR);
+
+			Move = Mul(Move, RotMat);
 		}
 	}
 
-	for (lcCamera* Camera = m_ActiveModel->m_Cameras; Camera; Camera = (lcCamera*)Camera->m_Next)
-		if (Camera->IsSelected())
+	Piece* pPiece;
+	Camera* pCamera;
+	Light* pLight;
+	float x = Move[0], y = Move[1], z = Move[2];
+
+	for (pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+		if (pCamera->IsSelected())
 		{
-			Camera->Move(m_ActiveModel->m_CurFrame, m_bAddKeys, Move);
-			Camera->UpdatePosition(m_ActiveModel->m_CurFrame);
+			pCamera->Move(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, x, y, z);
+			pCamera->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
 		}
 
-	for (lcLight* Light = m_ActiveModel->m_Lights; Light; Light = (lcLight*)Light->m_Next)
-		if (Light->IsSelected())
+	for (pLight = m_pLights; pLight; pLight = pLight->m_pNext)
+	  if (pLight->IsSelected())
+	  {
+	    pLight->Move (m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, x, y, z);
+	    pLight->UpdatePosition (m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
+	  }
+
+	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+		if (pPiece->IsSelected())
 		{
-			Light->Move(m_ActiveModel->m_CurFrame, m_bAddKeys, Move);
-			Light->UpdatePosition(m_ActiveModel->m_CurFrame);
+			pPiece->Move(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, x, y, z);
+			pPiece->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
 		}
 
-	for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-		if (Piece->IsSelected())
-		{
-			Piece->Move(m_ActiveModel->m_CurFrame, m_bAddKeys, Move);
-			Piece->UpdatePosition(m_ActiveModel->m_CurFrame);
-		}
+	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+		if (pPiece->IsSelected())
+			pPiece->CalculateConnections(m_pConnections, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, false, true);
 
 	// TODO: move group centers
 
@@ -7263,7 +6915,7 @@ bool Project::MoveSelectedObjects(Vector3& Move, Vector3& Remainder, bool Snap)
 	return true;
 }
 
-bool Project::RotateSelectedObjects(Vector3& Delta, Vector3& Remainder, bool Snap)
+bool Project::RotateSelectedObjects(Vector3& Delta, Vector3& Remainder)
 {
 	// Don't move along locked directions.
 	if (m_nSnap & LC_DRAW_LOCK_X)
@@ -7276,36 +6928,37 @@ bool Project::RotateSelectedObjects(Vector3& Delta, Vector3& Remainder, bool Sna
 		Delta[2] = 0;
 
 	// Snap.
-	if (Snap)
-		SnapRotationVector(Delta, Remainder);
+	SnapRotationVector(Delta, Remainder);
 
-	if (LengthSquared(Delta) < 0.001f)
+	if (Delta.LengthSquared() < 0.001f)
 		return false;
 
-	BoundingBox Box;
-	Box.Reset();
-
-	lcPiece* Piece;
-	lcPiece* Focus = NULL;
+	float bs[6] = { 10000, 10000, 10000, -10000, -10000, -10000 };
+	float pos[3], rot[4];
 	int nSel = 0;
+	Piece *pPiece, *pFocus = NULL;
 
-	for (Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
+	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 	{
-		if (Piece->IsSelected())
+		if (pPiece->IsSelected())
 		{
-			if (Piece->IsFocused())
-				Focus = Piece;
+			if (pPiece->IsFocused())
+				pFocus = pPiece;
 
-			Piece->MergeBoundingBox(&Box);
+			pPiece->CompareBoundingBox(bs);
 			nSel++;
 		}
 	}
 
-	Vector3 Center;
-	if (Focus != NULL)
-		Center = Focus->m_Position;
-	else
-		Center = Box.GetCenter();
+	if (pFocus != NULL)
+	{
+		pFocus->GetPosition(pos);
+		bs[0] = bs[3] = pos[0];
+		bs[1] = bs[4] = pos[1];
+		bs[2] = bs[5] = pos[2];
+	}
+
+	Vector3 Center((bs[0]+bs[3])/2, (bs[1]+bs[4])/2, (bs[2]+bs[5])/2);
 
 	// Create the rotation matrix.
 	Quaternion Rotation(0, 0, 0, 1);
@@ -7313,53 +6966,58 @@ bool Project::RotateSelectedObjects(Vector3& Delta, Vector3& Remainder, bool Sna
 
 	if (!(m_nSnap & LC_DRAW_LOCK_X) && (Delta[0] != 0.0f))
 	{
-		Quaternion q = CreateRotationXQuaternion(Delta[0] * LC_DTOR);
+		Quaternion q;
+		q.CreateRotationX(Delta[0] * LC_DTOR);
 		Rotation = Mul(q, Rotation);
 	}
 
 	if (!(m_nSnap & LC_DRAW_LOCK_Y) && (Delta[1] != 0.0f))
 	{
-		Quaternion q = CreateRotationYQuaternion(Delta[1] * LC_DTOR);
+		Quaternion q;
+		q.CreateRotationY(Delta[1] * LC_DTOR);
 		Rotation = Mul(q, Rotation);
 	}
 
 	if (!(m_nSnap & LC_DRAW_LOCK_Z) && (Delta[2] != 0.0f))
 	{
-		Quaternion q = CreateRotationZQuaternion(Delta[2] * LC_DTOR);
+		Quaternion q;
+		q.CreateRotationZ(Delta[2] * LC_DTOR);
 		Rotation = Mul(q, Rotation);
 	}
 
 	// Transform the rotation relative to the focused piece.
 	if (m_nSnap & LC_DRAW_GLOBAL_SNAP)
-		Focus = NULL;
+		pFocus = NULL;
 
-	if (Focus != NULL)
+	if (pFocus != NULL)
 	{
-		Vector4 Rot = Focus->m_AxisAngle;
-		FocusToWorld = QuaternionFromAxisAngle(Rot);
+		float Rot[4];
+		((Piece*)pFocus)->GetRotation(Rot);
 
-		Rot[3] = -Rot[3];
-		WorldToFocus = QuaternionFromAxisAngle(Rot);
+		WorldToFocus.FromAxisAngle(Vector4(Rot[0], Rot[1], Rot[2], -Rot[3] * LC_DTOR));
+		FocusToWorld.FromAxisAngle(Vector4(Rot[0], Rot[1], Rot[2], Rot[3] * LC_DTOR));
 
 		Rotation = Mul(FocusToWorld, Rotation);
 	}
 
-	for (Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
+	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 	{
-		if (!Piece->IsSelected())
+		if (!pPiece->IsSelected())
 			continue;
 
-		Vector3 Pos = Piece->m_Position;
-		Vector4 Rot = Piece->m_AxisAngle;
+		pPiece->GetPosition(pos);
+		pPiece->GetRotation(rot);
 
 		Vector4 NewRotation;
 
-		if ((nSel == 1) && (Focus == Piece))
+		if ((nSel == 1) && (pFocus == pPiece))
 		{
-			Quaternion LocalToWorld = QuaternionFromAxisAngle(Rot);
+			Quaternion LocalToWorld;
+			LocalToWorld.FromAxisAngle(Vector4(rot[0], rot[1], rot[2], rot[3] * LC_DTOR));
+
 			Quaternion NewLocalToWorld;
 
-			if (Focus != NULL)
+			if (pFocus != NULL)
 			{
 				Quaternion LocalToFocus = Mul(WorldToFocus, LocalToWorld);
 				NewLocalToWorld = Mul(LocalToFocus, Rotation);
@@ -7369,21 +7027,24 @@ bool Project::RotateSelectedObjects(Vector3& Delta, Vector3& Remainder, bool Sna
 				NewLocalToWorld = Mul(Rotation, LocalToWorld);
 			}
 
-			NewRotation = QuaternionToAxisAngle(NewLocalToWorld);
+			NewLocalToWorld.ToAxisAngle(NewRotation);
 		}
 		else
 		{
-			Vector3 Distance = Pos - Center;
+			Vector3 Distance = Vector3(pos[0], pos[1], pos[2]) - Center;
 
-			Quaternion LocalToWorld = QuaternionFromAxisAngle(Rot);
+			Quaternion LocalToWorld;
+			LocalToWorld.FromAxisAngle(Vector4(rot[0], rot[1], rot[2], rot[3] * LC_DTOR));
+
 			Quaternion NewLocalToWorld;
 
-			if (Focus != NULL)
+			if (pFocus != NULL)
 			{
 				Quaternion LocalToFocus = Mul(WorldToFocus, LocalToWorld);
 				NewLocalToWorld = Mul(Rotation, LocalToFocus);
 
-				Quaternion WorldToLocal = QuaternionFromAxisAngle(Vector4(Rot[0], Rot[1], Rot[2], -Rot[3]));
+				Quaternion WorldToLocal;
+				WorldToLocal.FromAxisAngle(Vector4(rot[0], rot[1], rot[2], -rot[3] * LC_DTOR));
 
 				Distance = Mul(Distance, WorldToLocal);
 				Distance = Mul(Distance, NewLocalToWorld);
@@ -7395,18 +7056,27 @@ bool Project::RotateSelectedObjects(Vector3& Delta, Vector3& Remainder, bool Sna
 				Distance = Mul(Distance, Rotation);
 			}
 
-			NewRotation = QuaternionToAxisAngle(NewLocalToWorld);
+			NewLocalToWorld.ToAxisAngle(NewRotation);
 
-			Pos = Center + Distance;
+			pos[0] = Center[0] + Distance[0];
+			pos[1] = Center[1] + Distance[1];
+			pos[2] = Center[2] + Distance[2];
 
-			Piece->ChangeKey(m_ActiveModel->m_CurFrame, m_bAddKeys, Pos, LC_PK_POSITION);
+			pPiece->ChangeKey(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, pos, LC_PK_POSITION);
 		}
 
-		Rot = NewRotation;
+		rot[0] = NewRotation[0];
+		rot[1] = NewRotation[1];
+		rot[2] = NewRotation[2];
+		rot[3] = NewRotation[3] * LC_RTOD;
 
-		Piece->ChangeKey(m_ActiveModel->m_CurFrame, m_bAddKeys, Rot, LC_PK_ROTATION);
-		Piece->UpdatePosition(m_ActiveModel->m_CurFrame);
+		pPiece->ChangeKey(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, rot, LC_PK_ROTATION);
+		pPiece->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
 	}
+
+	for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+		if (pPiece->IsSelected())
+			pPiece->CalculateConnections(m_pConnections, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, false, true);
 
 	if (m_OverlayActive)
 	{
@@ -7421,7 +7091,7 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
 {
 	bool ret = false;
 
-	// TODO: Almost all of this should go through the keyboard shortcut system.
+	// FIXME: Almost all of this should go through the keyboard shortcut system.
 	switch (nKey)
 	{
 		case KEY_ESCAPE:
@@ -7458,9 +7128,9 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
 		case KEY_PLUS: // case '+': case '=':
 		{
 			if (bShift)
-				HandleCommand(LC_VIEW_ZOOM, (unsigned int)-10);
+				HandleCommand(LC_VIEW_ZOOM, -10);
 			else
-				HandleCommand(LC_VIEW_ZOOM, (unsigned int)-1);
+				HandleCommand(LC_VIEW_ZOOM, -1);
 
 			ret = true;
 		} break;
@@ -7477,11 +7147,11 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
 
 		case KEY_TAB:
 		{
-			if (m_ActiveModel->m_Pieces == NULL)
+			if (m_pPieces == NULL)
 				break;
 
-			lcPiece* pFocus = NULL, *pPiece;
-			for (pFocus = m_ActiveModel->m_Pieces; pFocus; pFocus = (lcPiece*)pFocus->m_Next)
+			Piece* pFocus = NULL, *pPiece;
+			for (pFocus = m_pPieces; pFocus; pFocus = pFocus->m_pNext)
 				if (pFocus->IsFocused())
 					break;
 
@@ -7492,15 +7162,15 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
 				if (bShift)
 				{
 					// Focus the last visible piece.
-					for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
-						if (pPiece->IsVisible(m_ActiveModel->m_CurFrame))
+					for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+						if (pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation))
 							pFocus = pPiece;
 				}
 				else
 				{
 					// Focus the first visible piece.
-					for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
-						if (pPiece->IsVisible(m_ActiveModel->m_CurFrame))
+					for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+						if (pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation))
 						{
 							pFocus = pPiece;
 							break;
@@ -7512,25 +7182,25 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
 				if (bShift)
 				{
 					// Focus the previous visible piece.
-					lcPiece* pBest = pPiece = pFocus;
+					Piece* pBest = pPiece = pFocus;
 					for (;;)
 					{
-						if (pPiece->IsVisible(m_ActiveModel->m_CurFrame))
+						if (pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation))
 							pBest = pPiece;
 
-						if (pPiece->m_Next != NULL)
+						if (pPiece->m_pNext != NULL)
 						{
-							if (pPiece->m_Next == pFocus)
+							if (pPiece->m_pNext == pFocus)
 								break;
 							else
-								pPiece = (lcPiece*)pPiece->m_Next;
+								pPiece = pPiece->m_pNext;
 						}
 						else
 						{
-							if (pFocus == m_ActiveModel->m_Pieces)
+							if (pFocus == m_pPieces)
 								break;
 							else
-								pPiece = m_ActiveModel->m_Pieces;
+								pPiece = m_pPieces;
 						}
 					}
 
@@ -7543,25 +7213,25 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
 					for (;;)
 					{
 						if (pPiece != pFocus)
-							if (pPiece->IsVisible(m_ActiveModel->m_CurFrame))
+							if (pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation))
 							{
 								pFocus = pPiece;
 								break;
 							}
 
-						if (pPiece->m_Next != NULL)
+						if (pPiece->m_pNext != NULL)
 						{
-							if (pPiece->m_Next == pFocus)
+							if (pPiece->m_pNext == pFocus)
 								break;
 							else
-								pPiece = (lcPiece*)pPiece->m_Next;
+								pPiece = pPiece->m_pNext;
 						}
 						else
 						{
-							if (pFocus == m_ActiveModel->m_Pieces)
+							if (pFocus == m_pPieces)
 								break;
 							else
-								pPiece = m_ActiveModel->m_Pieces;
+								pPiece = m_pPieces;
 						}
 					}
 				}
@@ -7570,11 +7240,11 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
 			if (pFocus != NULL)
 			{
         pFocus->Select (true, true, false);
-        lcGroup* pGroup = pFocus->GetTopGroup();
+        Group* pGroup = pFocus->GetTopGroup();
         if (pGroup != NULL)
         {
-          for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
-            if ((pPiece->IsVisible(m_ActiveModel->m_CurFrame)) &&
+          for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+            if ((pPiece->IsVisible(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation)) &&
                 (pPiece->GetTopGroup() == pGroup))
               pPiece->Select (true, false, false);
         }
@@ -7593,7 +7263,7 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
 			Vector3 axis;
 			if (bShift)
 			{
-				if ((m_nSnap & LC_DRAW_SNAP_A) && !bControl)
+				if (m_nSnap & LC_DRAW_SNAP_A)
 					axis[0] = axis[1] = axis[2] = m_nAngleSnap;
 				else
 					axis[0] = axis[1] = axis[2] = 1;
@@ -7640,11 +7310,15 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
 			}
 			else
 			{
-				lcViewpoint* Viewpoint = m_ActiveView->GetViewpoint();
-/*
-				if (Camera->IsSide())
+				Camera *camera = m_ActiveView->m_Camera;
+
+				if (camera->IsSide ())
 				{
-					Matrix44 mat = Viewpoint->mViewWorld;
+					Matrix mat;
+
+					mat.CreateLookat(camera->GetEyePos (), camera->GetTargetPos (), camera->GetUpVec ());
+					mat.SetTranslation(0, 0, 0);
+					mat.Invert();
 
 					switch (nKey)
 					{
@@ -7673,10 +7347,9 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
 						break;
 					}
 
-					axis = Mul30(axis, mat);
+					mat.TransformPoints (axis, 1);
 				}
 				else
-*/
 				{
 
 					// TODO: rewrite this
@@ -7703,15 +7376,25 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
 						break;
 					}
 
+					int Viewport[4] = { 0, 0, m_ActiveView->GetWidth(), m_ActiveView->GetHeight() };
+					float Aspect = (float)Viewport[2]/(float)Viewport[3];
+					Camera* Cam = m_ActiveView->m_Camera;
+
+					Matrix44 ModelView, Projection;
+					ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+					Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
+
 					Vector3 Pts[3] = { Vector3(5.0f, 5.0f, 0.1f), Vector3(10.0f, 5.0f, 0.1f), Vector3(5.0f, 10.0f, 0.1f) };
-					UnprojectPoints(Pts, 3, m_ActiveView->GetViewpoint()->mWorldView, m_ActiveView->GetProjectionMatrix(), m_ActiveView->mViewport);
+					UnprojectPoints(Pts, 3, ModelView, Projection, Viewport);
 
 					float ax, ay;
-					Vector3 vx = Normalize(Vector3((Pts[1][0] - Pts[0][0]), (Pts[1][1] - Pts[0][1]), 0));//Pts[1][2] - Pts[0][2] };
+					Vector3 vx((Pts[1][0] - Pts[0][0]), (Pts[1][1] - Pts[0][1]), 0);//Pts[1][2] - Pts[0][2] };
+					vx.Normalize();
 					Vector3 x(1, 0, 0);
 					ax = acosf(Dot3(vx, x));
 
-					Vector3 vy = Normalize(Vector3((Pts[2][0] - Pts[0][0]), (Pts[2][1] - Pts[0][1]), 0));//Pts[2][2] - Pts[0][2] };
+					Vector3 vy((Pts[2][0] - Pts[0][0]), (Pts[2][1] - Pts[0][1]), 0);//Pts[2][2] - Pts[0][2] };
+					vy.Normalize();
 					Vector3 y(0, -1, 0);
 					ay = acosf(Dot3(vy, y));
 
@@ -7743,7 +7426,7 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
 			if (bShift)
 			{
 				Vector3 tmp;
-				RotateSelectedObjects(axis, tmp, false);
+				RotateSelectedObjects(axis, tmp);
 			}
 			else
 			{
@@ -7763,11 +7446,16 @@ bool Project::OnKeyDown(char nKey, bool bControl, bool bShift)
 	return ret;
 }
 
-void Project::BeginPieceDrop()
+void Project::BeginPieceDrop(PieceInfo* Info)
 {
 	StartTracking(LC_TRACK_LEFT);
 	SetAction(LC_ACTION_INSERT);
 	m_RestoreAction = true;
+
+	m_PreviousPiece = m_pCurPiece;
+
+	m_pCurPiece = Info;
+	m_pCurPiece->AddRef();
 }
 
 void Project::BeginColorDrop()
@@ -7775,113 +7463,6 @@ void Project::BeginColorDrop()
 	StartTracking(LC_TRACK_LEFT);
 	SetAction(LC_ACTION_PAINT);
 	m_RestoreAction = true;
-}
-
-void Project::OnTouch(View* view, LC_TOUCH_PHASE Phase, int TapCount, int x, int y, int PrevX, int PrevY)
-{
-	if (Phase == LC_TOUCH_BEGAN)
-	{
-		// Reset action if it's the first touch.
-		if (m_TouchState.GetSize() == 0)
-			SetAction(LC_ACTION_SELECT);
-
-		// Add touch to the array.
-		if (m_nCurAction == LC_ACTION_SELECT)
-		{
-			TouchState Touch;
-			Touch.Phase = Phase;
-			Touch.TapCount = TapCount;
-			Touch.x = x;
-			Touch.y = y;
-			Touch.StartX = x;
-			Touch.StartY = y;
-			m_TouchState.Add(Touch);
-		}
-		else
-		{
-			// TODO: cancel action
-		}
-	}
-	else if (Phase == LC_TOUCH_ENDED)
-	{
-		// Remove touch from the array.
-		int TouchIndex = FindTouchIndex(x, y);
-		if (TouchIndex < 0)
-			return;
-
-		m_TouchState.RemoveIndex(TouchIndex);
-
-		switch (m_nCurAction)
-		{
-			case LC_ACTION_SELECT:
-				break;
-//				LC_ACTION_INSERT,
-//				LC_ACTION_LIGHT,
-//				LC_ACTION_SPOTLIGHT,
-//				LC_ACTION_CAMERA,
-//				LC_ACTION_MOVE,
-//				LC_ACTION_ROTATE,
-//				LC_ACTION_ERASER,
-//				LC_ACTION_PAINT,
-//				LC_ACTION_ZOOM,
-//				LC_ACTION_ZOOM_REGION,
-			case LC_ACTION_PAN:
-				if (m_TouchState.GetSize() == 0)
-					OnLeftButtonUp(view, x, y, false, false);
-				break;
-//				LC_ACTION_ROTATE_VIEW,
-//				LC_ACTION_ROLL,
-//				LC_ACTION_CURVE
-		}
-	}
-	else if (Phase == LC_TOUCH_MOVED)
-	{
-		int TouchIndex = FindTouchIndex(PrevX, PrevY);
-
-		if (TouchIndex < 0)
-			return;
-		
-		m_TouchState[TouchIndex].x = x;
-		m_TouchState[TouchIndex].y = y;
-		const int MinTouchDist = 10;
-
-		switch (m_nCurAction)
-		{
-			case LC_ACTION_SELECT:
-				if (ABS(m_TouchState[TouchIndex].StartX - x) + ABS(m_TouchState[TouchIndex].StartY - y) < MinTouchDist)
-					break;
-
-				if (0)//AnyObjectSelected())
-				{
-				}
-				else
-				{
-					if (m_TouchState.GetSize() == 1)
-					{
-						SetAction(LC_ACTION_PAN);
-						OnLeftButtonDown(view, x, y, false, false);
-					}
-				}
-				break;
-
-//				LC_ACTION_INSERT,
-//				LC_ACTION_LIGHT,
-//				LC_ACTION_SPOTLIGHT,
-//				LC_ACTION_CAMERA,
-//				LC_ACTION_MOVE,
-//				LC_ACTION_ROTATE,
-//				LC_ACTION_ERASER,
-//				LC_ACTION_PAINT,
-//				LC_ACTION_ZOOM,
-//				LC_ACTION_ZOOM_REGION,
-			case LC_ACTION_PAN:
-				OnMouseMove(view, x, y, false, false);
-				break;
-//				LC_ACTION_ROTATE_VIEW,
-//				LC_ACTION_ROLL,
-//				LC_ACTION_CURVE
-		};
-	}
 }
 
 void Project::OnLeftButtonDown(View* view, int x, int y, bool bControl, bool bShift)
@@ -7899,15 +7480,24 @@ void Project::OnLeftButtonDown(View* view, int x, int y, bool bControl, bool bSh
 	m_MouseTotalDelta = Vector3(0, 0, 0);
 	m_MouseSnapLeftover = Vector3(0, 0, 0);
 
-	Matrix44 ProjectionMatrix = m_ActiveView->GetProjectionMatrix();
-	Vector3 point = UnprojectPoint(Vector3((float)x, (float)y, 0.9f), m_ActiveView->GetViewpoint()->mWorldView, ProjectionMatrix, m_ActiveView->mViewport);
+	int Viewport[4] = { 0, 0, view->GetWidth(), view->GetHeight() };
+	float Aspect = (float)Viewport[2]/(float)Viewport[3];
+	Camera* Cam = view->m_Camera;
+
+	Matrix44 ModelView, Projection;
+	ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+	Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
+
+	Vector3 point = UnprojectPoint(Vector3((float)x, (float)y, 0.9f), ModelView, Projection, Viewport);
 	m_fTrack[0] = point[0]; m_fTrack[1] = point[1]; m_fTrack[2] = point[2];
 
 	if (Sys_KeyDown(KEY_ALT))
 	{
-		SetAction(LC_ACTION_ORBIT);
+		SetAction(LC_ACTION_ROTATE_VIEW);
 		m_RestoreAction = true;
 	}
+	else
+		m_RestoreAction = false;
 
 	switch (m_nCurAction)
 	{
@@ -7915,23 +7505,59 @@ void Project::OnLeftButtonDown(View* view, int x, int y, bool bControl, bool bSh
 		case LC_ACTION_ERASER:
 		case LC_ACTION_PAINT:
 		{
-			lcObject* Object = FindObjectFromPoint(x, y);
+			Object* Closest = FindObjectFromPoint(view, x, y);
 
 			if (m_nCurAction == LC_ACTION_SELECT) 
 			{
-				ToggleObjectSelectedState(Object, bControl);
+				if (Closest != NULL)
+				{
+					switch (Closest->GetType ())
+					{
+						case LC_OBJECT_PIECE:
+						{
+							Piece* pPiece = (Piece*)Closest;
+							Group* pGroup = pPiece->GetTopGroup();
+							bool bFocus = pPiece->IsFocused ();
+
+							SelectAndFocusNone (bControl);
+
+							// if a piece has focus deselect it, otherwise set the focus
+							pPiece->Select (!bFocus, !bFocus, false);
+
+							if (pGroup != NULL)
+								for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+									if (pPiece->GetTopGroup() == pGroup)
+										pPiece->Select (!bFocus, false, false);
+						} break;
+
+						case LC_OBJECT_CAMERA:
+						case LC_OBJECT_CAMERA_TARGET:
+						case LC_OBJECT_LIGHT:
+						case LC_OBJECT_LIGHT_TARGET:
+						{
+							SelectAndFocusNone (bControl);
+							Closest->Select (true, true, bControl);
+						} break;
+					}
+				}
+				else
+					SelectAndFocusNone (bControl);
+
+				UpdateSelection();
+				UpdateAllViews();
+				SystemUpdateFocus(Closest);
 
 				StartTracking(LC_TRACK_START_LEFT);
 			}
 
-			if ((m_nCurAction == LC_ACTION_ERASER) && (Object != NULL))
+			if ((m_nCurAction == LC_ACTION_ERASER) && (Closest != NULL))
 			{
-				switch (Object->GetType ())
+				switch (Closest->GetType ())
 				{
 					case LC_OBJECT_PIECE:
 					{
-						lcPiece* pPiece = (lcPiece*)Object;
-						m_ActiveModel->RemovePiece(pPiece);
+						Piece* pPiece = (Piece*)Closest;
+						RemovePiece(pPiece);
 						delete pPiece;
 //						CalculateStep();
 						RemoveEmptyGroups();
@@ -7940,27 +7566,28 @@ void Project::OnLeftButtonDown(View* view, int x, int y, bool bControl, bool bSh
 					case LC_OBJECT_CAMERA:
 					case LC_OBJECT_CAMERA_TARGET:
 					{
-						lcCamera* pCamera;
-						if (Object->GetType () == LC_OBJECT_CAMERA)
-							pCamera = (lcCamera*)Object;
+						Camera* pCamera;
+						if (Closest->GetType () == LC_OBJECT_CAMERA)
+							pCamera = (Camera*)Closest;
 						else
-							pCamera = ((CameraTarget*)Object)->m_Parent;
-						bool bCanDelete = true;
+							pCamera = ((CameraTarget*)Closest)->GetParent();
 
-						for (int i = 0; i < m_ViewList.GetSize(); i++)
-							if (pCamera == m_ViewList[i]->GetCamera1())
+						bool bCanDelete = pCamera->IsUser();
+
+						for (int ViewIdx = 0; ViewIdx < m_ViewList.GetSize(); ViewIdx++)
+							if (pCamera == m_ViewList[ViewIdx]->m_Camera)
 								bCanDelete = false;
 
 						if (bCanDelete)
 						{
-							lcCamera* pPrev;
-							for (pPrev = m_ActiveModel->m_Cameras; pPrev; pPrev = (lcCamera*)pPrev->m_Next)
-								if (pPrev->m_Next == pCamera)
+							Camera* pPrev;
+							for (pPrev = m_pCameras; pPrev; pPrev = pPrev->m_pNext)
+								if (pPrev->m_pNext == pCamera)
 								{
-									pPrev->m_Next = pCamera->m_Next;
+									pPrev->m_pNext = pCamera->m_pNext;
 									delete pCamera;
-									SystemUpdateCameraMenu(m_ActiveModel->m_Cameras);
-									SystemUpdateCurrentCamera(NULL, m_ActiveView->GetCamera1(), m_ActiveModel->m_Cameras);
+									SystemUpdateCameraMenu(m_pCameras);
+									SystemUpdateCurrentCamera(NULL, m_ActiveView->m_Camera, m_pCameras);
 									break;
 								}
 						}
@@ -7982,14 +7609,16 @@ void Project::OnLeftButtonDown(View* view, int x, int y, bool bControl, bool bSh
 //				AfxGetMainWnd()->PostMessage(WM_LC_UPDATE_INFO, NULL, OT_PIECE);
 			}
 
-			if ((m_nCurAction == LC_ACTION_PAINT) && (Object != NULL) && 
-				(Object->GetType() == LC_OBJECT_PIECE))
+			if ((m_nCurAction == LC_ACTION_PAINT) && (Closest != NULL) && (Closest->GetType() == LC_OBJECT_PIECE))
 			{
-				lcPiece* pPiece = (lcPiece*)Object;
+				Piece* pPiece = (Piece*)Closest;
 
-				if (pPiece->m_Color != g_App->m_SelectedColor)
+				if (pPiece->GetColor() != m_nCurColor)
 				{
-					pPiece->m_Color = g_App->m_SelectedColor;
+					bool bTrans = pPiece->IsTransparent();
+					pPiece->SetColor(m_nCurColor);
+					if (bTrans != pPiece->IsTransparent())
+						pPiece->CalculateConnections(m_pConnections, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, true, true);
 
 					SetModifiedFlag(true);
 					CheckPoint("Painting");
@@ -8007,20 +7636,22 @@ void Project::OnLeftButtonDown(View* view, int x, int y, bool bControl, bool bSh
 				Vector3 Pos;
 				Vector4 Rot;
 
-				GetPieceInsertPosition(x, y, Pos, Rot);
+				GetPieceInsertPosition(view, x, y, Pos, Rot);
 
-				lcPiece* pPiece = new lcPiece(g_App->m_PiecePreview->m_Selection);
-				pPiece->Initialize(Pos[0], Pos[1], Pos[2], m_ActiveModel->m_CurFrame, g_App->m_SelectedColor);
+				Piece* pPiece = new Piece(m_pCurPiece);
+				pPiece->Initialize(Pos[0], Pos[1], Pos[2], m_nCurStep, m_nCurFrame, m_nCurColor);
 
-				pPiece->ChangeKey(m_ActiveModel->m_CurFrame, false, Rot, LC_PK_ROTATION);
-				pPiece->UpdatePosition(m_ActiveModel->m_CurFrame);
+				pPiece->ChangeKey(m_nCurStep, false, false, Rot, LC_PK_ROTATION);
+				pPiece->ChangeKey(m_nCurFrame, true, false, Rot, LC_PK_ROTATION);
+				pPiece->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
 
 				SelectAndFocusNone(false);
-				pPiece->SetUniqueName(m_ActiveModel->m_Pieces, pPiece->m_PieceInfo->m_strDescription);
-				m_ActiveModel->AddPiece(pPiece);
+				pPiece->CreateName(m_pPieces);
+				AddPiece(pPiece);
+				pPiece->CalculateConnections(m_pConnections, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, false, true);
 				pPiece->Select (true, true, false);
 				UpdateSelection();
-				SystemPieceComboAdd(g_App->m_PiecePreview->m_Selection->m_strDescription);
+				SystemPieceComboAdd(m_pCurPiece->m_strDescription);
 				SystemUpdateFocus(pPiece);
 
 				if (m_nSnap & LC_DRAW_MOVE)
@@ -8030,25 +7661,25 @@ void Project::OnLeftButtonDown(View* view, int x, int y, bool bControl, bool bSh
 			{
 				GLint max;
 				int count = 0;
-				lcLight *pLight;
+				Light *pLight;
 
 				glGetIntegerv (GL_MAX_LIGHTS, &max);
-				for (pLight = m_ActiveModel->m_Lights; pLight; pLight = (lcLight*)pLight->m_Next)
+				for (pLight = m_pLights; pLight; pLight = pLight->m_pNext)
 					count++;
 
 				if (count == max)
 					break;
 
-				pLight = new lcLight(m_fTrack[0], m_fTrack[1], m_fTrack[2]);
+				pLight = new Light (m_fTrack[0], m_fTrack[1], m_fTrack[2]);
 
 				SelectAndFocusNone (false);
 
-				pLight->SetUniqueName(m_ActiveModel->m_Lights, "Light");
-				pLight->m_Next = m_ActiveModel->m_Lights;
-				m_ActiveModel->m_Lights = pLight;
+				pLight->CreateName(m_pLights);
+				pLight->m_pNext = m_pLights;
+				m_pLights = pLight;
 				SystemUpdateFocus (pLight);
 				pLight->Select (true, true, false);
-				UpdateSelection();
+				UpdateSelection ();
 			}
 
 //			AfxGetMainWnd()->PostMessage(WM_LC_UPDATE_INFO, (WPARAM)pNew, OT_PIECE);
@@ -8058,52 +7689,81 @@ void Project::OnLeftButtonDown(View* view, int x, int y, bool bControl, bool bSh
 			CheckPoint("Inserting");
 		} break;
 
-		case LC_ACTION_SPOTLIGHT:
-		{
-			GLint max;
-			int count = 0;
-			lcLight* Light;
+    case LC_ACTION_SPOTLIGHT:
+    {
+      GLint max;
+      int count = 0;
+      Light *pLight;
 
-			// TODO: Warn user that the maximum light count was reached but still add the light anyway.
-			glGetIntegerv(GL_MAX_LIGHTS, &max);
-			for (Light = m_ActiveModel->m_Lights; Light; Light = (lcLight*)Light->m_Next)
-				count++;
+      glGetIntegerv (GL_MAX_LIGHTS, &max);
+      for (pLight = m_pLights; pLight; pLight = pLight->m_pNext)
+        count++;
 
-			if (count == max)
-				break;
+      if (count == max)
+        break;
 
-			Vector3 tmp = UnprojectPoint(Vector3(x+1.0f, y-1.0f, 0.9f), m_ActiveView->GetViewpoint()->mWorldView, ProjectionMatrix, m_ActiveView->mViewport);
+	  Vector3 tmp = UnprojectPoint(Vector3(x+1.0f, y-1.0f, 0.9f), ModelView, Projection, Viewport);
+      SelectAndFocusNone(false);
+      StartTracking(LC_TRACK_START_LEFT);
+      pLight = new Light (m_fTrack[0], m_fTrack[1], m_fTrack[2], tmp[0], tmp[1], tmp[2]);
+      pLight->GetTarget ()->Select (true, true, false);
+      pLight->m_pNext = m_pLights;
+      m_pLights = pLight;
+      UpdateSelection();
+      UpdateAllViews();
+      SystemUpdateFocus(pLight);
+    } break;
 
-			SelectAndFocusNone(false);
-			StartTracking(LC_TRACK_START_LEFT);
-			Light = new lcLight(m_fTrack[0], m_fTrack[1], m_fTrack[2], (float)tmp[0], (float)tmp[1], (float)tmp[2]);
-			Light->GetTarget()->Select (true, true, false);
-			Light->m_Next = m_ActiveModel->m_Lights;
-			Light->SetUniqueName(m_ActiveModel->m_Lights, "Light");
-			m_ActiveModel->m_Lights = Light;
-			UpdateSelection();
-			UpdateAllViews();
-			SystemUpdateFocus(Light);
-		} break;
-
-		case LC_ACTION_CAMERA:
-		{
-			Vector3 tmp = UnprojectPoint(Vector3(x+1.0f, y-1.0f, 0.9f), m_ActiveView->GetViewpoint()->mWorldView, ProjectionMatrix, m_ActiveView->mViewport);
-			SelectAndFocusNone(false);
-			StartTracking(LC_TRACK_START_LEFT);
-
-			lcCamera* pCamera = new lcCamera(Vector3(m_fTrack[0], m_fTrack[1], m_fTrack[2]), tmp);
-			pCamera->SetUniqueName(m_ActiveModel->m_Cameras, "Camera");
-			m_ActiveModel->AddCamera(pCamera);
-			pCamera->m_Target->Select (true, true, false);
-			UpdateSelection();
-			UpdateAllViews();
-			SystemUpdateFocus(pCamera);
-		} break;
+    case LC_ACTION_CAMERA:
+    {
+	  Vector3 tmp = UnprojectPoint(Vector3(x+1.0f, y-1.0f, 0.9f), ModelView, Projection, Viewport);
+      SelectAndFocusNone(false);
+      StartTracking(LC_TRACK_START_LEFT);
+      Camera* pCamera = new Camera(m_fTrack[0], m_fTrack[1], m_fTrack[2], tmp[0], tmp[1], tmp[2], m_pCameras);
+      pCamera->GetTarget ()->Select (true, true, false);
+      UpdateSelection();
+      UpdateAllViews();
+      SystemUpdateFocus(pCamera);
+    } break;
 
 		case LC_ACTION_MOVE:
 		{
-			if (m_ActiveModel->AnyObjectsSelected())
+			bool sel = false;
+
+			for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+			{
+				if (pPiece->IsSelected())
+				{
+					sel = true;
+					break;
+				}
+			}
+
+			if (!sel)
+			{
+				for (Camera* pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+				{
+					if (pCamera->IsSelected())
+					{
+						sel = true;
+						break;
+					}
+				}
+			}
+
+			if (!sel)
+			{
+				for (Light* pLight = m_pLights; pLight; pLight = pLight->m_pNext)
+				{
+					if (pLight->IsSelected())
+					{
+						sel = true;
+						break;
+					}
+				}
+			}
+
+			if (sel)
 			{
 				StartTracking(LC_TRACK_START_LEFT);
 				m_OverlayDelta = Vector3(0.0f, 0.0f, 0.0f);
@@ -8113,13 +7773,14 @@ void Project::OnLeftButtonDown(View* view, int x, int y, bool bControl, bool bSh
 
 		case LC_ACTION_ROTATE:
 		{
-			for (lcPiece* Piece = m_ActiveModel->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
+			Piece* pPiece;
+
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 			{
-				if (Piece->IsSelected())
+				if (pPiece->IsSelected())
 				{
 					StartTracking(LC_TRACK_START_LEFT);
 					m_OverlayDelta = Vector3(0.0f, 0.0f, 0.0f);
-					m_MouseSnapLeftover = Vector3(0.0f, 0.0f, 0.0f);
 					break;
 				}
 			}
@@ -8137,7 +7798,6 @@ void Project::OnLeftButtonDown(View* view, int x, int y, bool bControl, bool bSh
 		case LC_ACTION_ROLL:
 		case LC_ACTION_PAN:
 		case LC_ACTION_ROTATE_VIEW:
-		case LC_ACTION_ORBIT:
 		{
 			StartTracking(LC_TRACK_START_LEFT);
 		} break;
@@ -8149,25 +7809,34 @@ void Project::OnLeftButtonDoubleClick(View* view, int x, int y, bool bControl, b
 	if (SetActiveView(view))
 		return;
 
-	// todo: check if this needs to be done here.
-	Vector3 point = UnprojectPoint(Vector3((float)x, (float)y, 0.9f), m_ActiveView->GetViewpoint()->mWorldView, m_ActiveView->GetProjectionMatrix(), m_ActiveView->mViewport);
+	int Viewport[4] = { 0, 0, view->GetWidth(), view->GetHeight() };
+	float Aspect = (float)Viewport[2]/(float)Viewport[3];
+	Camera* Cam = view->m_Camera;
+
+	Matrix44 ModelView, Projection;
+	ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+	Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
+
+	Vector3 point = UnprojectPoint(Vector3((float)x, (float)y, 0.9f), ModelView, Projection, Viewport);
 	m_fTrack[0] = point[0]; m_fTrack[1] = point[1]; m_fTrack[2] = point[2];
 
-	lcObject* Object = FindObjectFromPoint(x, y);
+	Object* Closest = FindObjectFromPoint(view, x, y);
 
+//  if (m_nCurAction == LC_ACTION_SELECT) 
+  {
     SelectAndFocusNone(bControl);
 
-	if (Object != NULL)
-      switch (Object->GetType ())
+    if (Closest != NULL)
+      switch (Closest->GetType ())
       {
         case LC_OBJECT_PIECE:
         {
-          lcPiece* pPiece = (lcPiece*)Object;
+          Piece* pPiece = (Piece*)Closest;
           pPiece->Select (true, true, false);
-          lcGroup* pGroup = pPiece->GetTopGroup();
+          Group* pGroup = pPiece->GetTopGroup();
 
           if (pGroup != NULL)
-            for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+            for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
               if (pPiece->GetTopGroup() == pGroup)
                 pPiece->Select (true, false, false);
         } break;
@@ -8177,13 +7846,14 @@ void Project::OnLeftButtonDoubleClick(View* view, int x, int y, bool bControl, b
         case LC_OBJECT_LIGHT:
         case LC_OBJECT_LIGHT_TARGET:
         {
-          Object->Select (true, true, bControl);
+          Closest->Select (true, true, bControl);
         } break;
       }
 
-	UpdateSelection();
-	UpdateAllViews();
-	SystemUpdateFocus(Object);
+    UpdateSelection();
+    UpdateAllViews();
+    SystemUpdateFocus(Closest);
+  }
 }
 
 void Project::OnLeftButtonUp(View* view, int x, int y, bool bControl, bool bShift)
@@ -8193,25 +7863,27 @@ void Project::OnLeftButtonUp(View* view, int x, int y, bool bControl, bool bShif
 		// Dragging a new piece from the tree.
 		if (m_nCurAction == LC_ACTION_INSERT)
 		{
-			if ((x > 0) && (x < m_ActiveView->GetWidth()) && (y > 0) && (y < m_ActiveView->GetHeight()))
+			if ((x > 0) && (x < view->GetWidth()) && (y > 0) && (y < view->GetHeight()))
 			{
 				Vector3 Pos;
 				Vector4 Rot;
 
-				GetPieceInsertPosition(x, y, Pos, Rot);
+				GetPieceInsertPosition(view, x, y, Pos, Rot);
 
-				lcPiece* pPiece = new lcPiece(g_App->m_PiecePreview->m_Selection);
-				pPiece->Initialize(Pos[0], Pos[1], Pos[2], m_ActiveModel->m_CurFrame, g_App->m_SelectedColor);
+				Piece* pPiece = new Piece(m_pCurPiece);
+				pPiece->Initialize(Pos[0], Pos[1], Pos[2], m_nCurStep, m_nCurFrame, m_nCurColor);
 
-				pPiece->ChangeKey(m_ActiveModel->m_CurFrame, false, Rot, LC_PK_ROTATION);
-				pPiece->UpdatePosition(m_ActiveModel->m_CurFrame);
+				pPiece->ChangeKey(m_nCurStep, false, false, Rot, LC_PK_ROTATION);
+				pPiece->ChangeKey(m_nCurFrame, true, false, Rot, LC_PK_ROTATION);
+				pPiece->UpdatePosition(m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation);
 
 				SelectAndFocusNone(false);
-				pPiece->SetUniqueName(m_ActiveModel->m_Pieces, pPiece->m_PieceInfo->m_strDescription);
-				m_ActiveModel->AddPiece(pPiece);
+				pPiece->CreateName(m_pPieces);
+				AddPiece(pPiece);
+				pPiece->CalculateConnections(m_pConnections, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, false, true);
 				pPiece->Select (true, true, false);
 				UpdateSelection();
-				SystemPieceComboAdd(g_App->m_PiecePreview->m_Selection->m_strDescription);
+				SystemPieceComboAdd(m_pCurPiece->m_strDescription);
 				SystemUpdateFocus(pPiece);
 
 				if (m_nSnap & LC_DRAW_MOVE)
@@ -8220,26 +7892,10 @@ void Project::OnLeftButtonUp(View* view, int x, int y, bool bControl, bool bShif
 					m_RestoreAction = false;
 				}
 			}
-		}
-		else if (m_nCurAction == LC_ACTION_PAINT)
-		{
-			// Dragging a color from the color list.
-			lcObject* Object = FindObjectFromPoint(x, y);
 
-			if (Object && (Object->GetType() == LC_OBJECT_PIECE))
-			{
-				lcPiece* pPiece = (lcPiece*)Object;
-
-				if (pPiece->m_Color != g_App->m_SelectedColor)
-				{
-					pPiece->m_Color = g_App->m_SelectedColor;
-
-					SetModifiedFlag(true);
-					CheckPoint("Painting");
-					SystemUpdateFocus(NULL);
-					UpdateAllViews();
-				}
-			}
+			m_pCurPiece->DeRef();
+			m_pCurPiece = m_PreviousPiece;
+			m_PreviousPiece = NULL;
 		}
 	}
 
@@ -8258,7 +7914,15 @@ void Project::OnMiddleButtonDown(View* view, int x, int y, bool bControl, bool b
 	m_nDownY = y;
 	m_bTrackCancel = false;
 
-	Vector3 point = UnprojectPoint(Vector3((float)x, (float)y, 0.9f), m_ActiveView->GetViewpoint()->mWorldView, m_ActiveView->GetProjectionMatrix(), m_ActiveView->mViewport);
+	int Viewport[4] = { 0, 0, view->GetWidth(), view->GetHeight() };
+	float Aspect = (float)Viewport[2]/(float)Viewport[3];
+	Camera* Cam = view->m_Camera;
+
+	Matrix44 ModelView, Projection;
+	ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+	Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
+
+	Vector3 point = UnprojectPoint(Vector3((float)x, (float)y, 0.9f), ModelView, Projection, Viewport);
 	m_fTrack[0] = point[0]; m_fTrack[1] = point[1]; m_fTrack[2] = point[2];
 
 	if (Sys_KeyDown(KEY_ALT))
@@ -8293,7 +7957,15 @@ void Project::OnRightButtonDown(View* view, int x, int y, bool bControl, bool bS
 	m_nDownY = y;
 	m_bTrackCancel = false;
 
-	Vector3 point = UnprojectPoint(Vector3((float)x, (float)y, 0.9f), m_ActiveView->GetViewpoint()->mWorldView, m_ActiveView->GetProjectionMatrix(), m_ActiveView->mViewport);
+	int Viewport[4] = { 0, 0, view->GetWidth(), view->GetHeight() };
+	float Aspect = (float)Viewport[2]/(float)Viewport[3];
+	Camera* Cam = view->m_Camera;
+
+	Matrix44 ModelView, Projection;
+	ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+	Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
+
+	Vector3 point = UnprojectPoint(Vector3((float)x, (float)y, 0.9f), ModelView, Projection, Viewport);
 	m_fTrack[0] = point[0]; m_fTrack[1] = point[1]; m_fTrack[2] = point[2];
 
 	if (Sys_KeyDown(KEY_ALT))
@@ -8306,20 +7978,49 @@ void Project::OnRightButtonDown(View* view, int x, int y, bool bControl, bool bS
 	{
 		case LC_ACTION_MOVE:
 		{
-			if (m_ActiveModel->AnyObjectsSelected())
-			{
+			bool sel = false;
+
+			for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				if (pPiece->IsSelected())
+				{
+					sel = true;
+					break;
+				}
+
+			if (!sel)
+			for (Camera* pCamera = m_pCameras; pCamera; pCamera = pCamera->m_pNext)
+				if (pCamera->IsSelected())
+				{
+					sel = true;
+					break;
+				}
+
+			if (!sel)
+			for (Light* pLight = m_pLights; pLight; pLight = pLight->m_pNext)
+				if (pLight->IsSelected())
+				{
+					sel = true;
+					break;
+				}
+
+			if (sel)
+      {
 				StartTracking(LC_TRACK_START_RIGHT);
-				m_fTrack[0] = m_fTrack[1] = m_fTrack[2] = 0.0f;
- 			}
+        m_fTrack[0] = m_fTrack[1] = m_fTrack[2] = 0.0f;
+      }
 		} break;
 
 		case LC_ACTION_ROTATE:
 		{
-			if (m_ActiveModel->AnyPiecesSelected())
-			{
-				StartTracking(LC_TRACK_START_RIGHT);
-				m_fTrack[0] = m_fTrack[1] = m_fTrack[2] = 0.0f;
-			}
+			Piece* pPiece;
+
+			for (pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				if (pPiece->IsSelected())
+				{
+					StartTracking(LC_TRACK_START_RIGHT);
+          m_fTrack[0] = m_fTrack[1] = m_fTrack[2] = 0.0f;
+					break;
+				}
 		} break;
 
 		case LC_ACTION_ZOOM:
@@ -8341,9 +8042,7 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 	if ((m_nTracking == LC_TRACK_NONE) && (m_nCurAction != LC_ACTION_INSERT))
 	{
 		if (m_OverlayActive)
-		{
-			MouseUpdateOverlays(x, y);
-		}
+			MouseUpdateOverlays(view, x, y);
 
 		return;
 	}
@@ -8354,8 +8053,17 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 	if (m_nTracking == LC_TRACK_START_LEFT)
 		m_nTracking = LC_TRACK_LEFT;
 
-	Vector3 tmp = UnprojectPoint(Vector3((float)x, (float)y, 0.9f), m_ActiveView->GetViewpoint()->mWorldView, m_ActiveView->GetProjectionMatrix(), m_ActiveView->mViewport);
 	float ptx, pty, ptz;
+
+	int Viewport[4] = { 0, 0, view->GetWidth(), view->GetHeight() };
+	float Aspect = (float)Viewport[2]/(float)Viewport[3];
+	Camera* Cam = view->m_Camera;
+
+	Matrix44 ModelView, Projection;
+	ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+	Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
+
+	Vector3 tmp = UnprojectPoint(Vector3((float)x, (float)y, 0.9f), ModelView, Projection, Viewport);
 	ptx = tmp[0]; pty = tmp[1]; ptz = tmp[2];
 
 	switch (m_nCurAction)
@@ -8364,15 +8072,15 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 		{
 			int ptx = x, pty = y;
 
-			if (ptx >= m_ActiveView->mViewport[0] + m_ActiveView->mViewport[2])
-				ptx = m_ActiveView->mViewport[0] + m_ActiveView->mViewport[2] - 1;
-			else if (ptx <= m_ActiveView->mViewport[0])
-				ptx = m_ActiveView->mViewport[0] + 1;
+			if (ptx >= Viewport[0] + Viewport[2])
+				ptx = Viewport[0] + Viewport[2] - 1;
+			else if (ptx <= Viewport[0])
+				ptx = Viewport[0] + 1;
 
-			if (pty >= m_ActiveView->mViewport[1] + m_ActiveView->mViewport[3])
-				pty = m_ActiveView->mViewport[1] + m_ActiveView->mViewport[3] - 1;
-			else if (pty <= m_ActiveView->mViewport[1])
-				pty = m_ActiveView->mViewport[1] + 1;
+			if (pty >= Viewport[1] + Viewport[3])
+				pty = Viewport[1] + Viewport[3] - 1;
+			else if (pty <= Viewport[1])
+				pty = Viewport[1] + 1;
 
 			m_fTrack[0] = (float)ptx;
 			m_fTrack[1] = (float)pty;
@@ -8393,17 +8101,18 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 
 		case LC_ACTION_SPOTLIGHT:
 		{
-			float mouse = 10.0f/(21 - g_App->m_MouseSensitivity);
-			Vector3 Delta((ptx - m_fTrack[0])*mouse, (pty - m_fTrack[1])*mouse, (ptz - m_fTrack[2])*mouse);
+			float mouse = 10.0f/(21 - m_nMouse);
+			float delta[3] = { (ptx - m_fTrack[0])*mouse,
+				(pty - m_fTrack[1])*mouse, (ptz - m_fTrack[2])*mouse };
 
 			m_fTrack[0] = ptx;
 			m_fTrack[1] = pty;
 			m_fTrack[2] = ptz;
 			
-			lcLight* Light = m_ActiveModel->m_Lights;
+			Light* pLight = m_pLights;
 
-			Light->Move(1, false, Delta);
-			Light->UpdatePosition(1);
+			pLight->Move (1, m_bAnimation, false, delta[0], delta[1], delta[2]);
+			pLight->UpdatePosition (1, m_bAnimation);
 
 			SystemUpdateFocus(NULL);
 			UpdateAllViews();
@@ -8411,19 +8120,20 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 
 		case LC_ACTION_CAMERA:
 		{
-			float mouse = 10.0f/(21 - g_App->m_MouseSensitivity);
-			Vector3 Delta((ptx - m_fTrack[0])*mouse, (pty - m_fTrack[1])*mouse, (ptz - m_fTrack[2])*mouse);
+			float mouse = 10.0f/(21 - m_nMouse);
+			float delta[3] = { (ptx - m_fTrack[0])*mouse,
+				(pty - m_fTrack[1])*mouse, (ptz - m_fTrack[2])*mouse };
 
 			m_fTrack[0] = ptx;
 			m_fTrack[1] = pty;
 			m_fTrack[2] = ptz;
 			
-			lcCamera* Camera = m_ActiveModel->m_Cameras;
-			while (Camera->m_Next != NULL)
-				Camera = (lcCamera*)Camera->m_Next;
+			Camera* pCamera = m_pCameras;
+			while (pCamera->m_pNext != NULL)
+				pCamera = pCamera->m_pNext;
 
-			Camera->Move(1, false, Delta);
-			Camera->UpdatePosition(1);
+			pCamera->Move (1, m_bAnimation, false, delta[0], delta[1], delta[2]);
+			pCamera->UpdatePosition(1, m_bAnimation);
 
 			SystemUpdateFocus(NULL);
 			UpdateAllViews();
@@ -8435,15 +8145,14 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 			if ((x == m_nDownX) && (y == m_nDownY))
 				break;
 
-			float Sensitivity = 0.25f / (LC_MAX_MOUSE_SENSITIVITY+1 - g_App->m_MouseSensitivity);
-			lcViewpoint* Viewpoint = m_ActiveView->GetViewpoint();
+			Camera* Camera = view->m_Camera;
 			bool Redraw;
 
-			if (m_OverlayActive && (m_OverlayMode != LC_OVERLAY_XYZ))
+			if ((m_OverlayActive && (m_OverlayMode != LC_OVERLAY_XYZ)) || (!Camera->IsSide()))
 			{
-				Vector3 ScreenX = Vector3(Viewpoint->mViewWorld[0]);
-				Vector3 ScreenY = Vector3(Viewpoint->mViewWorld[1]);
-
+				Vector3 ScreenX = Cross3(Camera->GetTargetPosition() - Camera->GetEyePosition(), Camera->GetUpVector());
+				Vector3 ScreenY = Camera->GetUpVector();
+				ScreenX.Normalize();
 				Vector3 Dir1, Dir2;
 				bool SingleDir = true;
 
@@ -8490,12 +8199,18 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 
 				if ((m_nSnap & LC_DRAW_GLOBAL_SNAP) == 0)
 				{
-					lcObject* Focus = GetFocusObject();
+					Object* Focus = GetFocusObject();
 
 					if ((Focus != NULL) && Focus->IsPiece())
 					{
-						Axis1 = Mul30(Dir1, ((lcPiece*)Focus)->m_ModelWorld);
-						Axis2 = Mul30(Dir2, ((lcPiece*)Focus)->m_ModelWorld);
+						float Rot[4];
+						((Piece*)Focus)->GetRotation(Rot);
+
+						Matrix33 RotMat;
+						RotMat.CreateFromAxisAngle(Vector3(Rot[0], Rot[1], Rot[2]), Rot[3] * LC_DTOR);
+
+						Axis1 = Mul(Dir1, RotMat);
+						Axis2 = Mul(Dir2, RotMat);
 					}
 				}
 
@@ -8559,8 +8274,8 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 					}
 				}
 
-				MoveX *= (float)(x - m_nDownX) * Sensitivity;
-				MoveY *= (float)(y - m_nDownY) * Sensitivity;
+				MoveX *= (float)(x - m_nDownX) * 0.25f / (21 - m_nMouse);
+				MoveY *= (float)(y - m_nDownY) * 0.25f / (21 - m_nMouse);
 
 				m_nDownX = x;
 				m_nDownY = y;
@@ -8572,9 +8287,9 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 			else
 			{
 				// 3D movement.
-				Vector3 ScreenX = Vector3(Viewpoint->mViewWorld[0]);
-				Vector3 ScreenY = Vector3(Viewpoint->mViewWorld[1]);
-				Vector3 ScreenZ = Vector3(Viewpoint->mViewWorld[2]);
+				Vector3 ScreenZ = (Camera->GetTargetPosition() - Camera->GetEyePosition()).Normalize();
+				Vector3 ScreenX = Cross3(ScreenZ, Camera->GetUpVector());
+				Vector3 ScreenY = Camera->GetUpVector();
 
 				Vector3 TotalMove;
 
@@ -8582,8 +8297,8 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 				{
 					Vector3 MoveX, MoveY;
 
-					MoveX = ScreenX * (float)(x - m_nDownX) * Sensitivity;
-					MoveY = ScreenY * (float)(y - m_nDownY) * Sensitivity;
+					MoveX = ScreenX * (float)(x - m_nDownX) * 0.25f / (float)(21 - m_nMouse);
+					MoveY = ScreenY * (float)(y - m_nDownY) * 0.25f / (float)(21 - m_nMouse);
 
 					TotalMove = MoveX + MoveY + m_MouseSnapLeftover;
 				}
@@ -8591,7 +8306,7 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 				{
 					Vector3 MoveZ;
 
-					MoveZ = ScreenZ * (float)(y - m_nDownY) * Sensitivity;
+					MoveZ = ScreenZ * (float)(y - m_nDownY) * 0.25f / (float)(21 - m_nMouse);
 
 					TotalMove = MoveZ + m_MouseSnapLeftover;
 				}
@@ -8609,15 +8324,14 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 		
 		case LC_ACTION_ROTATE:
 		{
-			float Sensitivity = 36.0f / (LC_MAX_MOUSE_SENSITIVITY+1 - g_App->m_MouseSensitivity);
-			lcViewpoint* Viewpoint = m_ActiveView->GetViewpoint();
+			Camera* Camera = m_ActiveView->m_Camera;
 			bool Redraw;
 
-			if (m_OverlayActive && (m_OverlayMode != LC_OVERLAY_XYZ))
+			if ((m_OverlayActive && (m_OverlayMode != LC_OVERLAY_XYZ)) || (!Camera->IsSide()))
 			{
-				Vector3 ScreenX = Vector3(Viewpoint->mViewWorld[0]);
-				Vector3 ScreenY = Vector3(Viewpoint->mViewWorld[1]);
-
+				Vector3 ScreenX = Cross3(Camera->GetTargetPosition() - Camera->GetEyePosition(), Camera->GetUpVector());
+				Vector3 ScreenY = Camera->GetUpVector();
+				ScreenX.Normalize();
 				Vector3 Dir1, Dir2;
 				bool SingleDir = true;
 
@@ -8632,7 +8346,6 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 
 				switch (OverlayMode)
 				{
-				default:
 				case LC_OVERLAY_X:
 					Dir1 = Vector3(1, 0, 0);
 					break;
@@ -8719,22 +8432,22 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 					}
 				}
 
-				MoveX *= (float)(x - m_nDownX) * Sensitivity;
-				MoveY *= (float)(y - m_nDownY) * Sensitivity;
+				MoveX *= (float)(x - m_nDownX) * 36.0f / (21 - m_nMouse);
+				MoveY *= (float)(y - m_nDownY) * 36.0f / (21 - m_nMouse);
 
 				m_nDownX = x;
 				m_nDownY = y;
 
 				Vector3 Delta = MoveX + MoveY + m_MouseSnapLeftover;
-				Redraw = RotateSelectedObjects(Delta, m_MouseSnapLeftover, true);
+				Redraw = RotateSelectedObjects(Delta, m_MouseSnapLeftover);
 				m_MouseTotalDelta += Delta;
 			}
 			else
 			{
 				// 3D movement.
-				Vector3 ScreenX = Vector3(Viewpoint->mViewWorld[0]);
-				Vector3 ScreenY = Vector3(Viewpoint->mViewWorld[1]);
-				Vector3 ScreenZ = Vector3(Viewpoint->mViewWorld[2]);
+				Vector3 ScreenZ = (Camera->GetTargetPosition() - Camera->GetEyePosition()).Normalize();
+				Vector3 ScreenX = Cross3(ScreenZ, Camera->GetUpVector());
+				Vector3 ScreenY = Camera->GetUpVector();
 
 				Vector3 Delta;
 
@@ -8742,8 +8455,8 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 				{
 					Vector3 MoveX, MoveY;
 
-					MoveX = ScreenX * (float)(x - m_nDownX) * Sensitivity;
-					MoveY = ScreenY * (float)(y - m_nDownY) * Sensitivity;
+					MoveX = ScreenX * (float)(x - m_nDownX) * 36.0f / (float)(21 - m_nMouse);
+					MoveY = ScreenY * (float)(y - m_nDownY) * 36.0f / (float)(21 - m_nMouse);
 
 					Delta = MoveX + MoveY + m_MouseSnapLeftover;
 				}
@@ -8751,7 +8464,7 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 				{
 					Vector3 MoveZ;
 
-					MoveZ = ScreenZ * (float)(y - m_nDownY) * Sensitivity;
+					MoveZ = ScreenZ * (float)(y - m_nDownY) * 36.0f / (float)(21 - m_nMouse);
 
 					Delta = MoveZ + m_MouseSnapLeftover;
 				}
@@ -8759,7 +8472,7 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 				m_nDownX = x;
 				m_nDownY = y;
 
-				Redraw = RotateSelectedObjects(Delta, m_MouseSnapLeftover, true);
+				Redraw = RotateSelectedObjects(Delta, m_MouseSnapLeftover);
 				m_MouseTotalDelta += Delta;
 			}
 
@@ -8773,7 +8486,7 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 			if (m_nDownY == y)
 				break;
 
-			m_ActiveView->GetViewpoint()->Zoom(m_ActiveModel->m_CurFrame, m_bAddKeys, x - m_nDownX, y - m_nDownY);
+			m_ActiveView->m_Camera->DoZoom(y - m_nDownY, m_nMouse, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys);
 			m_nDownY = y;
 			SystemUpdateFocus(NULL);
 			UpdateAllViews();
@@ -8794,7 +8507,7 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 			if ((m_nDownY == y) && (m_nDownX == x))
 				break;
 
-			m_ActiveView->GetViewpoint()->Pan(m_ActiveModel->m_CurFrame, m_bAddKeys, x - m_nDownX, y - m_nDownY);
+			m_ActiveView->m_Camera->DoPan(x - m_nDownX, y - m_nDownY, m_nMouse, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys);
 			m_nDownX = x;
 			m_nDownY = y;
 			SystemUpdateFocus(NULL);
@@ -8806,49 +8519,44 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 			if ((m_nDownY == y) && (m_nDownX == x))
 				break;
 
-			m_ActiveView->GetViewpoint()->Rotate(m_ActiveModel->m_CurFrame, m_bAddKeys, x - m_nDownX, y - m_nDownY);
-
-			m_nDownX = x;
-			m_nDownY = y;
-			SystemUpdateFocus(NULL);
-			UpdateAllViews();
-		} break;
-
-		case LC_ACTION_ORBIT:
-		{
-			if ((m_nDownY == y) && (m_nDownX == x))
-				break;
-
-			lcViewpoint* Viewpoint = m_ActiveView->GetViewpoint();
-			Vector3 Target;
-
-			if (m_ActiveView->GetCamera1())
-				Target = Viewpoint->mTarget;
-			else
+			// We can't rotate the side cameras.
+			if (m_ActiveView->m_Camera->IsSide())
 			{
-				lcObjArray<Vector3> Points;
-				m_ActiveModel->GetPointsOfInterest(Points, Target);
+				float eye[3], target[3], up[3];
+				m_ActiveView->m_Camera->GetEyePos(eye);
+				m_ActiveView->m_Camera->GetTargetPos(target);
+				m_ActiveView->m_Camera->GetUpVec(up);
+				Camera* pCamera = new Camera(eye, target, up, m_pCameras);
+
+				m_ActiveView->m_Camera = pCamera;
+				SystemUpdateCameraMenu(m_pCameras);
+				SystemUpdateCurrentCamera(NULL, pCamera, m_pCameras);
 			}
+
+			float bs[6] = { 10000, 10000, 10000, -10000, -10000, -10000 };
+			for (Piece* pPiece = m_pPieces; pPiece; pPiece = pPiece->m_pNext)
+				if (pPiece->IsSelected())
+					pPiece->CompareBoundingBox(bs);
+			bs[0] = (bs[0]+bs[3])/2;
+			bs[1] = (bs[1]+bs[4])/2;
+			bs[2] = (bs[2]+bs[5])/2;
 
 			switch (m_OverlayMode)
 			{
 				case LC_OVERLAY_XYZ:
-					Viewpoint->mTarget = Target;
-					Viewpoint->Orbit(m_ActiveModel->m_CurFrame, m_bAddKeys, x - m_nDownX, y - m_nDownY);
+					m_ActiveView->m_Camera->DoRotate(x - m_nDownX, y - m_nDownY, m_nMouse, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, bs);
 					break;
 
 				case LC_OVERLAY_X:
-					Viewpoint->mTarget = Target;
-					Viewpoint->Orbit(m_ActiveModel->m_CurFrame, m_bAddKeys, x - m_nDownX, 0);
+					m_ActiveView->m_Camera->DoRotate(x - m_nDownX, 0, m_nMouse, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, bs);
 					break;
 
 				case LC_OVERLAY_Y:
-					Viewpoint->mTarget = Target;
-					Viewpoint->Orbit(m_ActiveModel->m_CurFrame, m_bAddKeys, 0, y - m_nDownY);
+					m_ActiveView->m_Camera->DoRotate(0, y - m_nDownY, m_nMouse, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys, bs);
 					break;
 
 				case LC_OVERLAY_Z:
-					Viewpoint->Roll(m_ActiveModel->m_CurFrame, m_bAddKeys, x - m_nDownX, y - m_nDownY);
+					m_ActiveView->m_Camera->DoRoll(x - m_nDownX, m_nMouse, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys);
 					break;
 			}
 
@@ -8863,7 +8571,7 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 			if (m_nDownX == x)
 				break;
 
-			m_ActiveView->GetViewpoint()->Roll(m_ActiveModel->m_CurFrame, m_bAddKeys, x - m_nDownX, y - m_nDownY);
+			m_ActiveView->m_Camera->DoRoll(x - m_nDownX, m_nMouse, m_bAnimation ? m_nCurFrame : m_nCurStep, m_bAnimation, m_bAddKeys);
 			m_nDownX = x;
 			SystemUpdateFocus(NULL);
 			UpdateAllViews();
@@ -8871,18 +8579,18 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 		/*
     case LC_ACTION_CURVE:
     {
-      float mouse = 10.0f/(21 - g_App->m_MouseSensitivity);
+      float mouse = 10.0f/(21 - m_nMouse);
       float dx = (ptx - m_fTrack[0])*mouse;
       float dy = (pty - m_fTrack[1])*mouse;
       float dz = (ptz - m_fTrack[2])*mouse;
-      lcObject *pObj = NULL;
+      Object *pObj = NULL;
       Curve *pCurve;
 
       m_fTrack[0] = ptx;
       m_fTrack[1] = pty;
       m_fTrack[2] = ptz;
 
-      for (pObj = m_pObjects; pObj != NULL; pObj = pObj->m_Next)
+      for (pObj = m_pObjects; pObj != NULL; pObj = pObj->m_pNext)
 	if (pObj->IsSelected ())
 	  break;
 
@@ -8890,8 +8598,8 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 	break;
       pCurve = (Curve*)pObj;
 
-      pCurve->Move (1, false, dx, dy, dz);
-      pCurve->UpdatePosition(1);
+      pCurve->Move (1, m_bAnimation, false, dx, dy, dz);
+      pCurve->UpdatePosition(1, m_bAnimation);
 
       SystemUpdateFocus(NULL);
       UpdateAllViews();
@@ -8901,13 +8609,21 @@ void Project::OnMouseMove(View* view, int x, int y, bool bControl, bool bShift)
 }
 
 // Check if the mouse is over a different area of the overlay and redraw it.
-void Project::MouseUpdateOverlays(int x, int y)
+void Project::MouseUpdateOverlays(View* view, int x, int y)
 {
-	const float OverlayScale = m_ActiveView->m_OverlayScale;
+	const float OverlayScale = view->m_OverlayScale;
 
 	if (m_nCurAction == LC_ACTION_MOVE)
 	{
 		const float OverlayMoveArrowSize = 1.5f;
+
+		int Viewport[4] = { 0, 0, view->GetWidth(), view->GetHeight() };
+		float Aspect = (float)Viewport[2]/(float)Viewport[3];
+		Camera* Cam = view->m_Camera;
+
+		Matrix44 ModelView, Projection;
+		ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+		Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
 
 		// Array of points for the arrow edges.
 		Vector3 Points[4] =
@@ -8921,14 +8637,18 @@ void Project::MouseUpdateOverlays(int x, int y)
 		// Find the rotation from the focused piece if relative snap is enabled.
 		if ((m_nSnap & LC_DRAW_GLOBAL_SNAP) == 0)
 		{
-			lcObject* Focus = GetFocusObject();
+			Object* Focus = GetFocusObject();
 
 			if ((Focus != NULL) && Focus->IsPiece())
 			{
-				const Matrix44& Mat = ((lcPiece*)Focus)->m_ModelWorld;
+				float Rot[4];
+				((Piece*)Focus)->GetRotation(Rot);
+
+				Matrix33 RotMat;
+				RotMat.CreateFromAxisAngle(Vector3(Rot[0], Rot[1], Rot[2]), Rot[3] * LC_DTOR);
 
 				for (int i = 1; i < 4; i++)
-					Points[i] = Mul30(Points[i], Mat);
+					Points[i] = Mul(Points[i], RotMat);
 			}
 		}
 
@@ -8938,7 +8658,7 @@ void Project::MouseUpdateOverlays(int x, int y)
 		for (i = 1; i < 4; i++)
 			Points[i] += Points[0];
 
-		ProjectPoints(Points, 4, m_ActiveView->GetViewpoint()->mWorldView, m_ActiveView->GetProjectionMatrix(), m_ActiveView->mViewport);
+		ProjectPoints(Points, 4, ModelView, Projection, Viewport);
 
 		// Check if the mouse is over an arrow.
 		for (i = 1; i < 4; i++)
@@ -8946,7 +8666,7 @@ void Project::MouseUpdateOverlays(int x, int y)
 			Vector3 Line = Points[i] - Points[0];
 			Vector3 Vec = Pt - Points[0];
 
-			float u = Dot3(Vec, Line) / LengthSquared(Line);
+			float u = Dot3(Vec, Line) / Line.LengthSquared();
 
 			// Point is outside the line segment.
 			if (u < 0.0f || u > 1.0f)
@@ -8955,7 +8675,7 @@ void Project::MouseUpdateOverlays(int x, int y)
 			// Closest point in the line segment to the mouse.
 			Vector3 Closest = Points[0] + u * Line;
 
-			if (LengthSquared(Closest - Pt) < 100.0f)
+			if ((Closest - Pt).LengthSquared() < 100.0f)
 			{
 				// If we already know the mouse is close to another axis, select a plane.
 				if (Mode != -1)
@@ -9001,23 +8721,30 @@ void Project::MouseUpdateOverlays(int x, int y)
 		const float OverlayRotateRadius = 2.0f;
 
 		// Calculate the distance from the mouse pointer to the center of the sphere.
-		Matrix44 Projection = m_ActiveView->GetProjectionMatrix();
-		const Matrix44& ModelView = m_ActiveView->GetViewpoint()->mWorldView;
+		int Viewport[4] = { 0, 0, view->GetWidth(), view->GetHeight() };
+		float Aspect = (float)Viewport[2]/(float)Viewport[3];
+		Camera* Cam = view->m_Camera;
 
-		Vector3 SegStart = UnprojectPoint(Vector3((float)x, (float)y, 1.0f), ModelView, Projection, m_ActiveView->mViewport);
-		Vector3 SegEnd = UnprojectPoint(Vector3((float)x, (float)y, 0.0f), ModelView, Projection, m_ActiveView->mViewport);
+		Matrix44 ModelView, Projection;
+		ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+		Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
+
+		// Unproject the mouse point against both the front and the back clipping planes.
+		Vector3 SegStart = UnprojectPoint(Vector3((float)x, (float)y, 0.0f), ModelView, Projection, Viewport);
+		Vector3 SegEnd = UnprojectPoint(Vector3((float)x, (float)y, 1.0f), ModelView, Projection, Viewport);
+
 		Vector3 Center(m_OverlayCenter[0], m_OverlayCenter[1], m_OverlayCenter[2]);
 
 		Vector3 Line = SegEnd - SegStart;
 		Vector3 Vec = Center - SegStart;
 
-		float u = Dot3(Vec, Line) / LengthSquared(Line);
+		float u = Dot3(Vec, Line) / Line.LengthSquared();
 
 		// Closest point in the line to the mouse.
 		Vector3 Closest = SegStart + u * Line;
 
 		int Mode = -1;
-		float Distance = Length(Closest - Center);
+		float Distance = (Closest - Center).Length();
 		const float Epsilon = 0.25f * OverlayScale;
 
 		if (Distance > (OverlayRotateRadius * OverlayScale + Epsilon))
@@ -9054,8 +8781,8 @@ void Project::MouseUpdateOverlays(int x, int y)
 
 			if (f >= 0.0f)
 			{
-				lcViewpoint* Viewpoint = m_ActiveView->GetViewpoint();
-				Vector3 ViewDir = Vector3(Viewpoint->mViewWorld[2]);
+				Camera* Cam = view->m_Camera;
+				Vector3 ViewDir = Cam->GetTargetPosition() - Cam->GetEyePosition();
 
 				float u1 = (-b + sqrtf(f)) / (2*a);
 				float u2 = (-b - sqrtf(f)) / (2*a);
@@ -9076,17 +8803,22 @@ void Project::MouseUpdateOverlays(int x, int y)
 					// Find the rotation from the focused piece if relative snap is enabled.
 					if ((m_nSnap & LC_DRAW_GLOBAL_SNAP) == 0)
 					{
-						lcObject* Focus = GetFocusObject();
+						Object* Focus = GetFocusObject();
 
 						if ((Focus != NULL) && Focus->IsPiece())
 						{
-							Matrix44 WorldModel = RotTranInverse(((lcPiece*)Focus)->m_ModelWorld);
-							Dist = Mul30(Dist, WorldModel);
+							float Rot[4];
+							((Piece*)Focus)->GetRotation(Rot);
+
+							Matrix33 RotMat;
+							RotMat.CreateFromAxisAngle(Vector3(Rot[0], Rot[1], Rot[2]), -Rot[3] * LC_DTOR);
+
+							Dist = Mul(Dist, RotMat);
 						}
 					}
 
 					// Check if we're close enough to one of the axis.
-					Dist = Normalize(Dist);
+					Dist.Normalize();
 
 					float dx = fabsf(Dist[0]);
 					float dy = fabsf(Dist[1]);
@@ -9150,13 +8882,17 @@ void Project::MouseUpdateOverlays(int x, int y)
 			UpdateAllViews();
 		}
 	}
-	else if (m_nCurAction == LC_ACTION_ORBIT)
+	else if (m_nCurAction == LC_ACTION_ROTATE_VIEW)
 	{
-		int vw = m_ActiveView->GetWidth();
-		int vh = m_ActiveView->GetHeight();
+		int vx, vy, vw, vh;
 
-		int cx = vw / 2;
-		int cy = vh / 2;
+		vx = 0;
+		vy = 0;
+		vw = view->GetWidth();
+		vh = view->GetHeight();
+
+		int cx = vx + vw / 2;
+		int cy = vy + vh / 2;
 
 		float d = sqrtf((float)((cx - x) * (cx - x) + (cy - y) * (cy - y)));
 		float r = min(vw, vh) * 0.35f;
@@ -9194,7 +8930,7 @@ void Project::ActivateOverlay()
 	}
 	else if ((m_nCurAction == LC_ACTION_ZOOM_REGION) && (m_nTracking == LC_TRACK_START_LEFT))
 		m_OverlayActive = true;
-	else if (m_nCurAction == LC_ACTION_ORBIT)
+	else if (m_nCurAction == LC_ACTION_ROTATE_VIEW)
 		m_OverlayActive = true;
 	else
 		m_OverlayActive = false;
@@ -9208,841 +8944,24 @@ void Project::ActivateOverlay()
 
 void Project::UpdateOverlayScale()
 {
+	// TODO: This is not needed, draw the overlays using an ortho matrix.
 	if (m_OverlayActive)
 	{
-		for (int i = 0; i < m_ViewList.GetSize(); i++)
-			m_ViewList[i]->UpdateOverlayScale();
+		// Calculate the scaling factor by projecting the center to the front plane then
+		// projecting a point close to it back.
+		int Viewport[4] = { 0, 0, m_ActiveView->GetWidth(), m_ActiveView->GetHeight() };
+		float Aspect = (float)Viewport[2]/(float)Viewport[3];
+		Camera* Cam = m_ActiveView->m_Camera;
+
+		Matrix44 ModelView, Projection;
+		ModelView.CreateLookAt(Cam->GetEyePosition(), Cam->GetTargetPosition(), Cam->GetUpVector());
+		Projection.CreatePerspective(Cam->m_fovy, Aspect, Cam->m_zNear, Cam->m_zFar);
+
+		Vector3 Screen = ProjectPoint(m_OverlayCenter, ModelView, Projection, Viewport);
+		Screen[0] += 10.0f;
+		Vector3 Point = UnprojectPoint(Screen, ModelView, Projection, Viewport);
+
+		Vector3 Dist(Point - m_OverlayCenter);
+		m_ActiveView->m_OverlayScale = Dist.Length() * 5.0f;
 	}
-}
-
-// VRML97 and X3DV export is very similar, cause X3D is the successor of VRML97
-// therefore a lot of the export routines can be reused
-// the member variable VRMLdialect used with the following enum has this information
-
-enum 
-{
-	VRML97,
-	X3DV_WITH_RIGID_BODY_PHYSICS
-};
-
-void Project::exportVRML97File(char *filename)
-{
-	exportVRMLFile(filename, VRML97);
-}
-
-void Project::exportX3DVFile(char *filename)
-{
-	exportVRMLFile(filename, X3DV_WITH_RIGID_BODY_PHYSICS);
-}
-
-void Project::writeIndent(FILE* stream)
-{
-	for (int i = 0; i < indent; i++)
-		fprintf(stream, " ");
-}
-
-#define INDENT_INC 2
-
-// routines to write VRML/X3DV shape related commands
-// for details see 
-// http://www.web3d.org/x3d/specifications/vrml/ISO-IEC-14772-VRML97/part1/
-// http://www.web3d.org/x3d/specifications/ISO-IEC-19775-X3DAbstractSpecification/Part01/Architecture.html
-
-void Project::writeVRMLShapeBegin(FILE *stream, unsigned long currentColor, bool blackLines)
-{
-	// http://www.web3d.org/x3d/specifications/ISO-IEC-19775-X3DAbstractSpecification_Revision1_to_Part1/Part01/components/rigid_physics.html#CollidableShape
-
-	if (VRMLdialect == X3DV_WITH_RIGID_BODY_PHYSICS)
-	{
-		numFaceColors = 0;
-		faceColors = (int *) malloc(1);
-
-		writeIndent(stream);
-		fprintf(stream, "DEF CollidableShape%d CollidableShape {\n", numDEF++);
-		indent += INDENT_INC;
-		writeIndent(stream);
-		fprintf(stream, "shape ");
-	}
-	else
-		writeIndent(stream);
-
-	// http://www.web3d.org/x3d/specifications/vrml/ISO-IEC-14772-VRML97/part1/nodesRef.html#Shape
-
-	fprintf(stream, "Shape {\n");
-	indent += INDENT_INC;
-
-	// http://www.web3d.org/x3d/specifications/vrml/ISO-IEC-14772-VRML97/part1/nodesRef.html#Appearance
-	// http://www.web3d.org/x3d/specifications/vrml/ISO-IEC-14772-VRML97/part1/nodesRef.html#Material
-	writeIndent(stream);
-	fprintf(stream, "appearance Appearance {\n");
-	indent += INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "material Material {\n");
-	indent += INDENT_INC;
-	if (blackLines)
-	{
-		writeIndent(stream);
-		fprintf(stream, "diffuseColor 0 0 0\n");
-		writeIndent(stream);
-		fprintf(stream, "emissiveColor 0 0 0\n");
-	}
-	else
-	{
-		writeIndent(stream);
-		fprintf(stream, "diffuseColor %g %g %g\n", g_ColorList[currentColor].Value[0], g_ColorList[currentColor].Value[1], g_ColorList[currentColor].Value[2]);
-		if (currentColor > 13 && currentColor < 22) 
-		{
-			writeIndent(stream);
-			fprintf(stream, "transparency 0.5\n");
-		}
-	}
-	indent -= INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "}\n");                                
-	indent -= INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "}\n");                                
-	
-	if (blackLines)
-	{
-		// http://www.web3d.org/x3d/specifications/vrml/ISO-IEC-14772-VRML97/part1/nodesRef.html#IndexedLineSet
-		writeIndent(stream);
-		fprintf(stream, "geometry IndexedLineSet {\n");
-		indent += INDENT_INC;
-	}
-	else
-	{
-		// http://www.web3d.org/x3d/specifications/ISO-IEC-19775-X3DAbstractSpecification/Part01/components/rendering.html#TriangleSet
-		// http://www.web3d.org/x3d/specifications/vrml/ISO-IEC-14772-VRML97/part1/nodesRef.html#IndexedFaceSet
-		writeIndent(stream);
-		if (VRMLdialect == X3DV_WITH_RIGID_BODY_PHYSICS)
-			fprintf(stream, "geometry TriangleSet {\n");
-		else
-			fprintf(stream, "geometry IndexedFaceSet {\n");
-		indent += INDENT_INC;
-		writeIndent(stream);
-		fprintf(stream, "solid FALSE\n");
-		if (VRMLdialect != X3DV_WITH_RIGID_BODY_PHYSICS)
-		{
-			writeIndent(stream);
-			fprintf(stream, "creaseAngle 0.79\n");
-		}
-	}
-}
-
-void Project::writeVRMLShapeEnd(FILE *stream)
-{
-	indent -= INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "}\n");
-	indent -= INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "}\n");
-}
-
-// search for vertex (vertex[0], vertex[1], vertex[2]) in coords and give
-// back index (-1 if not found)
-
-int Project::searchForVertex(float* vertex) 
-{
-	for (int i = 0; i < numCoords; i++)
-		if (coords[i * 3] == vertex[0])
-			if (coords[i * 3 + 1] == vertex[1])
-				if (coords[i * 3 + 2] == vertex[2])
-					return i;
-	return -1;
-}
-
-// routines to collect VRML indexed polygon mesh data or X3DV triangle mesh data
-
-template<class type> void Project::generateMeshData(type* info, float *pos, lcPiece* pPiece, int numVertices, int currentColor)
-{
-	Matrix matrix(pPiece->m_AxisAngle, pPiece->m_Position);
-
-	bool rigidBody = (VRMLdialect == X3DV_WITH_RIGID_BODY_PHYSICS);
-
-	if (rigidBody)
-	{
-		// IndexedLineSet not supported by xj3d RigidBody node
-		if (numVertices == 2)
-			return;
-
-		int maxJ = 1;
-		// write 2 triangles instead of 1 quad
-		if (numVertices == 4)
-			maxJ = 2;
-
-		lcMesh* Mesh = pPiece->m_PieceInfo->m_Mesh;
-		float* verts = (float*)Mesh->m_VertexBuffer->MapBuffer(GL_READ_ONLY_ARB);
-
-		for (int j = 0; j < maxJ; j++) 
-		{
-			for (int i = 0; i < 3; i++)
-			{
-				int index = i;
-				if (j == 1)
-				{
-					switch (i) {
-						case 0:
-							index = 2;
-							break;
-						case 1:
-							index = 0;
-							break;
-						case 2:
-							index = 3;
-							break;
-					}
-				}
-				float *localVertex = &verts[info[index] * 3];
-				float vertex[3];
-				matrix.TransformPoint(vertex, localVertex);
-				coords = (float *) realloc(coords, (numCoords + 1) * 3 * sizeof(float));
-				coords[numCoords * 3 + 0] = vertex[1] - pos[1];
-				coords[numCoords * 3 + 1] = vertex[2] - pos[2];
-				coords[numCoords * 3 + 2] = vertex[0] - pos[0];
-				numCoords++;
-			}
-			faceColors = (int *) realloc(faceColors, (numFaceColors + 1) * sizeof(int));
-			faceColors[numFaceColors] = currentColor;
-			numFaceColors++;
-
-		}
-		Mesh->m_VertexBuffer->UnmapBuffer();
-		return;
-	}			
-
-	lcMesh* Mesh = pPiece->m_PieceInfo->m_Mesh;
-	float* verts = (float*)Mesh->m_VertexBuffer->MapBuffer(GL_READ_ONLY_ARB);
-
-	for (int i = 0; i < numVertices; i++)
-	{
-		float *localVertex = &verts[info[i] * 3];
-		int index = searchForVertex(localVertex);
-		if (index == -1)
-		{
-			float vertex[3];
-			if (rigidBody)
-				matrix.TransformPoint(vertex, localVertex);
-			else
-			{
-				vertex[0] = localVertex[0];
-				vertex[1] = localVertex[1];
-				vertex[2] = localVertex[2];
-			}
-			coords = (float *) realloc(coords, (numCoords + 1) * 3 * sizeof(float));
-			coords[numCoords * 3 + 0] = vertex[1] - (rigidBody ? pos[1] : 0);
-			coords[numCoords * 3 + 1] = vertex[2] - (rigidBody ? pos[2] : 0);
-			coords[numCoords * 3 + 2] = vertex[0] - (rigidBody ? pos[0] : 0);
-			index = numCoords;
-			numCoords++;
-		}
-		coordIndices = (int *) realloc(coordIndices, (numCoordIndices + 1) * sizeof(int));
-		coordIndices[numCoordIndices] = index;
-		numCoordIndices++;
-	}
-	coordIndices = (int *) realloc(coordIndices, (numCoordIndices + 1) * sizeof(int));
-	coordIndices[numCoordIndices] = -1;
-	numCoordIndices++;
-	faceColors = (int *) realloc(faceColors, (numFaceColors + 1) * sizeof(int));
-	faceColors[numFaceColors] = currentColor;
-	numFaceColors++;
-
-	Mesh->m_VertexBuffer->UnmapBuffer();
-}
-
-// write collected mesh data
-
-void Project::writeVRMLShapeMeshBegin(FILE *stream)
-{
-	writeIndent(stream);
-
-	fprintf(stream, "coord Coordinate {\n");
-	indent += INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "point [\n");
-	indent += INDENT_INC;
-}
-
-void Project::writeVRMLShapeMeshData(FILE *stream)
-{
-	for (int i = 0; i < numCoords; i++) 
-	{
-		writeIndent(stream);
-		fprintf(stream, "%f %f %f\n", coords[i * 3] * VRMLScale, coords[i * 3 + 1] * VRMLScale, coords[i * 3 + 2] * VRMLScale);
-	}
-}
-
-void Project::writeVRMLShapeMeshEnd(FILE *stream)
-{
-	indent -= INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "]\n");
-	indent -= INDENT_INC;
-	writeIndent(stream);
-	fprintf(stream, "}\n");
-
-	
-	if (VRMLdialect == X3DV_WITH_RIGID_BODY_PHYSICS)
-	{
-		writeIndent(stream);
-		fprintf(stream, "color ColorRGBA {\n"); 
-		indent += INDENT_INC;		
-		writeIndent(stream);
-		fprintf(stream, "color [\n"); 
-		indent += INDENT_INC;		
-
-		for (int i = 0; i < numFaceColors; i++)
-		{
-			int currentColor = faceColors[i];
-			writeIndent(stream);
-			fprintf(stream, "%g %g %g %g\n", g_ColorList[currentColor].Value[0], g_ColorList[currentColor].Value[1], g_ColorList[currentColor].Value[2], LC_COLOR_TRANSLUCENT(currentColor) ? 0.5f : 1.0f);
-			writeIndent(stream);
-			fprintf(stream, "%g %g %g %g\n", g_ColorList[currentColor].Value[0], g_ColorList[currentColor].Value[1], g_ColorList[currentColor].Value[2], LC_COLOR_TRANSLUCENT(currentColor) ? 0.5f : 1.0f);
-			writeIndent(stream);
-			fprintf(stream, "%g %g %g %g\n", g_ColorList[currentColor].Value[0], g_ColorList[currentColor].Value[1], g_ColorList[currentColor].Value[2], LC_COLOR_TRANSLUCENT(currentColor) ? 0.5f : 1.0f);
-		}
-
-		indent -= INDENT_INC;		
-		writeIndent(stream);
-		fprintf(stream, "]\n"); 
-
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fprintf(stream, "}\n");
-	}
-	else
-	{
-		writeIndent(stream);
-		fprintf(stream, "coordIndex [\n"); 
-		indent += INDENT_INC;
-
-		for (int i = 0; i < numCoordIndices; i ++) 
-		{
-			writeIndent(stream);
-			fprintf(stream, "%d\n", coordIndices[i]);
-		}
-
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fprintf(stream, "]\n");
-	}
-}
-
-// routine to run through leoCADs internal data space, collect and write data
-
-template<class type> void Project::writeVRMLShapes(type color, FILE *stream, int coordinateCounter, lcPiece* pPiece, unsigned short group, float *pos, bool beginAndEnd)
-{ 
-	lcMesh* Mesh = pPiece->m_PieceInfo->m_Mesh;
-	void* indices = Mesh->m_IndexBuffer->MapBuffer(GL_READ_ONLY_ARB);
-
-	for (int SectionIndex = 0; SectionIndex < Mesh->m_SectionCount; SectionIndex++)
-	{
-		lcMeshSection* Section = &Mesh->m_Sections[SectionIndex];
-		const char* colname;
-		type currentColor;
-
-		numCoords = 0;
-		coords = (float *)malloc(1);
-		numCoordIndices = 0;
-		coordIndices = (int *)malloc(1);
-
-		if ((Section->ColorIndex == LC_COLOR_DEFAULT) || (Section->ColorIndex == LC_COLOR_EDGE))
-		{
-			colname = g_ColorList[color].Name;
-			currentColor = color;
-		}
-		else
-		{
-			colname = g_ColorList[Section->ColorIndex].Name;
-			currentColor = Section->ColorIndex;
-		}
-
-		type* IndexPtr = (type*)((char*)indices + Section->IndexOffset);
-
-		if (Section->PrimitiveType == GL_TRIANGLES)
-		{
-			for (u32 i = 0; i < Section->IndexCount; i += 3)
-			{
-				generateMeshData(IndexPtr, pos, pPiece, 3, currentColor);
-				IndexPtr += 3;
-			}
-
-			writeIndent(stream);
-			char altname[256];
-			strcpy(altname, colname);
-			while (char* ptr = (char*)strchr(altname, ' '))
-				*ptr = '_';
-			fprintf(stream, "# %s\n", altname);
-
-			bool rigidBody = (VRMLdialect == X3DV_WITH_RIGID_BODY_PHYSICS);
-
-			bool writeBegin = ((!rigidBody) || (beginAndEnd && (SectionIndex == 0))); 
-			bool writeEnd = ((!rigidBody) || (beginAndEnd && (SectionIndex == (Mesh->m_SectionCount - 1))));
-
-			if (writeBegin) 
-			{
-				writeVRMLShapeBegin(stream, currentColor, false);
-				writeVRMLShapeMeshBegin(stream);
-			}
-
-			writeVRMLShapeMeshData(stream);
-
-			if (writeEnd)
-			{
-				writeVRMLShapeMeshEnd(stream);
-				writeVRMLShapeEnd(stream);
-			}
-		}
-		else
-		{
-			// IndexedLineSet not supported in RigidBody node for the xj3d browser 8-(
-			if (VRMLdialect != X3DV_WITH_RIGID_BODY_PHYSICS) 
-			{
-				writeIndent(stream);
-				fprintf(stream, "# lines of color %s\n", colname);
-			}
-
-			for (u32 i = 0; i < Section->IndexCount; i += 3)
-			{
-				generateMeshData(IndexPtr, pos, pPiece, 2, currentColor);
-				IndexPtr += 2;
-			}
-
-			// IndexedLineSet not supported in RigidBody node for the xj3d browser 8-(
-			if (VRMLdialect != X3DV_WITH_RIGID_BODY_PHYSICS) 
-			{
-				writeVRMLShapeBegin(stream, currentColor, true);
-				writeVRMLShapeMeshBegin(stream);
-				writeVRMLShapeMeshData(stream);
-				writeVRMLShapeMeshEnd(stream);
-				writeVRMLShapeEnd(stream);
-			}
-		}
-
-		free(coords);
-		free(coordIndices);
-	}
-
-	Mesh->m_IndexBuffer->UnmapBuffer();
-}
-
-// The X3DV export need to "melt together" faces of different pieces into one triangleSet
-// based on the leocad "piece -> group" menupoint, otherwise the rigid body simulation would simulate all pieces seperatly
-// Additionally a center of mass is required for the X3DV export 
-// Unfortunalty, the origin of a piece in leocad is not usefull for use as center of mass
-// So the exporter use the mid of the boundingbox of all pieces in a group as center of mass
-// the needed information is stored in the following compound datatype
-
-class GroupInfo
-{
-public:
-	lcGroup *group;
-	float minBoundingBox[3];
-	float maxBoundingBox[3];
-	char  groupname[65];
-	bool  firstData;
-	lcPiece *firstPiece; 
-	lcPiece *lastPiece; 
-};
-
-// routines to account a boundingbox 
-
-template<class type> void Project::getMinMaxData(type* info, lcPiece* pPiece, GroupInfo* groupInfo)
-{
-	Matrix matrix(pPiece->m_AxisAngle, pPiece->m_Position);
-
-	lcMesh* Mesh = pPiece->m_PieceInfo->m_Mesh;
-	float* verts = (float*)Mesh->m_VertexBuffer->MapBuffer(GL_READ_ONLY_ARB);
-
-	for (int i = 0; i < 3; i++)
-	{
-		float vertex[3];
-		float *localVertex = &verts[info[i] * 3];
-		matrix.TransformPoint(vertex, localVertex);
-
-		for (int j = 0; j < 3; j++)
-		{
-			if (groupInfo->firstData)
-			{
-				groupInfo->minBoundingBox[j] = vertex[j];
-				groupInfo->maxBoundingBox[j] = vertex[j];
-			}
-			if (vertex[j] < groupInfo->minBoundingBox[j])
-				groupInfo->minBoundingBox[j] = vertex[j];
-			if (vertex[j] > groupInfo->maxBoundingBox[j])
-				groupInfo->maxBoundingBox[j] = vertex[j];
-		}
-		groupInfo->firstData = false;
-	}
-
-	Mesh->m_VertexBuffer->UnmapBuffer();
-}
-
-template<class type> void Project::getMinMax(type col, lcPiece* piece, unsigned short group, GroupInfo* groupInfo)
-{ 
-	lcMesh* Mesh = piece->m_PieceInfo->m_Mesh;
-	void* indices = Mesh->m_IndexBuffer->MapBuffer(GL_READ_ONLY_ARB);
-
-	for (int SectionIndex = 0; SectionIndex < Mesh->m_SectionCount; SectionIndex++)
-	{
-		lcMeshSection* Section = &Mesh->m_Sections[SectionIndex];
-		type* IndexPtr = (type*)((char*)indices + Section->IndexOffset);
-
-		// Skip lines.
-		if (Section->PrimitiveType != GL_TRIANGLES)
-			continue;
-
-		for (u32 i = 0; i < Section->IndexCount; i += 3)
-		{
-			getMinMaxData(IndexPtr, piece, groupInfo);
-			IndexPtr += 3;
-		}
-	}
-
-	Mesh->m_IndexBuffer->UnmapBuffer();
-}
-
-// Pieces without TopGroup represent Pieces without "Piece->Group" in LeoCAD
-// The handleAsGroup function is used with "if" in loops over pieces, 
-// to run the if/loop content for either only single pieces or all pieces part
-// of a LeoCAD "Piece->Group"
-
-bool Project::handleAsGroup(lcPiece* pPiece, GroupInfo groupInfo)
-{
-	if (pPiece->GetTopGroup() == NULL)
-	{
-		if (groupInfo.firstPiece == pPiece)
-			return true;
-	}
-	else
-	{
-		if (pPiece->GetTopGroup() == groupInfo.group)
-			return true;
-	}
-	return false;
-}
-
-// main routine to export VRML97 or X3DV files
-
-void Project::exportVRMLFile(char *filename, int dialect)
-{
-	numDEF = 0;
-	indent = 0;
-	int coordinateCounter = 1;
-	char buf[LC_MAXPATH], *ptr;
-	FILE* stream = fopen(filename, "wt");
-	lcPiece* pPiece;
-	bool rigidBody = (dialect == X3DV_WITH_RIGID_BODY_PHYSICS);
-	VRMLdialect = dialect;	
-	strcpy(buf, m_strPathName);
-	ptr = strrchr(buf, '\\');
-	if (ptr)
-		ptr++;
-	else
-	{
-		ptr = strrchr(buf, '/');
-		if (ptr)
-			ptr++;
-		else
-			ptr = buf;
-	}
-
-	// write header
-	switch (VRMLdialect)
-	{
-	case VRML97:
-		fputs("#VRML V2.0 utf8\n", stream);
-		break;
-	case X3DV_WITH_RIGID_BODY_PHYSICS:
-		fputs("#X3D V3.0 utf8\n", stream);
-		fputs("PROFILE Immersive\n", stream);
-		fputs("COMPONENT RigidBodyPhysics:2\n", stream);
-		break;
-	}
-
-	// write leading comments
-	fputs("# Model exported from LeoCAD\n", stream);
-	if (strlen(buf) != 0)
-		fprintf(stream,"# Original name: %s\n", ptr);
-	if (strlen(m_strAuthor))
-		fprintf(stream, "# Author: %s\n", m_strAuthor);
-
-	// write leading once needed X3DV commands
-	if (rigidBody)
-	{
-		fputs("\n", stream);
-		writeIndent(stream);
-		fputs("Group {\n", stream);
-		indent += INDENT_INC;
-		writeIndent(stream);
-		fputs("children [\n", stream);
-		indent += INDENT_INC;
-	}
-
-	// initalise "melt together" group information
-	lcObjArray<GroupInfo> allGroups;
-	GroupInfo groupObject;
-	for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
-	{
-		lcGroup *topGroup = pPiece->GetTopGroup();
-		int foundGroup = false;;
-		if (topGroup != NULL)
-		{
-			for (int i = 0; i < allGroups.GetSize(); i++)
-				if (allGroups[i].group == topGroup)
-				{
-					allGroups[i].lastPiece = pPiece;
-					foundGroup = true;
-				} 
-		}
-		if (!foundGroup)
-		{
-			groupObject.group = topGroup;
-			groupObject.firstPiece = pPiece;
-			groupObject.lastPiece = pPiece;
-			groupObject.firstData = true;
-			if (topGroup != NULL)
-				snprintf(groupObject.groupname, 64, "%s", topGroup->m_strName);
-			else
-				snprintf(groupObject.groupname, 64, "%s", (char*)pPiece->m_Name);
-			allGroups.Add(groupObject);
-		}
-	}
-
-	// account bounding box information
-	for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
-	{
-		u32 color = pPiece->m_Color;
-		PieceInfo *pInfo = pPiece->m_PieceInfo;
-		for (int j = 0; j < allGroups.GetSize(); j++)
-		{
-			if (handleAsGroup(pPiece, allGroups[j]))
-			{
-				unsigned short group;
-
-				for (group = 0; group < pInfo->m_nGroupCount; group++)
-				{
-					if (pInfo->m_Mesh->m_IndexType == GL_UNSIGNED_INT)
-					{
-						unsigned long col = color;
-						getMinMax(col, pPiece, group, &(allGroups[j]));
-					}
-					else
-					{
-						unsigned short col = color;
-						getMinMax(col, pPiece, group, &(allGroups[j]));
-					}
-				}
-			}
-		}
-	}		
-
-	// write main VRML97/X3DV data
-	for (int j = 0; j < allGroups.GetSize(); j++)
-	{
-		for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
-		{
-			bool beginGroup = ((allGroups[j].group == NULL) || (allGroups[j].firstPiece == pPiece));
-			bool endGroup = ((allGroups[j].group == NULL) || (allGroups[j].lastPiece == pPiece));
-
-			if (handleAsGroup(pPiece, allGroups[j]))
-			{				
-				PieceInfo* pInfo = pPiece->m_PieceInfo;
-				u32 color = pPiece->m_Color;
-			
-				strcpy(buf, pPiece->m_Name);
-				for (unsigned int i = 0; i < strlen(buf); i++)
-					if ((buf[i] == '#') || (buf[i] == ' '))
-						buf[i] = '_';
-
-				writeIndent(stream);
-				fprintf(stream, "# %s\n", buf);
-
-				Vector3 pos;
-				Vector4 rot;
-
-				switch (VRMLdialect)
-				{
-				case VRML97:
-					pos = pPiece->m_Position;
-					rot = pPiece->m_AxisAngle;
-					writeIndent(stream);
-					fprintf(stream, "Transform {\n");
-					indent += INDENT_INC;
-					writeIndent(stream);
-					fprintf(stream, "translation %g %g %g\n", pos[1] * VRMLScale, pos[2] * VRMLScale, pos[0] * VRMLScale);
-					writeIndent(stream);
-					fprintf(stream, "rotation %g %g %g %g\n", rot[1], rot[2], rot[0], rot[3] * M_PI / 180.0);
-					writeIndent(stream);
-					fprintf(stream, "children [\n");
-					indent += INDENT_INC;
-					break;
-				case X3DV_WITH_RIGID_BODY_PHYSICS:
-					for (int k = 0; k < 3; k++)
-						pos[k] = allGroups[j].minBoundingBox[k] + (allGroups[j].maxBoundingBox[k] - allGroups[j].minBoundingBox[k]) / 2.0f;
-				}
-
-				unsigned short group;
-
-				if (pInfo->m_nGroupCount > 0)
-				{
-					if (beginGroup && rigidBody)
-					{
-						if (pInfo->m_Mesh->m_IndexType == GL_UNSIGNED_INT)
-						{
-							unsigned long col = color;
-							writeVRMLShapeBegin(stream, col, false);
-							writeVRMLShapeMeshBegin(stream);
-						}
-						else
-						{
-							unsigned short col = color;
-							writeVRMLShapeBegin(stream, col, false);
-							writeVRMLShapeMeshBegin(stream);
-						}
-					}
-
-					for (group = 0; group < pInfo->m_nGroupCount; group++)
-					{
-						writeIndent(stream);
-						fprintf(stream, "# group %d\n",(int)group);
-						if (pInfo->m_Mesh->m_IndexType == GL_UNSIGNED_INT)
-						{
-							unsigned long col = color;
-							writeVRMLShapes(col, stream, coordinateCounter, pPiece, group, pos, !rigidBody);
-						}
-						else
-						{
-							unsigned short col = color;
-							writeVRMLShapes(col, stream, coordinateCounter, pPiece, group, pos, !rigidBody);
-						}
-					}
-
-					if (endGroup && rigidBody)
-					{
-						writeVRMLShapeMeshEnd(stream);
-						writeVRMLShapeEnd(stream);
-					}
-				}
-
-				if (!rigidBody)
-				{
-					indent -= INDENT_INC;
-					writeIndent(stream);
-					fprintf(stream, "]\n");
-				}
-
-				if (endGroup || (!rigidBody))
-				{
-					indent -= INDENT_INC;
-					writeIndent(stream);
-					fprintf(stream, "} # endShape\n");
-				}
-
-				coordinateCounter++;
-			}
-
-		}
-	}
-
-	if (rigidBody)
-	{
-		// write trailing once needed X3DV commands
-        	// http://www.xj3d.org/extensions/rigid_physics.html
-        	// http://www.web3d.org/x3d/specifications/ISO-IEC-19775-X3DAbstractSpecification_Revision1_to_Part1/Part01/components/rigid_physics.html
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fputs("]\n", stream);
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fputs("}\n", stream);
-
-		writeIndent(stream);
-		fputs("DEF RigidBodyCollection1 RigidBodyCollection {\n", stream);
-		indent += INDENT_INC;
-		writeIndent(stream);
-		fputs("bodies [\n", stream);
-		indent += INDENT_INC;
-		coordinateCounter = 0;
-		for (int j = 0; j < allGroups.GetSize(); j++)
-		{
-			for (pPiece = m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
-			{
-				bool beginGroup = ((allGroups[j].group == NULL) || (allGroups[j].firstPiece == pPiece));
-				bool endGroup = ((allGroups[j].group == NULL) || (allGroups[j].lastPiece == pPiece));
-
-				if (handleAsGroup(pPiece, allGroups[j]))
-				{				
-					float pos[3];
-
-					if (VRMLdialect == X3DV_WITH_RIGID_BODY_PHYSICS)
-					{
-						if (beginGroup)
-						{
-							for (int k = 0; k < 3; k++)
-								pos[k] = allGroups[j].minBoundingBox[k] + (allGroups[j].maxBoundingBox[k] - allGroups[j].minBoundingBox[k]) / 2.0f;
-							writeIndent(stream);
-							fprintf(stream, "# %s\n", allGroups[j].groupname);
-							writeIndent(stream);
-							fprintf(stream, "RigidBody {\n");
-							indent += INDENT_INC;
-							writeIndent(stream);
-							fprintf(stream, "position %g %g %g\n", pos[1] * VRMLScale, pos[2] * VRMLScale, pos[0] * VRMLScale);
-							writeIndent(stream);
-							fprintf(stream, "geometry USE CollidableShape%d\n", coordinateCounter);
-						}
-						if (endGroup)
-						{
-							indent -= INDENT_INC;
-							writeIndent(stream);
-							fprintf(stream, "}\n");
-						}
-					}
-				}
-
-			}
-			coordinateCounter++;
-		}
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fputs("]\n", stream);
-
-		writeIndent(stream);
-		fputs("collider DEF CollisionCollection1 CollisionCollection", stream);
-		fputs(" {\n", stream);
-		indent += INDENT_INC;                
-		writeIndent(stream);
-		fputs("collidables [\n", stream);  
-		indent += INDENT_INC;                
-		for (int i = 0; i < numDEF; i++)
-		{
-			writeIndent(stream);
-			fprintf(stream, "USE CollidableShape%d\n", i);
-		}
-		indent -= INDENT_INC;                
-		writeIndent(stream);
-		fputs("]\n", stream);
-		indent -= INDENT_INC;                
-		writeIndent(stream);
-		fputs("}\n", stream);
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fputs("}\n", stream);
-
-		writeIndent(stream);
-		fputs("DEF CollisionSensor1 CollisionSensor {\n", stream);
-		indent += INDENT_INC;
-		writeIndent(stream);
-		fputs("collidables USE CollisionCollection1\n", stream);
-		indent -= INDENT_INC;
-		writeIndent(stream);
-		fputs("}\n", stream);
-		fputs("\n", stream);
-		fputs("ROUTE CollisionSensor1.contacts TO RigidBodyCollection1.set_contacts\n", stream);
-	}
-	
-	if (indent != 0)
-		fprintf(stderr, "internal error: indent %d\n", indent);
-	fclose(stream);
 }

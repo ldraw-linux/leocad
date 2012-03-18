@@ -3,41 +3,34 @@
 
 #include <string.h>
 
-// TODO: move this to another place
+// FIXME: move this to another place
 #ifdef WIN32
+#include "stdafx.h"
 typedef CWnd* BaseWndXID;
-struct BaseMenuItem
+typedef struct
 {
   CWnd* wnd;
   int index;
   UINT command;
-};
+} BaseMenuItem;
 #endif
 
 #ifdef LC_LINUX
 #include <gtk/gtk.h>
 typedef GtkWidget* BaseWndXID;
-struct BaseMenuItem
+typedef struct
 {
   GtkWidget* widget;
   GtkAccelGroup* accel;
-};
+} BaseMenuItem;
 #endif
 
 #ifdef LC_MACOSX
 typedef void* BaseWndXID;
-struct BaseMenuItem
+typedef struct
 {
 	void* Dummy;
-};
-#endif
-
-#ifdef LC_IPHONE
-typedef void* BaseWndXID;
-struct BaseMenuItem
-{
-	void* Dummy;
-};
+} BaseMenuItem;
 #endif
 
 // =============================================================================
@@ -90,7 +83,7 @@ class BaseWnd
     { m_pXID = id; }
 
 #ifdef LC_LINUX 
-  // TODO: remove
+  // FIXME: remove
   operator GtkWidget* () const
     { return m_pXID; }
 #endif

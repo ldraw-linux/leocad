@@ -7,7 +7,6 @@
 
 class View;
 class CCADDoc;
-class CCADPreviewView;
 
 class CCADView : public CView
 {
@@ -35,7 +34,6 @@ public:
 	virtual void OnEndPrinting(CDC* pDC, CPrintInfo* pInfo);
 	virtual void OnPrint(CDC* pDC, CPrintInfo* pInfo);
 	virtual void OnActivateView(BOOL bActivate, CView* pActivateView, CView* pDeactiveView);
-	virtual void OnEndPrintPreview(CDC* pDC, CPrintInfo* pInfo, POINT point, CCADPreviewView* pView);
 	virtual LRESULT WindowProc(UINT message, WPARAM wParam, LPARAM lParam);
 	//}}AFX_VIRTUAL
 
@@ -47,13 +45,11 @@ public:
 	virtual void Dump(CDumpContext& dc) const;
 #endif
 
-	View* m_pView;
-
 // Generated message map functions
 protected:
 	HCURSOR m_hCursor;
+	View* m_pView;
 
-	BOOL DoPrintPreview(UINT nIDResource, CView* pPrintView, CRuntimeClass* pPreviewViewClass, CPrintPreviewState* pState);
 	//{{AFX_MSG(CCADView)
 	afx_msg int OnCreate(LPCREATESTRUCT lpCreateStruct);
 	afx_msg void OnDestroy();
@@ -68,12 +64,9 @@ protected:
 	//}}AFX_MSG
 	afx_msg void OnDropDown(NMHDR* pNotifyStruct, LRESULT* pResult);
 	afx_msg LONG OnSetStep(UINT lParam, LONG wParam);
-	afx_msg LONG OnAutoPan(UINT lParam, LONG wParam);
 	afx_msg LONG OnChangeCursor(UINT lParam, LONG wParam);
 
 	DECLARE_MESSAGE_MAP()
-
-	friend class CCADPreviewView;
 };
 
 #ifndef _DEBUG  // debug version in CADView.cpp

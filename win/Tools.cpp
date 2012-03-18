@@ -1,22 +1,24 @@
 // Tools.cpp : Misc. routines
 //
 
-#include "lc_global.h"
+#include "stdafx.h"
 #include "Tools.h"
 #include "resource.h"
 #include "PrefSht.h"
 #include "lc_application.h"
-#include "lc_colors.h"
-#include "lc_model.h"
 #include <math.h>
 #include <shlobj.h>
-#include "lc_mesh.h"
+#include "config.h"
 
-#if LC_HAVE_JPEGLIB
+#ifdef LC_HAVE_3DSFTK
+#pragma comment(lib, "3dsftk")
+#endif
+
+#ifdef LC_HAVE_JPEGLIB
 #pragma comment(lib, "jpeglib")
 #endif
 
-#if LC_HAVE_PNGLIB
+#ifdef LC_HAVE_PNGLIB
 #pragma comment(lib, "libpng")
 #pragma comment(lib, "zlib")
 #endif
@@ -254,17 +256,15 @@ BOOL FolderBrowse(CString *strFolder, LPCSTR lpszTitle, HWND hWndOwner)
 	return FALSE;
 } 
 
-#if LC_HAVE_3DSFTK
+#ifdef LC_HAVE_3DSFTK
 
 #include "3dsftk\inc\3dsftk.h"
+#include "globals.h"
 #include "project.h"
 #include "piece.h"
 #include "pieceinf.h"
 #include "matrix.h"
 
-#pragma comment(lib, "3dsftk")
-
-// TODO: rewrite, and look for another 3ds file library
 void Export3DStudio() 
 {
 	CFileDialog dlg(FALSE, "*.dat",NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT,
@@ -414,9 +414,9 @@ void Export3DStudio()
 		InitMaterial3ds(&matr);
 		sprintf(matr->name, "Material%02d", i);
 
-		matr->ambient.r = matr->diffuse.r = g_ColorList[i].Value[0];
-		matr->ambient.g = matr->diffuse.g = g_ColorList[i].Value[1];
-		matr->ambient.b = matr->diffuse.b = g_ColorList[i].Value[2];
+		matr->ambient.r = matr->diffuse.r = (float)FlatColorArray[i][0]/255;
+		matr->ambient.g = matr->diffuse.g = (float)FlatColorArray[i][1]/255;
+		matr->ambient.b = matr->diffuse.b = (float)FlatColorArray[i][2]/255;
 		matr->specular.r = 0.9f;
 		matr->specular.g = 0.9f;
 		matr->specular.b = 0.9f;
@@ -444,74 +444,97 @@ void Export3DStudio()
 		ReleaseMaterial3ds(&matr);
 	}
 
-	lcPiece* pPiece;
+	Piece* pPiece;
 	int objcount = 0;
-	u32* facemats = new u32[lcNumColors];
-	for (pPiece = project->m_ActiveModel->m_Pieces; pPiece; pPiece = (lcPiece*)pPiece->m_Next)
+	for (pPiece = project->m_pPieces; pPiece; pPiece = pPiece->m_pNext)
 	{
 		// MESH OBJECT
 		mesh3ds *mobj = NULL;
-		UINT facecount = 0, i, j = 0;
-		memset(facemats, 0, sizeof(u32)*lcNumColors);
+		UINT facecount = 0, i, j = 0, c, col;
+		UINT facemats[LC_COL_DEFAULT+1];
+		memset(facemats, 0, sizeof(facemats));
 
-		lcMesh* Mesh = pPiece->m_PieceInfo->m_Mesh;
-
-		if (Mesh->m_IndexType == GL_UNSIGNED_INT)
+		PieceInfo* pInfo = pPiece->GetPieceInfo();
+		if (pInfo->m_nFlags & LC_PIECE_LONGDATA_INDICES)
 			continue; // 3DS can't handle this
 
 		// count number of faces used
-		for (int SectionIndex = 0; SectionIndex < Mesh->m_SectionCount; SectionIndex++)
+		for (c = 0; c < pInfo->m_nGroupCount; c++)
 		{
-			lcMeshSection* Section = &Mesh->m_Sections[SectionIndex];
+			WORD* info = (WORD*)pInfo->m_pGroups[c].drawinfo;
+			col = *info;
+			info++;
 
-			// Skip lines.
-			if (Section->PrimitiveType != GL_TRIANGLES)
-				continue;
+			while (col--)
+			{
+				i = *info;
+				info++;
 
-			facecount += Section->IndexCount/3;
-			facemats[Section->ColorIndex] += Section->IndexCount/3;
+				facecount += (*info)*2/4;
+				facemats[i] += (*info)*2/4;
+				info += *info + 1;
+				facecount += (*info)/3;
+				facemats[i] += (*info)/3;
+				info += *info + 1;
+				info += *info + 1;
+			}
 		}
 
-		InitMeshObj3ds(&mobj, (unsigned short)Mesh->m_VertexCount, facecount, InitNoExtras3ds);
+		InitMeshObj3ds(&mobj, (unsigned short)pInfo->m_nVertexCount, facecount, InitNoExtras3ds);
 		sprintf(mobj->name, "Piece%d", objcount);
 		objcount++;
 
-		float tmp[3];
-		Matrix mat(pPiece->m_AxisAngle, pPiece->m_Position);
-		float* verts = (float*)Mesh->m_VertexBuffer->MapBuffer(GL_READ_ONLY_ARB);
-		for (int c = 0; c < Mesh->m_VertexCount; c++)
+		float tmp[3], pos[3], rot[4];
+		pPiece->GetPosition(pos);
+		pPiece->GetRotation(rot);
+		Matrix mat(rot, pos);
+		for (c = 0; c < pInfo->m_nVertexCount; c++)
 		{
-			mat.TransformPoint(tmp, &verts[c*3]);
+			mat.TransformPoint(tmp, &pInfo->m_fVertexArray[c*3]);
 			mobj->vertexarray[c].x = tmp[0];
 			mobj->vertexarray[c].y = tmp[1];
 			mobj->vertexarray[c].z = tmp[2];
 		}
-		Mesh->m_VertexBuffer->UnmapBuffer();
 
-		void* indices = Mesh->m_IndexBuffer->MapBuffer(GL_READ_ONLY_ARB);
-		for (int SectionIndex = 0; SectionIndex < Mesh->m_SectionCount; SectionIndex++)
+		for (c = 0; c < pInfo->m_nGroupCount; c++)
 		{
-			lcMeshSection* Section = &Mesh->m_Sections[SectionIndex];
+			WORD* info = (WORD*)pInfo->m_pGroups[c].drawinfo;
+			col = *info;
+			info++;
 
-			// Skip lines.
-			if (Section->PrimitiveType != GL_TRIANGLES)
-				continue;
-
-			u16* IndexPtr = (u16*)((char*)indices + Section->IndexOffset);
-			for (int i = 0; i < Section->IndexCount; i += 3)
+			while (col--)
 			{
-				mobj->facearray[j].v1 = IndexPtr[i+0];
-				mobj->facearray[j].v2 = IndexPtr[i+1];
-				mobj->facearray[j].v3 = IndexPtr[i+2];
-				mobj->facearray[j].flag = FaceABVisable3ds|FaceBCVisable3ds|FaceCAVisable3ds;
-				j++;
+				info++;
+				
+				for (i = 0; i < *info; i+=4)
+				{
+					mobj->facearray[j].v1 = info[i+1];
+					mobj->facearray[j].v2 = info[i+2];
+					mobj->facearray[j].v3 = info[i+3];
+					mobj->facearray[j].flag = FaceABVisable3ds|FaceBCVisable3ds|FaceCAVisable3ds;
+					j++;
+					mobj->facearray[j].v1 = info[i+3];
+					mobj->facearray[j].v2 = info[i+4];
+					mobj->facearray[j].v3 = info[i+1];
+					mobj->facearray[j].flag = FaceABVisable3ds|FaceBCVisable3ds|FaceCAVisable3ds;
+					j++;
+				}
+				info += *info + 1;
+				for (i = 0; i < *info; i+=3)
+				{
+					mobj->facearray[j].v1 = info[i+1];
+					mobj->facearray[j].v2 = info[i+2];
+					mobj->facearray[j].v3 = info[i+3];
+					mobj->facearray[j].flag = FaceABVisable3ds|FaceBCVisable3ds|FaceCAVisable3ds;
+					j++;
+				}
+				info += *info + 1;
+				info += *info + 1;
 			}
 		}
 
-		Mesh->m_IndexBuffer->UnmapBuffer();
-
 		i = 0;
-		for (j = 0; j < (u32)lcNumColors; j++)
+		for (j = 0; j < LC_COL_DEFAULT+1; j++)
 			if (facemats[j])
 				i++;
 
@@ -520,33 +543,56 @@ void Export3DStudio()
 
 		i = 0;
 
-		for (j = 0; j < (u32)lcNumColors; j++)
+		for (j = 0; j < LC_COL_DEFAULT+1; j++)
 		{
 			if (facemats[j])
 			{
 				InitMatArrayIndex3ds (mobj, i, facemats[j]);
-				sprintf(mobj->matarray[i].name, "Material%02d", j == LC_COLOR_DEFAULT ? pPiece->m_Color : j);
+				sprintf(mobj->matarray[i].name, "Material%02d", j == LC_COL_DEFAULT ? pPiece->GetColor() : j);
 				mobj->matarray[i].nfaces = facemats[j];
 
 				UINT curface = 0;
 				facecount = 0;
 
-				for (int SectionIndex = 0; SectionIndex < Mesh->m_SectionCount; SectionIndex++)
+				for (c = 0; c < pInfo->m_nGroupCount; c++)
 				{
-					lcMeshSection* Section = &Mesh->m_Sections[SectionIndex];
+					WORD* info = (WORD*)pInfo->m_pGroups[c].drawinfo;
+					col = *info;
+					info++;
 
-					// Skip lines.
-					if (Section->PrimitiveType != GL_TRIANGLES)
-						continue;
-
-					if (j != Section->ColorIndex)
-						continue;
-
-					for (int k = 0; k < Section->IndexCount; k += 3)
+					while (col--)
 					{
-						mobj->matarray[i].faceindex[facecount] = curface;
-						facecount++;
-						curface++;
+						if (j == *info)
+						{
+							info++;
+							for (UINT k = 0; k < *info; k += 4)
+							{
+								mobj->matarray[i].faceindex[facecount] = curface;
+								facecount++;
+								curface++;
+								mobj->matarray[i].faceindex[facecount] = curface;
+								facecount++;
+								curface++;
+							}
+						
+							info += *info + 1;
+							for (UINT k = 0; k < *info; k += 3)
+							{
+								mobj->matarray[i].faceindex[facecount] = curface;
+								facecount++;
+								curface++;
+							}
+							info += *info + 1;
+						}
+						else
+						{
+							info++;
+							curface += (*info)*2/4;
+							info += *info + 1;
+							curface += (*info)/3;
+							info += *info + 1;
+						}
+						info += *info + 1;
 					}
 				}
 
@@ -562,7 +608,6 @@ void Export3DStudio()
 		RelMeshObj3ds(&mobj);
 	}
 
-	delete[] facemats;
 /*	
 	InitMeshObj3ds(&mobj, 12, 8, InitNoExtras3ds);
 	SetPoint(mobj->vertexarray[0],  -46.62F,   -2.31F, -103.57F);
@@ -767,4 +812,4 @@ void Export3DStudio()
 {
 }
 
-#endif // LC_HAVE_3DSFTK
+#endif

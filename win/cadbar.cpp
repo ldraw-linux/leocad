@@ -2,13 +2,12 @@
 //
 //////////////////////////////////////////////////////////////////////
 
-#include "lc_global.h"
+#include "stdafx.h"
 #include "leocad.h"
 #include "CADBar.h"
 #include "StepPop.h"
 #include "project.h"
 #include "lc_application.h"
-#include "bmpmenu.h"
 
 #ifdef _DEBUG
 #undef THIS_FILE
@@ -18,7 +17,7 @@ static char THIS_FILE[]=__FILE__;
 
 #define ID_STATUS_PROGRESS  17234
 
-BEGIN_MESSAGE_MAP(CCADStatusBar, CStatusBar)
+BEGIN_MESSAGE_MAP(CCADStatusBar, CMFCStatusBar)
 	//{{AFX_MSG_MAP(CCADStatusBar)
 	ON_WM_LBUTTONDOWN()
 	ON_WM_RBUTTONDOWN()
@@ -44,7 +43,7 @@ CCADStatusBar::~CCADStatusBar()
 BOOL CCADStatusBar::Create(CWnd *pParentWnd, DWORD dwStyle, UINT nID)
 {
 	// Default creation
-	BOOL bCreatedOK = CStatusBar::Create(pParentWnd,dwStyle,nID);
+	BOOL bCreatedOK = CMFCStatusBar::Create(pParentWnd,dwStyle,nID);
 
 	if (bCreatedOK)
 	{
@@ -70,27 +69,15 @@ void CCADStatusBar::OnLButtonDown(UINT nFlags, CPoint point)
 	if (rect.PtInRect(point))
 	{
 		ClientToScreen(&point);
-		CMenu menuPopups;
-		menuPopups.LoadMenu(IDR_POPUPS);
-		CTitleMenu TitleMenu;
-		TitleMenu.Attach(menuPopups.GetSubMenu(7)->Detach());
 
-		int SXY, SZ, SA;
-		lcGetActiveProject()->GetSnapIndex(&SXY, &SZ, &SA);
+		CMenu PopupMenus;
+		PopupMenus.LoadMenu(IDR_POPUPS);
 
-		TitleMenu.SetMenuTitle(ID_SNAP_XY, "XY Snap");
-		TitleMenu.SetMenuTitle(ID_SNAP_Z, "Z Snap");
-		TitleMenu.SetMenuTitle(ID_SNAP_ANGLE, "Angle Snap");
-
-		TitleMenu.CheckMenuRadioItem(2, 11, SXY + 2, MF_BYPOSITION);
-		TitleMenu.CheckMenuRadioItem(14, 23, SZ + 14, MF_BYPOSITION);
-		if (SA != -1)
-			TitleMenu.CheckMenuRadioItem(26, 35, SA + 26, MF_BYPOSITION);
-
-		TitleMenu.TrackPopupMenu(TPM_LEFTALIGN|TPM_RIGHTBUTTON, point.x, point.y, AfxGetMainWnd());
+		CMFCPopupMenu* Popup = new CMFCPopupMenu();
+		Popup->Create(AfxGetMainWnd(), point.x, point.y, PopupMenus.GetSubMenu(7)->Detach());
 	}
 
-	CStatusBar::OnLButtonDown(nFlags, point);
+	CMFCStatusBar::OnLButtonDown(nFlags, point);
 }
 
 void CCADStatusBar::OnRButtonDown(UINT nFlags, CPoint point) 
@@ -100,12 +87,12 @@ void CCADStatusBar::OnRButtonDown(UINT nFlags, CPoint point)
 	if (rect.PtInRect(point))
 		AfxGetMainWnd()->PostMessage(WM_COMMAND, ID_VIEW_STEP_CHOOSE);
 
-	CStatusBar::OnRButtonDown(nFlags, point);
+	CMFCStatusBar::OnRButtonDown(nFlags, point);
 }
 
 void CCADStatusBar::OnSize(UINT nType, int cx, int cy) 
 {
-	CStatusBar::OnSize(nType, cx, cy);
+	CMFCStatusBar::OnSize(nType, cx, cy);
 
 	if (m_bProgressVisible)
 		AdjustProgressBarPosition();

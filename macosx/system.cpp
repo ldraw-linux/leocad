@@ -95,6 +95,10 @@ long SystemGetTicks()
 }
 
 // User Interface
+void SystemUpdateViewport(int new_vp, int old_vp)
+{
+}
+
 void SystemUpdateCategories(bool SearchOnly)
 {
 }
@@ -164,7 +168,7 @@ void SystemFinish()
 }
 
 // FIXME: remove 
-int SystemDoMessageBox(const char* prompt, int mode)
+int SystemDoMessageBox(char* prompt, int mode)
 {
 	return 0;
 }

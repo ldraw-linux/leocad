@@ -3,9 +3,10 @@
 
 #include "defines.h"
 #include "str.h"
-#include "lc_array.h"
+#include "array.h"
 
-class lcFile;
+class File;
+class FileDisk;
 class Texture;
 class PieceInfo;
 
@@ -29,12 +30,12 @@ public:
 		return m_LibraryPath;
 	}
 
-	int GetPieceCount () const
+	int GetPieceCount() const
 	{
 		return m_Pieces.GetSize();
 	}
 
-	int GetTextureCount () const
+	int GetTextureCount() const
 	{
 		return m_nTextureCount;
 	}
@@ -42,8 +43,8 @@ public:
 	// Categories.
 	bool PieceInCategory(PieceInfo* Info, const String& CategoryKeywords) const;
 	int GetFirstCategory(PieceInfo* Info) const;
-	void GetCategoryEntries(int CategoryIndex, bool GroupPieces, lcPtrArray<PieceInfo>& SinglePieces, lcPtrArray<PieceInfo>& GroupedPieces) const;
-	void GetPatternedPieces(PieceInfo* Parent, lcPtrArray<PieceInfo>& Pieces) const;
+	void GetCategoryEntries(int CategoryIndex, bool GroupPieces, PtrArray<PieceInfo>& SinglePieces, PtrArray<PieceInfo>& GroupedPieces) const;
+	void GetPatternedPieces(PieceInfo* Parent, PtrArray<PieceInfo>& Pieces) const;
 	void SetCategory(int Index, const String& Name, const String& Keywords);
 	void AddCategory(const String& Name, const String& Keywords);
 	void RemoveCategory(int Index);
@@ -84,35 +85,33 @@ public:
 
 	// File operations.
 	bool DeleteAllPieces();
-	bool DeletePieces(lcPtrArray<const char>& Pieces);
+	bool DeletePieces(PtrArray<const char>& Pieces);
 	bool LoadUpdate(const char* update);
 	bool DeleteTextures(char** Names, int NumTextures);
 	bool ImportTexture(const char* Name);
-	bool ImportLDrawPiece(const char* Filename, lcFile* NewIdxFile, lcFile* NewBinFile, lcFile* OldIdxFile, lcFile* OldBinFile);
+	bool ImportLDrawPiece(const char* Filename, File* NewIdxFile, File* NewBinFile, File* OldIdxFile, File* OldBinFile);
 
 	// Set when pieces are added/removed from the library.
 	bool m_Modified;
 
 protected:
-	lcPtrArray<PieceInfo> m_Pieces;
+	PtrArray<PieceInfo> m_Pieces;
 
 	char m_LibraryPath[LC_MAXPATH];	// path to the library files
 
 	int m_nMovedCount;       // number of moved pieces
 	char* m_pMovedReference; // moved pieces list
-//	int m_nPieceCount;       // number of pieces
-//	PieceInfo* m_pPieceIdx;	 // pieces array
 	int m_nTextureCount;     // number of textures
 	Texture* m_pTextures;    // textures array
 
 	// Categories.
-	lcObjArray<PiecesLibraryCategory> m_Categories;
+	ObjArray<PiecesLibraryCategory> m_Categories;
 
 	bool m_CategoriesModified;
 	char m_CategoriesFile[LC_MAXPATH];
 
-	bool ValidatePiecesFile (lcFile& IdxFile, lcFile& BinFile) const;
-	bool ValidateTexturesFile (lcFile& IdxFile, lcFile& BinFile) const;
+	bool ValidatePiecesFile(FileDisk& IdxFile, FileDisk& BinFile) const;
+	bool ValidateTexturesFile(File& IdxFile, File& BinFile) const;
 
 	// File headers
 	static const char PiecesBinHeader[32];
@@ -175,7 +174,7 @@ struct LC_LDRAW_PIECE
 };
 
 bool ReadLDrawPiece(const char* filename, LC_LDRAW_PIECE* piece);
-bool SaveLDrawPiece(LC_LDRAW_PIECE* piece, lcFile* NewIdxFile, lcFile* NewBinFile, lcFile* OldIdxFile, lcFile* OldBinFile);
+bool SaveLDrawPiece(LC_LDRAW_PIECE* piece, File* NewIdxFile, File* NewBinFile, File* OldIdxFile, File* OldBinFile);
 void FreeLDrawPiece(LC_LDRAW_PIECE* piece);
 
 #endif // _LIBRARY_H_

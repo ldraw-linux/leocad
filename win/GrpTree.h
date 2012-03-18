@@ -28,7 +28,7 @@ protected:
 // Operations
 public:
 	LC_GROUPEDITDLG_OPTS* opts;
-	void AddChildren(HTREEITEM hParent, lcGroup* Group);
+	void AddChildren(HTREEITEM hParent, Group* pGroup);
 
 // Overrides
 	// ClassWizard generated virtual function overrides

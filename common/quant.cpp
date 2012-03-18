@@ -1,7 +1,6 @@
 ///////////////////////////////////////
 // DL1 Quantization
 
-#include "lc_global.h"
 #include <stdlib.h>
 #include <math.h>
 #include <memory.h>
@@ -218,16 +217,16 @@ static int build_table(unsigned char *image, unsigned long pixels)
 	return 1;
 }
 
-static void fixheap(unsigned long heapid) 
+static void fixheap(unsigned long id) 
 {
-	unsigned char thres_level = heap[heapid].level;
-	unsigned long thres_index = heap[heapid].index, index = 0;
+	unsigned char thres_level = heap[id].level;
+	unsigned long thres_index = heap[id].index, index = 0;
 	unsigned long half_totc = tot_colors >> 1;
 	unsigned long thres_val = rgb_table[thres_level][thres_index].pixels_in_cube;
 
-	while (heapid <= half_totc) 
+	while (id <= half_totc) 
 	{
-		index = heapid << 1;
+		index = id << 1;
 
 		if (index < (unsigned long)tot_colors)
 			if (rgb_table[heap[index].level][heap[index].index].pixels_in_cube
@@ -237,12 +236,12 @@ static void fixheap(unsigned long heapid)
 		if (thres_val <= rgb_table[heap[index].level][heap[index].index].pixels_in_cube)
 			break;
 		else {
-			heap[heapid] = heap[index];
-			heapid = index;
+			heap[id] = heap[index];
+			id = index;
 		}
 	}
-	heap[heapid].level = thres_level;
-	heap[heapid].index = (unsigned short)thres_index;
+	heap[id].level = thres_level;
+	heap[id].index = (unsigned short)thres_index;
 }
 
 static void reduce_table(int num_colors) 

@@ -1,16 +1,12 @@
-#include "lc_global.h"
-#include "lc_application.h"
-
 #include <stdio.h>
-#include "lc_model.h"
-#include "lc_colors.h"
+#include "lc_application.h"
 #include "library.h"
 #include "system.h"
 #include "console.h"
+#include "config.h"
 #include "opengl.h"
 #include "project.h"
 #include "image.h"
-#include "piece.h"
 
 // ----------------------------------------------------------------------------
 // Global functions.
@@ -34,11 +30,8 @@ Project* lcGetActiveProject()
 
 lcApplication::lcApplication()
 {
-	m_PiecePreview = NULL;
-	m_SelectedColor = 0;
 	m_ActiveProject = NULL;
 	m_Library = NULL;
-	m_MouseSensitivity = Sys_ProfileLoadInt("Default", "Mouse", 11);
 }
 
 lcApplication::~lcApplication()
@@ -73,39 +66,18 @@ bool lcApplication::LoadPiecesLibrary(const char* LibPath, const char* SysLibPat
 		if (m_Library->Load(EnvPath))
 			return true;
 
-	// Try the last library path.
-	const char* ProfilePath = Sys_ProfileLoadString("Settings", "PiecesLibrary", "");
-	if (strlen(ProfilePath) != 0)
-		if (m_Library->Load(ProfilePath))
-			return true;
-
 	// Try the executable install path last.
 	if (SysLibPath != NULL)
 		if (m_Library->Load(SysLibPath))
 			return true;
 
-	// Give the user a chance to select the directory.
-	for (;;)
-	{
-		int Ret = SystemDoMessageBox("LeoCAD was unable to load its Pieces Library, do you want to specify another location?",
-		                             LC_MB_YESNO|LC_MB_ICONQUESTION);
-
-		if (Ret == LC_YES)
-		{
-			LC_DLG_DIRECTORY_BROWSE_OPTS Opts;
-
-			Opts.Title = "Select Pieces Library Directory";
-
-			if (SystemDoDialog(LC_DLG_DIRECTORY_BROWSE, &Opts))
-				if (m_Library->Load(Opts.Path))
-					return true;
-		}
-		else
-			break;
-	}
-
-	SystemDoMessageBox("LeoCAD could not load its Pieces Library and will now exit.\n\n"
-	                   "Make sure that you have the library installed in your computer.", LC_MB_OK|LC_MB_ICONERROR);
+#ifdef LC_WINDOWS
+	SystemDoMessageBox("Cannot load pieces library.\n"
+	                   "Make sure that you have the PIECES.IDX file in the same "
+	                   "folder where you installed the program.", LC_MB_OK|LC_MB_ICONERROR);
+#else
+	printf("Error: Cannot load pieces library.\n");
+#endif
 
 	return false;
 }
@@ -154,15 +126,12 @@ bool lcApplication::Initialize(int argc, char* argv[], const char* SysLibPath)
 	bool ImageHighlight = false;
 	int ImageWidth = Sys_ProfileLoadInt("Default", "Image Width", 640);
 	int ImageHeight = Sys_ProfileLoadInt("Default", "Image Height", 480);
-	u32 ImageStart = 0;
-	u32 ImageEnd = 0;
+	int ImageStart = 0;
+	int ImageEnd = 0;
 	char* ImageName = NULL;
 
 	// File to open.
 	char* ProjectName = NULL;
-
-	// First piece to import.
-	int ImportPieceArg = 0;
 
 	// Parse the command line arguments.
 	for (int i = 1; i < argc; i++)
@@ -199,11 +168,11 @@ bool lcApplication::Initialize(int argc, char* argv[], const char* SysLibPath)
 			}
 			else if ((strcmp(Param, "-f") == 0) || (strcmp(Param, "--from") == 0))
 			{
-				ParseIntegerArgument(&i, argc, argv, (int*)&ImageStart);
+				ParseIntegerArgument(&i, argc, argv, &ImageStart);
 			}
 			else if ((strcmp(Param, "-t") == 0) || (strcmp(Param, "--to") == 0))
 			{
-				ParseIntegerArgument(&i, argc, argv, (int*)&ImageEnd);
+				ParseIntegerArgument(&i, argc, argv, &ImageEnd);
 			}
 			else if (strcmp(Param, "--animation") == 0)
 				ImageAnimation = true;
@@ -211,17 +180,6 @@ bool lcApplication::Initialize(int argc, char* argv[], const char* SysLibPath)
 				ImageInstructions = true;
 			else if (strcmp(Param, "--highlight") == 0)
 				ImageHighlight = true;
-			else if (strcmp(Param, "--importpieces") == 0) 
-			{
-				if ((i == argc) || (argv[i+1][0] == '-'))
-				{
-					printf("Expected file name after --importpiece.");
-					return false;
-				}
-
-				ImportPieceArg = i+1;
-				break;
-			}
 			else if ((strcmp(Param, "-v") == 0) || (strcmp(Param, "--version") == 0))
 			{
 				printf("LeoCAD version " LC_VERSION_TEXT LC_VERSION_TAG " for "LC_VERSION_OSNAME"\n");
@@ -256,7 +214,6 @@ bool lcApplication::Initialize(int argc, char* argv[], const char* SysLibPath)
 				printf("  --animation: Saves animations frames.\n");
 				printf("  --instructions: Saves instructions steps.\n");
 				printf("  --highlight: Highlight pieces in the steps they appear.\n");
-				printf("  --importpiece [file]: Import pieces into the library.\n");
 				printf("  \n");
 			}
 			else
@@ -274,8 +231,6 @@ bool lcApplication::Initialize(int argc, char* argv[], const char* SysLibPath)
 
 	if (!LoadPiecesLibrary(LibPath, SysLibPath))
 		return false;
-
-	InitColors();
 
 	SystemInit();
 
@@ -371,7 +326,7 @@ bool lcApplication::Initialize(int argc, char* argv[], const char* SysLibPath)
 
 		if ((ImageStart == 0) && (ImageEnd == 0))
 		{
-			ImageStart = ImageEnd = project->m_ActiveModel->m_CurFrame;
+			ImageStart = ImageEnd = project->GetCurrentTime();
 		}
 		else if ((ImageStart == 0) && (ImageEnd != 0))
 		{
@@ -384,27 +339,25 @@ bool lcApplication::Initialize(int argc, char* argv[], const char* SysLibPath)
 
 		if (project->IsAnimation())
 		{
-			u32 End = project->m_ActiveModel->m_TotalFrames;
-			if (ImageStart > End)
-				ImageStart = End;
+			if (ImageStart > project->GetTotalFrames())
+				ImageStart = project->GetTotalFrames();
 
-			if (ImageEnd > End)
-				ImageEnd = End;
+			if (ImageEnd > project->GetTotalFrames())
+				ImageEnd = project->GetTotalFrames();
 		}
 		else
 		{
-			u32 End = project->GetLastStep();
-			if (ImageStart > End)
-				ImageStart = End;
+			if (ImageStart > 255)
+				ImageStart = 255;
 
-			if (ImageEnd > End)
-				ImageEnd = End;
+			if (ImageEnd > 255)
+				ImageEnd = 255;
 		}
 
 		Image* images = new Image[ImageEnd - ImageStart + 1];
 		project->CreateImages(images, ImageWidth, ImageHeight, ImageStart, ImageEnd, ImageHighlight);
 
-		for (u32 i = 0; i <= ImageEnd - ImageStart; i++)
+		for (int i = 0; i <= ImageEnd - ImageStart; i++)
 		{
 			char idx[256];
 			String Frame;
@@ -434,40 +387,6 @@ bool lcApplication::Initialize(int argc, char* argv[], const char* SysLibPath)
 			project->OnNewDocument();
 	}
 
-	if (ImportPieceArg)
-	{
-		for (int i = ImportPieceArg; i < argc; i++)
-		{
-			lcFileDisk newbin, newidx, oldbin, oldidx;
-			char file1[LC_MAXPATH], file2[LC_MAXPATH];
-
-			strcpy(file1, lcGetPiecesLibrary()->GetLibraryPath());
-			strcat(file1, "pieces-b.old");
-			remove(file1);
-			strcpy(file2, lcGetPiecesLibrary()->GetLibraryPath());
-			strcat(file2, "pieces.bin");
-			rename(file2, file1);
-
-			if ((!oldbin.Open(file1, "rb")) || (!newbin.Open(file2, "wb")))
-				return false;
-
-			strcpy(file1, lcGetPiecesLibrary()->GetLibraryPath());
-			strcat(file1, "pieces-i.old");
-			remove(file1);
-			strcpy(file2, lcGetPiecesLibrary()->GetLibraryPath());
-			strcat(file2, "pieces.idx");
-			rename(file2, file1);
-
-			if ((!oldidx.Open(file1, "rb")) || (!newidx.Open(file2, "wb")))
-				return false;
-
-			if (!lcGetPiecesLibrary()->ImportLDrawPiece(argv[i], &newidx, &newbin, &oldidx, &oldbin))
-				break;
-		}
-
-		return false;
-	}
-
 	return true;
 }
 
@@ -479,63 +398,10 @@ void lcApplication::Shutdown()
 
 		project->HandleNotify(LC_ACTIVATE, 0);
 		delete project;
-		project = NULL;
 	}
 
 	delete m_Library;
 	m_Library = NULL;
 
 	GL_Shutdown();
-}
-
-void lcApplication::InitColors()
-{
-	String Path = Sys_ProfileLoadString("Settings", "ColorConfig", "%LDRAWDIR%/ldconfig.ldr");
-
-	char* LDrawDir = getenv("LDRAWDIR");
-	if (LDrawDir)
-		Path.Replace("%LDRAWDIR%", LDrawDir);
-
-	lcFileDisk File;
-	if (File.Open(Path, "rt"))
-		m_ColorConfig.LoadColors(File);
-
-	if (m_ColorConfig.mColors.GetSize() < 5)
-		m_ColorConfig.LoadDefaultColors();
-
-	m_ColorConfig.LoadConfig();
-
-	lcNumColors = m_ColorConfig.mColors.GetSize();
-	lcNumUserColors = lcNumColors - 3;
-	g_ColorList = &m_ColorConfig.mColors[0];
-
-	if (m_ColorConfig.mColorGroups.GetSize() == 0)
-		m_ColorConfig.LoadDefaultConfig();
-}
-
-void lcApplication::SetColorConfig(const lcColorConfig& ColorConfig)
-{
-	for (int ModelIdx = 0; ModelIdx < m_ActiveProject->m_ModelList.GetSize(); ModelIdx++)
-	{
-		lcModel* Model = m_ActiveProject->m_ModelList[ModelIdx];
-
-		for (lcPiece* Piece = Model->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-			Piece->m_Color = g_ColorList[Piece->m_Color].Code;
-	}
-
-	m_ColorConfig = ColorConfig;
-
-	lcNumColors = m_ColorConfig.mColors.GetSize();
-	lcNumUserColors = lcNumColors - 3;
-	g_ColorList = &m_ColorConfig.mColors[0];
-
-	for (int ModelIdx = 0; ModelIdx < m_ActiveProject->m_ModelList.GetSize(); ModelIdx++)
-	{
-		lcModel* Model = m_ActiveProject->m_ModelList[ModelIdx];
-
-		for (lcPiece* Piece = Model->m_Pieces; Piece; Piece = (lcPiece*)Piece->m_Next)
-			Piece->m_Color = lcConvertLDrawColor(Piece->m_Color);
-	}
-
-	m_ActiveProject->UpdateAllViews();
 }

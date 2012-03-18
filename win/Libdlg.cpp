@@ -1,7 +1,7 @@
 // LibDlg.cpp : implementation file
 //
 
-#include "lc_global.h"
+#include "stdafx.h"
 #include "leocad.h"
 #include "LibDlg.h"
 #include "GroupDlg.h"
@@ -11,6 +11,7 @@
 #include "ProgDlg.h"
 #include "project.h"
 #include "pieceinf.h"
+#include "globals.h"
 #include "system.h"
 #include "library.h"
 #include "lc_application.h"
@@ -30,9 +31,9 @@ static int CALLBACK ListCompare(LPARAM lP1, LPARAM lP2, LPARAM lParamSort)
 		return 0;
 
 	if ((lParamSort & ~0xF0) == 0)
-		ret = _strcmpi(((PieceInfo*)lP1)->m_strDescription, ((PieceInfo*)lP2)->m_strDescription);
+		ret = strcmpi(((PieceInfo*)lP1)->m_strDescription, ((PieceInfo*)lP2)->m_strDescription);
 	else
-		ret = _strcmpi(((PieceInfo*)lP1)->m_strName, ((PieceInfo*)lP2)->m_strName);
+		ret = strcmpi(((PieceInfo*)lP1)->m_strName, ((PieceInfo*)lP2)->m_strName);
 
 	return ret;
 }
@@ -136,11 +137,11 @@ BOOL CLibraryDlg::OnInitDialog()
 	return TRUE;
 }
 
-bool CLibraryDlg::ImportPieces(const lcObjArray<String>& FileList)
+bool CLibraryDlg::ImportPieces(const ObjArray<String>& FileList)
 {
 	char file1[LC_MAXPATH], file2[LC_MAXPATH];
 	PiecesLibrary* Library = lcGetPiecesLibrary();
-	lcFileDisk DiskIdx, DiskBin;
+	FileDisk DiskIdx, DiskBin;
 
 	strcpy(file1, Library->GetLibraryPath());
 	strcat(file1, "pieces.idx");
@@ -150,7 +151,7 @@ bool CLibraryDlg::ImportPieces(const lcObjArray<String>& FileList)
 	if ((!DiskIdx.Open(file1, "rb")) || (!DiskBin.Open(file2, "rb")))
 		return false;
 
-	lcFileMem IdxFile1, IdxFile2, BinFile1, BinFile2;
+	FileMem IdxFile1, IdxFile2, BinFile1, BinFile2;
 	long Length;
 
 	Length = DiskIdx.GetLength();
@@ -163,10 +164,10 @@ bool CLibraryDlg::ImportPieces(const lcObjArray<String>& FileList)
 	DiskBin.Read(BinFile1.GetBuffer(), Length);
 	DiskBin.Close();
 
-	lcFileMem* NewIdx = &IdxFile1;
-	lcFileMem* NewBin = &BinFile1;
-	lcFileMem* OldIdx = &IdxFile2;
-	lcFileMem* OldBin = &BinFile2;
+	FileMem* NewIdx = &IdxFile1;
+	FileMem* NewBin = &BinFile1;
+	FileMem* OldIdx = &IdxFile2;
+	FileMem* OldBin = &BinFile2;
 
 	CProgressDlg Dlg("Importing pieces");
 	Dlg.Create(this);
@@ -186,7 +187,7 @@ bool CLibraryDlg::ImportPieces(const lcObjArray<String>& FileList)
 		Dlg.SetStatus(Name);
 		Dlg.StepIt();
 
-		lcFileMem* TmpFile;
+		FileMem* TmpFile;
 
 		TmpFile = NewBin;
 		NewBin = OldBin;
@@ -206,7 +207,10 @@ bool CLibraryDlg::ImportPieces(const lcObjArray<String>& FileList)
 	}
 
 	if ((!DiskIdx.Open(file1, "wb")) || (!DiskBin.Open(file2, "wb")))
+	{
+		AfxMessageBox("Failed to open file for writing.", MB_ICONERROR | MB_OK);
 		return false;
+	}
 
 	strcpy(file1, Library->GetLibraryPath());
 	strcat(file1, "pieces-b.old");
@@ -260,7 +264,7 @@ BOOL CLibraryDlg::OnCommand(WPARAM wParam, LPARAM lParam)
 		{
 			PRINT_PARAMS* param = (PRINT_PARAMS*)malloc(sizeof(PRINT_PARAMS));
 			param->pParent = this;
-			param->pMainFrame = (CFrameWnd*)AfxGetMainWnd();
+			param->pMainFrame = (CFrameWndEx*)AfxGetMainWnd();
 			AfxBeginThread(PrintCatalogFunction, param);
 
 			return TRUE;
@@ -292,21 +296,21 @@ BOOL CLibraryDlg::OnCommand(WPARAM wParam, LPARAM lParam)
 			strcpy(opts.path, Sys_ProfileLoadString ("Default", "LDraw Pieces Path", ""));
 			opts.type = LC_FILEOPENDLG_DAT;
 
-			if (SystemDoDialog(LC_DLG_FILE_OPEN, &opts))
+			if (SystemDoDialog (LC_DLG_FILE_OPEN, &opts))
 			{
-				lcObjArray<String> FileList;
+				ObjArray<String> FileList;
 
 				for (int i = 0; i < opts.numfiles; i++)
 				{
 					FileList.Add(opts.filenames[i]);
-					free(opts.filenames[i]);
+					free (opts.filenames[i]);
 				}
 
-				free(opts.filenames);
+				free (opts.filenames);
 
 				ImportPieces(FileList);
 
-				Sys_ProfileSaveString("Default", "LDraw Pieces Path", opts.path);
+				Sys_ProfileSaveString ("Default", "LDraw Pieces Path", opts.path);
 
 				UpdateList();
 			}
@@ -325,7 +329,7 @@ BOOL CLibraryDlg::OnCommand(WPARAM wParam, LPARAM lParam)
 			if (!SystemDoDialog(LC_DLG_DIRECTORY_BROWSE, &Opts))
 				return TRUE;
 
-			lcObjArray<String> FileList;
+			ObjArray<String> FileList;
 
 			WIN32_FIND_DATA FindData;
 			HANDLE Find = INVALID_HANDLE_VALUE;
@@ -473,7 +477,7 @@ BOOL CLibraryDlg::OnCommand(WPARAM wParam, LPARAM lParam)
 
 		case ID_LIBDLG_PIECE_DELETE:
 		{
-			lcPtrArray<const char> Pieces;
+			PtrArray<const char> Pieces;
 
 			for (int i = 0; i < m_List.GetItemCount(); i++)
 			{
@@ -514,7 +518,7 @@ void CLibraryDlg::UpdateList()
 
 	if (CategoryIndex != -1)
 	{
-		lcPtrArray<PieceInfo> SinglePieces, GroupedPieces;
+		PtrArray<PieceInfo> SinglePieces, GroupedPieces;
 
 		Lib->GetCategoryEntries(CategoryIndex, false, SinglePieces, GroupedPieces);
 

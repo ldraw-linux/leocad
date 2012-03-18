@@ -1,12 +1,12 @@
 // StepPop.cpp : implementation file
 //
 
-#include "lc_global.h"
+#include "stdafx.h"
+#include "leocad.h"
 #include "StepPop.h"
-
 #include "project.h"
+#include "globals.h"
 #include "lc_application.h"
-#include "lc_model.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -32,8 +32,10 @@ CStepPopup::CStepPopup(CPoint pt, CWnd* pParentWnd)
 
 	m_Slider.Create (WS_CHILD|WS_VISIBLE|TBS_BOTH|TBS_HORZ|TBS_NOTICKS, CRect(5,10,90,30), this, 1000);
 
-	m_Slider.SetRange(1, lcGetActiveProject()->IsAnimation() ? lcGetActiveProject()->m_ActiveModel->m_TotalFrames : LC_OBJECT_TIME_MAX);
-	m_Slider.SetPos(lcGetActiveProject()->m_ActiveModel->m_CurFrame);
+	int from, to;
+	lcGetActiveProject()->GetTimeRange(&from, &to);
+	m_Slider.SetRange(1, to);
+	m_Slider.SetPos(from);
 }
 
 CStepPopup::~CStepPopup()
@@ -69,7 +71,7 @@ void CStepPopup::OnKillFocus(CWnd* pNewWnd)
 		DestroyWindow();
 }
 
-void CStepPopup::OnActivateApp(BOOL bActive, ACTIVATEAPPPARAM hTask) 
+void CStepPopup::OnActivateApp(BOOL bActive, DWORD hTask) 
 {
 	CWnd::OnActivateApp(bActive, hTask);
 	

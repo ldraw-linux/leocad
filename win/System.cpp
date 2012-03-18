@@ -1,13 +1,10 @@
 // System user interface.
 //
 
-#include "lc_global.h"
+#include "stdafx.h"
 #include <dlgs.h>
 #include <direct.h>
-#include <shlobj.h>
 #include "leocad.h"
-#include "cadview.h"
-#include "bmpmenu.h"
 #include "system.h"
 #include "defines.h"
 #include "camera.h"
@@ -25,16 +22,16 @@
 #include "htmldlg.h"
 #include "stepdlg.h"
 #include "povdlg.h"
+#include "terrdlg.h"
 #include "LibDlg.h"
 #include "EdGrpDlg.h"
-#include "ModelListDlg.h"
 #include "AboutDlg.h"
 #include "categdlg.h"
 #include "cadbar.h"
 #include "mainfrm.h"
 #include "project.h"
+#include "globals.h"
 #include "lc_application.h"
-#include "lc_model.h"
 #include "piece.h"
 #include "pieceinf.h"
 
@@ -54,8 +51,6 @@ bool lcAssert(const char* FileName, int Line, const char* Expression, const char
 	return false;
 }
 
-
-static CMenu menuPopups;
 static CStepDlg* StepModeless = NULL;
 static UINT ClipboardFormat = 0;
 
@@ -75,12 +70,12 @@ static void ShowLastError()
 
 static CMenu* GetMainMenu(int nIndex)
 {
-	CWnd* pFrame = AfxGetMainWnd();
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 
 	if (pFrame == NULL)
 		return NULL;
 
-	CMenu* pMenu = pFrame->GetMenu();
+	CMenu* pMenu =  CMenu::FromHandle(pFrame->m_wndMenuBar.GetHMenu());
 
 	if (pMenu == NULL)
 		return NULL;
@@ -159,7 +154,7 @@ UINT APIENTRY OFNOpenHookProc(HWND hdlg, UINT uiMsg, WPARAM wParam, LPARAM lPara
 
 				float fv;
 				char id[32];
-				lcFileDisk file;
+				FileDisk file;
 				file.Open(filename, "rb");
 				file.Read(id, 32);
 				sscanf(strchr(id, ' '), "%f", &fv);
@@ -343,24 +338,14 @@ void SystemDoWaitCursor(int nCode)
 }
 
 void Sys_BeginWait ()
-
 {
-
-  SystemDoWaitCursor (1);
-
+	SystemDoWaitCursor (1);
 }
-
-
 
 void Sys_EndWait ()
-
 {
-
-  SystemDoWaitCursor (-1);
-
+	SystemDoWaitCursor (-1);
 }
-
-
 
 /////////////////////////////////////////////////////////////////////////////
 // Profile Access
@@ -410,62 +395,40 @@ void SystemInit()
 	// initialize wait cursor state
 	g_nWaitCursorCount = 0;
 	g_hcurWaitCursorRestore = NULL;
+}
 
-	menuPopups.LoadMenu(IDR_POPUPS);
+static void CheckToolBarButton(CMFCToolBar& ToolBar, int ID, bool Check)
+{
+	int Index = ToolBar.CommandToIndex(ID);
+	UINT NewStyle = ToolBar.GetButtonStyle(Index) & ~(TBBS_CHECKED | TBBS_INDETERMINATE);
+	if (Check)
+		NewStyle |= TBBS_CHECKED;
+	ToolBar.SetButtonStyle(Index, NewStyle | TBBS_CHECKBOX);
+}
 
-	// attempt to load special bitmap, else default to arrow
-	CSize size = GetMenuCheckMarkDimensions();
-	ASSERT(size.cx > 4 && size.cy > 5); // not too small please
-	if (size.cx > 32)
-		size.cx = 32;
-	int iwRow = (size.cx + 15) >> 4;    // # of WORDs per raster line
-	int nShift = (size.cx - DOT_WIDTH) / 2;     // # of bits to shift over
-	nShift += ((iwRow * 16) - size.cx); // padding for word alignment
-	if (nShift > 16 - DOT_WIDTH)
-		nShift = 16 - DOT_WIDTH;    // maximum shift for 1 word
+static void EnableToolBarButton(CMFCToolBar& ToolBar, int ID, bool Enable)
+{
+	int Index = ToolBar.CommandToIndex(ID);
+	UINT NewStyle = ToolBar.GetButtonStyle(Index) & ~TBBS_DISABLED;
 
-	if (size.cy > 32)
-		size.cy = 32;
-
-	// bitmap 2/4/4/4/2 pixels wide - centered (0 => black)
-	BYTE rgbBitmap[32 * 2 * sizeof(WORD)];
-	memset(rgbBitmap, 0xff, sizeof(rgbBitmap));
-
-	BYTE* pbOut = &rgbBitmap[iwRow * sizeof(WORD) *
-							((size.cy - (DOT_HEIGHT+1)) >> 1)];
-	const BYTE* pbIn = rgbDot;
-	for (int y = 0; y < DOT_HEIGHT; y++)
-	{
-		WORD w = (WORD)~(((DWORD)*pbIn++) << nShift);
-		// bitmaps are always hi-lo
-		pbOut[0] = HIBYTE(w);
-		pbOut[1] = LOBYTE(w);
-		pbOut += iwRow * sizeof(WORD);
-	}
-
-	hbmMenuDot = CreateBitmap(size.cx, size.cy, 1, 1, (LPVOID)&rgbBitmap);
-	if (hbmMenuDot == NULL)
-	{
-		#define OBM_MNARROW         32739
-		hbmMenuDot = LoadBitmap(NULL, MAKEINTRESOURCE(OBM_MNARROW));
-	}
+	if (!Enable)
+		NewStyle |= TBBS_DISABLED;
+	ToolBar.SetButtonStyle(Index, NewStyle);
 }
 
 // Action toolbar, popup menu and cursor.
 void SystemUpdateAction(int nNew, int nOld)
 {
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 	if (!pFrame)
 		return;
-	CToolBar* pBar = (CToolBar*)pFrame->GetControlBar(ID_VIEW_TOOLS_BAR);
-	CToolBarCtrl* pCtrl = &pBar->GetToolBarCtrl();
-	CView* pView = pFrame->GetActiveView();
 
-	pCtrl->CheckButton(ID_ACTION_SELECT+nOld, FALSE);
-	pCtrl->CheckButton(ID_ACTION_SELECT+nNew, TRUE);
+//	CheckToolBarButton(pFrame->m_wndToolsBar, ID_ACTION_SELECT+nOld, FALSE);
+//	CheckToolBarButton(pFrame->m_wndToolsBar, ID_ACTION_SELECT+nNew, TRUE);
 
 	// TODO: make sure this works if loading a file from the cmd line.
-	if (pView && pView->IsKindOf(RUNTIME_CLASS(CCADView)))
+	CView* pView = pFrame->GetActiveView();
+	if (pView)
 		pView->SendMessage(WM_LC_SET_CURSOR, nNew);
 
 	// TODO: update popup context menu
@@ -473,168 +436,227 @@ void SystemUpdateAction(int nNew, int nOld)
 }
 
 // Current color in the listbox;
-void SystemUpdateColorList(int Color)
+void SystemUpdateColorList(int nNew)
 {
-	CMainFrame* Frame = (CMainFrame*)AfxGetMainWnd();
-	if (!Frame)
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
+	if (!pFrame)
 		return;
 
-	Frame->m_wndPiecesBar.m_wndColorsList.SetCurColor(Color);
+	pFrame->PostMessage (WM_LC_UPDATE_LIST, 0, nNew+1);
 }
 
 void SystemUpdateRenderingMode(bool bFast)
 {
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 	if (!pFrame)
 		return;
-	CToolBar* pBar = (CToolBar*)pFrame->GetControlBar(AFX_IDW_TOOLBAR);
-	CToolBarCtrl* pCtrl = &pBar->GetToolBarCtrl();
 
-	pCtrl->CheckButton(ID_RENDER_BOX, bFast);
+	CheckToolBarButton(pFrame->m_wndStandardBar, ID_RENDER_BOX, bFast);
 }
 
 void SystemUpdateUndoRedo(char* undo, char* redo)
 {
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
-	if (!pFrame)
-		return;
-	CToolBar* pBar = (CToolBar*)pFrame->GetControlBar(AFX_IDW_TOOLBAR);
-	CToolBarCtrl* pCtrl = &pBar->GetToolBarCtrl();
-	CMenu* pMenu = GetMainMenu(1);
-	char txt[50];
-	UINT nState;
-
-	if (pMenu == NULL)
-		return;
-
-	strcpy(txt, "Undo ");
-	if (undo != NULL)
-		strcat(txt, undo);
-	strcat(txt, "\tCtrl+Z");
-
-	nState = pMenu->GetMenuState(ID_EDIT_UNDO, MF_BYCOMMAND);
-	nState &= ~(MF_BITMAP|MF_OWNERDRAW|MF_SEPARATOR);
-	pMenu->ModifyMenu(ID_EDIT_UNDO, MF_BYCOMMAND |
-        MF_STRING | nState, ID_EDIT_UNDO, txt);
-
-	strcpy(txt, "Redo ");
-	if (redo != NULL)
-		strcat(txt, redo);
-	strcat(txt, "\tCtrl+Y");
-
-	nState = pMenu->GetMenuState(ID_EDIT_REDO, MF_BYCOMMAND);
-	nState &= ~(MF_BITMAP|MF_OWNERDRAW|MF_SEPARATOR);
-	pMenu->ModifyMenu(ID_EDIT_REDO, MF_BYCOMMAND |
-        MF_STRING | nState, ID_EDIT_REDO, txt);
-
-	pMenu->EnableMenuItem(ID_EDIT_UNDO, MF_BYCOMMAND | 
-		(undo ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMenu->EnableMenuItem(ID_EDIT_REDO, MF_BYCOMMAND | 
-		(redo ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-
-	pCtrl->EnableButton(ID_EDIT_UNDO, undo ? TRUE : FALSE);
-	pCtrl->EnableButton(ID_EDIT_REDO, redo ? TRUE : FALSE);
-}
-
-// Snap menu & toolbar icon
-void SystemUpdateSnap(const unsigned long nSnap)
-{
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
-	if (!pFrame)
-		return;
-	CToolBar* pBar = (CToolBar*)pFrame->GetControlBar(AFX_IDW_TOOLBAR);
-	CToolBarCtrl* pCtrl = &pBar->GetToolBarCtrl();
-	pCtrl->CheckButton(ID_SNAP_ANGLE, (nSnap & LC_DRAW_SNAP_A) != 0);
-
-	CMenu* pMenu = menuPopups.GetSubMenu(2);
-	pMenu->CheckMenuItem(ID_SNAP_SNAPX, MF_BYCOMMAND | 
-		(nSnap & LC_DRAW_SNAP_X ? MF_CHECKED : MF_UNCHECKED));
-	pMenu->CheckMenuItem(ID_SNAP_SNAPY, MF_BYCOMMAND | 
-		(nSnap & LC_DRAW_SNAP_Y ? MF_CHECKED : MF_UNCHECKED));
-	pMenu->CheckMenuItem(ID_SNAP_SNAPZ, MF_BYCOMMAND | 
-		(nSnap & LC_DRAW_SNAP_Z ? MF_CHECKED : MF_UNCHECKED));
-
-	pMenu = menuPopups.GetSubMenu(8);
-	pMenu->CheckMenuItem(ID_LOCK_LOCKX, MF_BYCOMMAND | 
-		(nSnap & LC_DRAW_LOCK_X ? MF_CHECKED : MF_UNCHECKED));
-	pMenu->CheckMenuItem(ID_LOCK_LOCKY, MF_BYCOMMAND | 
-		(nSnap & LC_DRAW_LOCK_Y ? MF_CHECKED : MF_UNCHECKED));
-	pMenu->CheckMenuItem(ID_LOCK_LOCKZ, MF_BYCOMMAND | 
-		(nSnap & LC_DRAW_LOCK_Z ? MF_CHECKED : MF_UNCHECKED));
-
-	SetMenuItemBitmaps(pMenu->m_hMenu, ID_LOCK_2BUTTONS, MF_BYCOMMAND, NULL, hbmMenuDot);
-	SetMenuItemBitmaps(pMenu->m_hMenu, ID_LOCK_3DMOVEMENT, MF_BYCOMMAND, NULL, hbmMenuDot);
-
-	// TODO: change Snap None & All (or maybe not ?)
-}
-
-void SystemUpdateSelected(unsigned long flags, int SelectedCount, lcObject* Focus)
-{
-	CMenu* pMenu;
 	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 	if (!pFrame)
 		return;
-	CToolBar* pBar = (CToolBar*)pFrame->GetControlBar(AFX_IDW_TOOLBAR);
-	CToolBarCtrl* pCtrl = &pBar->GetToolBarCtrl();
 
-	// select all/none/invert/by name
-	pMenu = GetMainMenu(1);
-	if (flags & LC_SEL_NO_PIECES)
+	EnableToolBarButton(pFrame->m_wndStandardBar, ID_EDIT_UNDO, undo != NULL);
+	EnableToolBarButton(pFrame->m_wndStandardBar, ID_EDIT_REDO, redo != NULL);
+
+	CMFCMenuBar& MenuBar = pFrame->m_wndMenuBar;
+	CMFCToolBarButton* pEditButton = MenuBar.GetButton(1);
+	CMFCToolBarMenuButton* pEditMenuButton = DYNAMIC_DOWNCAST(CMFCToolBarMenuButton, pEditButton);
+
+	const CObList& editCommands = pEditMenuButton->GetCommands();
+
+	for (POSITION pos = editCommands.GetHeadPosition (); pos != NULL;)
 	{
-		pMenu->EnableMenuItem(ID_EDIT_SELECTINVERT, MF_BYCOMMAND | MF_DISABLED | MF_GRAYED);
-		pMenu->EnableMenuItem(ID_EDIT_SELECTBYNAME, MF_BYCOMMAND | MF_DISABLED | MF_GRAYED);
+		CMFCToolBarButton* pSubButton = (CMFCToolBarButton*)editCommands.GetNext(pos);
+		ASSERT_VALID(pSubButton);
+
+		UINT Style = pSubButton->m_nStyle;
+
+		switch (pSubButton->m_nID)
+		{
+		case ID_EDIT_UNDO:
+			if (undo)
+			{
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+				pSubButton->m_strText = "Undo " + CString(undo);
+			}
+			else
+			{
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+				pSubButton->m_strText = "Undo";
+			}
+			break;
+
+		case ID_EDIT_REDO:
+			if (redo)
+			{
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+				pSubButton->m_strText = "Redo " + CString(redo);
+			}
+			else
+			{
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+				pSubButton->m_strText = "Redo";
+			}
+			break;
+		}
 	}
-	else
+}
+
+void SystemUpdateSnap(const unsigned long nSnap)
+{
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
+	if (!pFrame)
+		return;
+
+	CheckToolBarButton(pFrame->m_wndStandardBar, ID_SNAP_ANGLE, (nSnap & LC_DRAW_SNAP_A) != 0);
+}
+
+void SystemUpdateSelected(unsigned long flags, int SelectedCount, Object* Focus)
+{
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
+	if (!pFrame)
+		return;
+
+	CMFCMenuBar& MenuBar = pFrame->m_wndMenuBar;
+	CMFCToolBarButton* pEditButton = MenuBar.GetButton(1);
+	CMFCToolBarMenuButton* pEditMenuButton = DYNAMIC_DOWNCAST(CMFCToolBarMenuButton, pEditButton);
+
+	const CObList& editCommands = pEditMenuButton->GetCommands();
+
+	for (POSITION pos = editCommands.GetHeadPosition (); pos != NULL;)
 	{
-		pMenu->EnableMenuItem(ID_EDIT_SELECTINVERT, MF_BYCOMMAND | MF_ENABLED);
-		pMenu->EnableMenuItem(ID_EDIT_SELECTBYNAME, MF_BYCOMMAND | MF_ENABLED);
+		CMFCToolBarButton* pSubButton = (CMFCToolBarButton*)editCommands.GetNext(pos);
+		ASSERT_VALID(pSubButton);
+
+		UINT Style = pSubButton->m_nStyle;
+
+		switch (pSubButton->m_nID)
+		{
+		case ID_EDIT_CUT:
+		case ID_EDIT_COPY:
+			if (flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT))
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			break;
+
+		case ID_EDIT_SELECTINVERT:
+		case ID_EDIT_SELECTBYNAME:
+			if (flags & LC_SEL_NO_PIECES)
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			break;
+
+		case ID_EDIT_SELECTNONE:
+			if (flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT))
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			break;
+
+		case ID_EDIT_SELECTALL:
+			if (flags & LC_SEL_UNSELECTED)
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			break;
+		};
+
 	}
-	pMenu->EnableMenuItem(ID_EDIT_SELECTNONE, MF_BYCOMMAND | 
-		(flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT) ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMenu->EnableMenuItem(ID_EDIT_SELECTALL, MF_BYCOMMAND | 
-		(flags & LC_SEL_UNSELECTED ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
 
-	// cut, copy
-	pMenu->EnableMenuItem(ID_EDIT_CUT, MF_BYCOMMAND | 
-		(flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT) ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMenu->EnableMenuItem(ID_EDIT_COPY, MF_BYCOMMAND | 
-		(flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT) ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pCtrl->EnableButton(ID_EDIT_CUT, flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT) ? TRUE : FALSE);
-	pCtrl->EnableButton(ID_EDIT_COPY, flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT) ? TRUE : FALSE);
+	EnableToolBarButton(pFrame->m_wndStandardBar, ID_EDIT_CUT, flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT) ? TRUE : FALSE);
+	EnableToolBarButton(pFrame->m_wndStandardBar, ID_EDIT_COPY, flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT) ? TRUE : FALSE);
 
-	// mirror/array, hide sel/unsel, unhideall
-	pBar = (CToolBar*)pFrame->GetControlBar(ID_VIEW_TOOLS_BAR);
-	pCtrl = &pBar->GetToolBarCtrl();
-	pCtrl->EnableButton(ID_PIECE_ARRAY, flags & LC_SEL_PIECE ? TRUE : FALSE);
-	pCtrl->EnableButton(ID_PIECE_MIRROR, flags & LC_SEL_PIECE ? TRUE : FALSE);
-	pMenu = GetMainMenu(3);
-	pMenu->EnableMenuItem(ID_PIECE_DELETE, MF_BYCOMMAND | 
-		(flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT) ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMenu->EnableMenuItem(ID_PIECE_ARRAY, MF_BYCOMMAND | 
-		(flags & LC_SEL_PIECE ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMenu->EnableMenuItem(ID_PIECE_MIRROR, MF_BYCOMMAND | 
-		(flags & LC_SEL_PIECE ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMenu->EnableMenuItem(ID_PIECE_UNHIDEALL, MF_BYCOMMAND | 
-		(flags & LC_SEL_HIDDEN ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMenu->EnableMenuItem(ID_PIECE_HIDESELECTED, MF_BYCOMMAND | 
-		(flags & LC_SEL_PIECE ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMenu->EnableMenuItem(ID_PIECE_HIDEUNSELECTED, MF_BYCOMMAND | 
-		(flags & LC_SEL_UNSELECTED ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
+	CMFCToolBarButton* pPieceButton = MenuBar.GetButton(3);
+	CMFCToolBarMenuButton* pPieceMenuButton = DYNAMIC_DOWNCAST(CMFCToolBarMenuButton, pPieceButton);
 
-	// group
-	pMenu->EnableMenuItem(ID_PIECE_GROUP, MF_BYCOMMAND | 
-		(flags & LC_SEL_CANGROUP ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMenu->EnableMenuItem(ID_PIECE_UNGROUP, MF_BYCOMMAND | 
-		(flags & LC_SEL_GROUP ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMenu->EnableMenuItem(ID_PIECE_ATTACH, MF_BYCOMMAND | 
-		((flags & (LC_SEL_GROUP|LC_SEL_FOCUSGROUP)) == (LC_SEL_GROUP) ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMenu->EnableMenuItem(ID_PIECE_DETACH, MF_BYCOMMAND | 
-		(flags & LC_SEL_FOCUSGROUP ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMenu->EnableMenuItem(ID_PIECE_EDITGROUPS, MF_BYCOMMAND | 
-		((flags & LC_SEL_NO_PIECES) == 0 ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
+	const CObList& pieceCommands = pPieceMenuButton->GetCommands();
 
-	pCtrl->EnableButton(ID_PIECE_PREVIOUS, flags & LC_SEL_PIECE ? TRUE : FALSE);
-	pCtrl->EnableButton(ID_PIECE_NEXT, flags & LC_SEL_PIECE ? TRUE : FALSE);
+	for (POSITION pos = pieceCommands.GetHeadPosition (); pos != NULL;)
+	{
+		CMFCToolBarButton* pSubButton = (CMFCToolBarButton*)pieceCommands.GetNext(pos);
+		ASSERT_VALID(pSubButton);
+
+		UINT Style = pSubButton->m_nStyle;
+
+		switch (pSubButton->m_nID)
+		{
+		case ID_PIECE_DELETE:
+		case ID_PIECE_COPYKEYS:
+			if (flags & (LC_SEL_PIECE|LC_SEL_CAMERA|LC_SEL_LIGHT))
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			break;
+
+		case ID_PIECE_ARRAY:
+		case ID_PIECE_MIRROR:
+		case ID_PIECE_HIDESELECTED:
+			if (flags & LC_SEL_PIECE)
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			break;
+
+		case ID_PIECE_UNHIDEALL:
+			if (flags & LC_SEL_HIDDEN)
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			break;
+
+		case ID_PIECE_HIDEUNSELECTED:
+			if (flags & LC_SEL_UNSELECTED)
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			break;
+
+		case ID_PIECE_GROUP:
+			if (flags & LC_SEL_CANGROUP)
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			break;
+
+		case ID_PIECE_UNGROUP:
+			if (flags & LC_SEL_GROUP)
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			break;
+
+		case ID_PIECE_ATTACH:
+			if ((flags & (LC_SEL_GROUP|LC_SEL_FOCUSGROUP)) == LC_SEL_GROUP)
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			break;
+
+		case ID_PIECE_DETACH:
+			if (flags & LC_SEL_UNSELECTED)
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			break;
+
+		case ID_PIECE_EDITGROUPS:
+			if (flags & LC_SEL_NO_PIECES)
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			break;
+		}
+	}
+
+	EnableToolBarButton(pFrame->m_wndToolsBar, ID_PIECE_PREVIOUS, flags & LC_SEL_PIECE ? TRUE : FALSE); // FIXME: disable if current step is 1
+	EnableToolBarButton(pFrame->m_wndToolsBar, ID_PIECE_NEXT, flags & LC_SEL_PIECE ? TRUE : FALSE);
 
 	// Status bar text.
 	if (SelectedCount == 0)
@@ -647,9 +669,9 @@ void SystemUpdateSelected(unsigned long flags, int SelectedCount, lcObject* Focu
 		char Message[256];
 
 		if (Focus->IsPiece())
-			sprintf(Message, "%s (ID: %s)", (char*)Focus->m_Name, ((lcPiece*)Focus)->m_PieceInfo->m_strName);
+			sprintf(Message, "%s (ID: %s)", Focus->GetName(), ((Piece*)Focus)->GetPieceInfo()->m_strName);
 		else
-			strcpy(Message, (char*)Focus->m_Name);
+			strcpy(Message, Focus->GetName());
 
 		pFrame->SetStatusBarMessage(Message);
 		pFrame->SetMessageText(Message);
@@ -668,42 +690,20 @@ void SystemUpdateSelected(unsigned long flags, int SelectedCount, lcObject* Focu
 }
 
 // Changed current step/frame
-void SystemUpdateTime(bool bAnimation, u32 nTime, u32 nTotal)
+void SystemUpdateTime(bool bAnimation, int nTime, int nTotal)
 {
-	// Toolbar
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 	if (!pFrame)
 		return;
-	CToolBar* pBar = (CToolBar*)pFrame->GetControlBar(ID_VIEW_ANIMATION_BAR);
-	CToolBarCtrl* pCtrl = &pBar->GetToolBarCtrl();
-
-	pCtrl->EnableButton(ID_VIEW_STEP_NEXT, nTime < nTotal ? TRUE : FALSE);
-	pCtrl->EnableButton(ID_VIEW_STEP_PREVIOUS, nTime > 1 ? TRUE : FALSE);
-	pCtrl->EnableButton(ID_VIEW_STEP_FIRST, nTime != 1 ? TRUE : FALSE);
-	pCtrl->EnableButton(ID_VIEW_STEP_LAST, nTime != nTotal ? TRUE : FALSE);
-
-	// Main menu
-	CBMPMenu* pMainMenu = (CBMPMenu*)GetMainMenu(2)->GetSubMenu(6);
-
-	pMainMenu->EnableMenuItem(ID_VIEW_STEP_NEXT, MF_BYCOMMAND | 
-		(nTime < nTotal ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMainMenu->EnableMenuItem(ID_VIEW_STEP_PREVIOUS, MF_BYCOMMAND | 
-		(nTime > 1 ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMainMenu->EnableMenuItem(ID_VIEW_STEP_FIRST, MF_BYCOMMAND | 
-		(nTime != 1 ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
-	pMainMenu->EnableMenuItem(ID_VIEW_STEP_LAST, MF_BYCOMMAND | 
-		(nTime != nTotal ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
 
 	// Status bar
 	char szStep[11];
-	CStatusBar* pStatusBar = (CStatusBar*)pFrame->GetControlBar(AFX_IDW_STATUS_BAR);
-
 	if (bAnimation)
 		sprintf(szStep, "%i/%i", nTime, nTotal);
 	else
 		sprintf(szStep, " Step %i ", nTime);
 
-	pStatusBar->SetPaneText(pStatusBar->CommandToIndex(ID_INDICATOR_STEP), LPCSTR(szStep));
+	pFrame->m_wndStatusBar.SetPaneText(pFrame->m_wndStatusBar.CommandToIndex(ID_INDICATOR_STEP), LPCSTR(szStep));
 
 	// Choose step dialog
 	if (StepModeless != NULL)
@@ -712,461 +712,115 @@ void SystemUpdateTime(bool bAnimation, u32 nTime, u32 nTotal)
 
 void SystemUpdateSnap(unsigned short MoveSnap, unsigned short RotateSnap)
 {
-	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
-	if (!pFrame)
-		return;
-
 	char Text[256], xy[32], z[32];
 
 	lcGetActiveProject()->GetSnapDistanceText(xy, z);
 
 	sprintf(Text, " M: %s %s R: %d ", xy, z, RotateSnap);
 
-	pFrame->SetStatusBarPane(ID_INDICATOR_SNAP, Text);
-
-	CToolBar* pBar = (CToolBar*)pFrame->GetControlBar(AFX_IDW_TOOLBAR);
-	CToolBarCtrl* pCtrl = &pBar->GetToolBarCtrl();
-	pCtrl->CheckButton(ID_SNAP_ANGLE, (RotateSnap & LC_DRAW_SNAP_A) != 0);
+	if (AfxGetMainWnd())
+		((CMainFrame*)AfxGetMainWnd())->SetStatusBarPane(ID_INDICATOR_SNAP, Text);
 }
 
 void SystemUpdatePaste(bool enable)
 {
-	CMenu* pMenu = GetMainMenu(1);
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
-	if (!pFrame->IsKindOf(RUNTIME_CLASS(CFrameWnd)))
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
+	if (!pFrame)
 		return;
-	CToolBar* pBar = (CToolBar*)pFrame->GetControlBar(AFX_IDW_TOOLBAR);
-	CToolBarCtrl* pCtrl = &pBar->GetToolBarCtrl();
 
-	if (pMenu != NULL)
-		pMenu->EnableMenuItem(ID_EDIT_PASTE, MF_BYCOMMAND | (enable ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
+	CMFCMenuBar& MenuBar = pFrame->m_wndMenuBar;
+	CMFCToolBarButton* pEditButton = MenuBar.GetButton(1);
+	CMFCToolBarMenuButton* pEditMenuButton = DYNAMIC_DOWNCAST(CMFCToolBarMenuButton, pEditButton);
 
-	if (pCtrl)
-		pCtrl->EnableButton(ID_EDIT_PASTE, enable ? TRUE : FALSE);
+	const CObList& editCommands = pEditMenuButton->GetCommands();
+
+	for (POSITION pos = editCommands.GetHeadPosition (); pos != NULL;)
+	{
+		CMFCToolBarButton* pSubButton = (CMFCToolBarButton*)editCommands.GetNext(pos);
+		ASSERT_VALID(pSubButton);
+
+		UINT Style = pSubButton->m_nStyle;
+
+		switch (pSubButton->m_nID)
+		{
+		case ID_EDIT_PASTE:
+			if (enable)
+				pSubButton->SetStyle(Style & ~TBBS_DISABLED);
+			else
+				pSubButton->SetStyle(Style | TBBS_DISABLED);
+			break;
+		}
+	}
+
+	EnableToolBarButton(pFrame->m_wndStandardBar, ID_EDIT_PASTE, enable ? TRUE : FALSE);
 }
 
 void SystemUpdatePlay(bool play, bool stop)
 {
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
-	CToolBar* pBar = (CToolBar*)pFrame->GetControlBar(ID_VIEW_ANIMATION_BAR);
-	CToolBarCtrl* pCtrl = &pBar->GetToolBarCtrl();
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 
-	pCtrl->EnableButton(ID_ANIMATOR_PLAY, play ? TRUE : FALSE);
-	pCtrl->EnableButton(ID_ANIMATOR_STOP, stop ? TRUE : FALSE);
+	EnableToolBarButton(pFrame->m_wndAnimationBar, ID_ANIMATOR_PLAY, play ? TRUE : FALSE);
+	EnableToolBarButton(pFrame->m_wndAnimationBar, ID_ANIMATOR_STOP, stop ? TRUE : FALSE);
 }
 
 void SystemUpdateAnimation(bool bAnimation, bool bAddKeys)
 {
 	// Toolbar
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 	if (!pFrame)
 		return;
-	CToolBar* pBar = (CToolBar*)pFrame->GetControlBar(ID_VIEW_ANIMATION_BAR);
-	CToolBarCtrl* pCtrl = &pBar->GetToolBarCtrl();
 
-	pCtrl->CheckButton(ID_ANIMATOR_TOGGLE, bAnimation ? TRUE : FALSE);
-	pCtrl->CheckButton(ID_ANIMATOR_KEY, bAddKeys ? TRUE : FALSE);
-	pCtrl->EnableButton(ID_ANIMATOR_PLAY, bAnimation ? TRUE : FALSE);
-	pCtrl->EnableButton(ID_ANIMATOR_STOP, FALSE);
+	CheckToolBarButton(pFrame->m_wndAnimationBar, ID_ANIMATOR_TOGGLE, bAnimation ? TRUE : FALSE);
+	CheckToolBarButton(pFrame->m_wndAnimationBar, ID_ANIMATOR_KEY, bAddKeys ? TRUE : FALSE);
+	EnableToolBarButton(pFrame->m_wndAnimationBar, ID_ANIMATOR_PLAY, bAnimation ? TRUE : FALSE);
+	EnableToolBarButton(pFrame->m_wndAnimationBar, ID_ANIMATOR_STOP, FALSE);
+
+	// Menu
+	char* txt;
+	CMenu* pMenu = GetMainMenu(3);
+	if (!pMenu)
+		return;
+
+	UINT nState = pMenu->GetMenuState(ID_PIECE_COPYKEYS, MF_BYCOMMAND);
+	nState &= ~(MF_BITMAP|MF_OWNERDRAW|MF_SEPARATOR);
+
+	if (bAnimation)
+		txt = "Copy Keys from Instructions";
+	else
+		txt = "Copy Keys from Animation";
+	
+	pMenu->ModifyMenu(ID_PIECE_COPYKEYS, MF_BYCOMMAND | MF_STRING | nState, ID_PIECE_COPYKEYS, txt);
 }
 
-void SystemUpdateCurrentCamera(lcCamera* OldCamera, lcCamera* NewCamera, lcCamera* CameraList)
+void SystemUpdateCurrentCamera(Camera* pOld, Camera* pNew, Camera* pCamera)
 {
-	CMenu* Menu = GetMainMenu(2);
-	if (!Menu)
-		return;
-	CBMPMenu* pMainMenu = (CBMPMenu*)Menu->GetSubMenu(5);
-	CMenu* pPopupMenu = menuPopups.GetSubMenu(1)->GetSubMenu(3);
-	int i = 0;
-
-	for (lcCamera* Camera = CameraList; Camera; i++, Camera = (lcCamera*)Camera->m_Next)
-	{
-		if (OldCamera == Camera)
-		{
-			pPopupMenu->CheckMenuItem(i + ID_CAMERA_FIRST, MF_BYCOMMAND | MF_UNCHECKED);
-			pMainMenu->CheckMenuItem(i + ID_CAMERA_FIRST, MF_BYCOMMAND | MF_UNCHECKED);
-		}
-
-		if (NewCamera == Camera)
-		{
-			pPopupMenu->CheckMenuItem(i + ID_CAMERA_FIRST, MF_BYCOMMAND | MF_CHECKED);
-			pMainMenu->CheckMenuItem(i + ID_CAMERA_FIRST, MF_BYCOMMAND | MF_CHECKED);
-			SetMenuItemBitmaps(pPopupMenu->m_hMenu, i + ID_CAMERA_FIRST, MF_BYCOMMAND, NULL, hbmMenuDot);
-			SetMenuItemBitmaps(pMainMenu->m_hMenu, i + ID_CAMERA_FIRST, MF_BYCOMMAND, NULL, hbmMenuDot);
-		}
-	}
 }
 
-// Update the list of cameras
-void SystemUpdateCameraMenu(lcCamera* CameraList)
+void SystemUpdateCameraMenu(Camera* pCamera)
 {
-	CMenu* Menu = GetMainMenu(2);
-	if (!Menu)
-		return;
-	CBMPMenu* pMainMenu = (CBMPMenu*)Menu->GetSubMenu(5);
-	CMenu* pPopupMenu = menuPopups.GetSubMenu(1)->GetSubMenu(3);
-
-	while (pMainMenu->GetMenuItemCount())
-		pMainMenu->DeleteMenu(0, MF_BYPOSITION);
-	while (pPopupMenu->GetMenuItemCount())
-		pPopupMenu->DeleteMenu(0, MF_BYPOSITION);
-
-	lcObject* Camera = CameraList;
-	int i;
-
-	for (i = 0; Camera; i++, Camera = Camera->m_Next)
-		if (i > 6)
-		{
-			pMainMenu->AppendODMenu(Camera->m_Name, MF_ENABLED, i + ID_CAMERA_FIRST);
-			pPopupMenu->AppendMenu(MF_STRING, i + ID_CAMERA_FIRST, Camera->m_Name);
-		}
-
-	if (i > 7)
-	{
-		pMainMenu->AppendODMenu("", MF_SEPARATOR);
-		pPopupMenu->AppendMenu(MF_SEPARATOR);
-	}
-
-	Camera = CameraList;
-	for (i = 0; Camera && (i < 7); i++, Camera = (lcCamera*)Camera->m_Next)
-	{
-		pMainMenu->AppendODMenu(Camera->m_Name, MF_ENABLED, i + ID_CAMERA_FIRST);
-		pPopupMenu->AppendMenu(MF_STRING, i + ID_CAMERA_FIRST, Camera->m_Name);
-
-//		pMainMenu->ChangeMenuItemShortcut("", i + ID_CAMERA_FIRST);
-	}
-
-	pMainMenu->AppendODMenu("", MF_SEPARATOR);
-	pPopupMenu->AppendMenu(MF_SEPARATOR);
-	pMainMenu->AppendODMenu("Reset", MF_ENABLED, ID_VIEW_CAMERAS_RESET);
-	pPopupMenu->AppendMenu(MF_STRING, ID_VIEW_CAMERAS_RESET, "Reset");
-//	pMainMenu->AppendODMenu("Adjust...\t", MF_ENABLED, ID_VIEW_VIEWPOINT);
-//	pPopupMenu->AppendODMenu("Adjust...\t", MF_ENABLED, ID_VIEW_VIEWPOINT);
-
-  ((CMainFrame*)AfxGetMainWnd())->UpdateMenuAccelerators(); 
 }
 
 void SystemUpdateCategories(bool SearchOnly)
 {
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 
 	if (!pFrame)
 		return;
 
-	CPiecesBar* pBar = (CPiecesBar*)pFrame->GetControlBar(ID_VIEW_PIECES_BAR);
-	if (SearchOnly)
-		pBar->UpdatePiecesTreeSearch();
-	else
-		pBar->UpdatePiecesTree();
+	pFrame->m_wndPiecesBar.UpdatePiecesTree(SearchOnly);
 }
 
-#define LC_MODEL_MENU_MAX 16
-
-void SystemUpdateModelMenu(const lcPtrArray<lcModel>& ModelList, lcModel* ActiveModel)
+void SystemUpdateRecentMenu(char names[4][MAX_PATH])
 {
-	CMenu* Menu = GetMainMenu(4);
-	if (!Menu)
-		return;
-
-	if (ModelList.GetSize() > 1)
-		Menu->EnableMenuItem(ID_MODEL_DELETE, MF_BYCOMMAND | MF_ENABLED);
-	else
-		Menu->EnableMenuItem(ID_MODEL_DELETE, MF_BYCOMMAND | MF_DISABLED | MF_GRAYED);
-
-	// Delete existing entries.
-	int i;
-	for (i = 1; i < LC_MODEL_MENU_MAX; i++)
-		Menu->DeleteMenu(ID_MODEL_MODEL1 + i, MF_BYCOMMAND);
-
-	// If the list is empty add a disabled entry.
-	if (ModelList.GetSize() == 0)
-	{
-		UINT State = Menu->GetMenuState(ID_MODEL_MODEL1, MF_BYCOMMAND);
-		State &= ~(MF_BITMAP | MF_OWNERDRAW | MF_SEPARATOR | MF_CHECKED);
-		Menu->ModifyMenu(ID_MODEL_MODEL1, MF_BYCOMMAND | MF_STRING | State, ID_MODEL_MODEL1, "Model");
-		Menu->EnableMenuItem(ID_MODEL_MODEL1, MF_BYCOMMAND | MF_DISABLED | MF_GRAYED);
-		return;
-	}
-
-	// Find the position of the first model in the menu.
-	u32 StartPos;
-	for (StartPos = 0; StartPos < Menu->GetMenuItemCount(); StartPos++)
-		if (Menu->GetMenuItemID(StartPos) == ID_MODEL_MODEL1)
-			break;
-
-	// Add models to menu.
-	for (i = 0; i < ModelList.GetSize() && i < LC_MODEL_MENU_MAX; i++)
-	{
-		lcModel* Model = ModelList[i];
-		String DisplayName;
-
-		// Double up any '&' characters so they are not underlined.
-		char* Dest = DisplayName.GetBuffer(Model->m_Name.GetLength() * 2 + 1);
-		char* Src = Model->m_Name;
-
-		while (*Src)
-		{
-			if (*Src == '&')
-				*Dest++ = '&';
-			*Dest++ = *Src++;
-		}
-		*Dest = 0;
-		DisplayName.ReleaseBuffer();
-
-		// Insert mnemonic followed by the model name.
-		char* Text = new char[DisplayName.GetLength() + 10];
-		sprintf(Text, i < 9 ? "&%d %s" : "%d %s", i+1, (const char*)DisplayName);
-
-		if (i != 0)
-		{
-			Menu->InsertMenu(StartPos + i, MF_BYPOSITION | MF_STRING, ID_MODEL_MODEL1 + i, Text);
-		}
-		else
-		{
-			UINT State = Menu->GetMenuState(ID_MODEL_MODEL1, MF_BYCOMMAND);
-			State &= ~(MF_BITMAP | MF_OWNERDRAW | MF_SEPARATOR | MF_CHECKED);
-			Menu->ModifyMenu(ID_MODEL_MODEL1, MF_BYCOMMAND | MF_STRING | State, ID_MODEL_MODEL1 + i, Text);
-			Menu->EnableMenuItem(ID_MODEL_MODEL1, MF_BYCOMMAND | MF_ENABLED);
-		}
-
-		if (Model == ActiveModel)
-			Menu->CheckMenuItem(StartPos + i, MF_BYPOSITION | MF_CHECKED);
-
-		delete[] Text;
-	}
-
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
-
-	if (!pFrame)
-		return;
-
-	CPiecesBar* pBar = (CPiecesBar*)pFrame->GetControlBar(ID_VIEW_PIECES_BAR);
-	pBar->UpdatePiecesTreeModels();
-}
-
-extern UINT AFXAPI AfxGetFileTitle(LPCTSTR lpszPathName, LPTSTR lpszTitle, UINT nMax);
-extern UINT AFXAPI AfxGetFileName(LPCTSTR lpszPathName, LPTSTR lpszTitle, UINT nMax);
-
-/////////////////////////////////////////////////////////////////////////////
-// lpszCanon = C:\MYAPP\DEBUGS\C\TESWIN.C
-//
-// cchMax   b   Result
-// ------   -   ---------
-//  1- 7    F   <empty>
-//  1- 7    T   TESWIN.C
-//  8-14    x   TESWIN.C
-// 15-16    x   C:\...\TESWIN.C
-// 17-23    x   C:\...\C\TESWIN.C
-// 24-25    x   C:\...\DEBUGS\C\TESWIN.C
-// 26+      x   C:\MYAPP\DEBUGS\C\TESWIN.C
-
-#ifndef _MAC
-static void AbbreviateName(LPTSTR lpszCanon, int cchMax, BOOL bAtLeastName)
-{
-	int cchFullPath, cchFileName, cchVolName;
-	const TCHAR* lpszCur;
-	const TCHAR* lpszBase;
-	const TCHAR* lpszFileName;
-
-	lpszBase = lpszCanon;
-	cchFullPath = lstrlen(lpszCanon);
-
-	cchFileName = AfxGetFileName(lpszCanon, NULL, 0) - 1;
-	lpszFileName = lpszBase + (cchFullPath-cchFileName);
-
-	// If cchMax is more than enough to hold the full path name, we're done.
-	// This is probably a pretty common case, so we'll put it first.
-	if (cchMax >= cchFullPath)
-		return;
-
-	// If cchMax isn't enough to hold at least the basename, we're done
-	if (cchMax < cchFileName)
-	{
-		lstrcpy(lpszCanon, (bAtLeastName) ? lpszFileName : _T(""));
-		return;
-	}
-
-	// Calculate the length of the volume name.  Normally, this is two characters
-	// (e.g., "C:", "D:", etc.), but for a UNC name, it could be more (e.g.,
-	// "\\server\share").
-	//
-	// If cchMax isn't enough to hold at least <volume_name>\...\<base_name>, the
-	// result is the base filename.
-
-	lpszCur = lpszBase + 2;                 // Skip "C:" or leading "\\"
-
-	if (lpszBase[0] == '\\' && lpszBase[1] == '\\') // UNC pathname
-	{
-		// First skip to the '\' between the server name and the share name,
-		while (*lpszCur != '\\')
-		{
-			lpszCur = _tcsinc(lpszCur);
-			ASSERT(*lpszCur != '\0');
-		}
-	}
-	// if a UNC get the share name, if a drive get at least one directory
-	ASSERT(*lpszCur == '\\');
-	// make sure there is another directory, not just c:\filename.ext
-	if (cchFullPath - cchFileName > 3)
-	{
-		lpszCur = _tcsinc(lpszCur);
-		while (*lpszCur != '\\')
-		{
-			lpszCur = _tcsinc(lpszCur);
-			ASSERT(*lpszCur != '\0');
-		}
-	}
-	ASSERT(*lpszCur == '\\');
-
-	cchVolName = lpszCur - lpszBase;
-	if (cchMax < cchVolName + 5 + cchFileName)
-	{
-		lstrcpy(lpszCanon, lpszFileName);
-		return;
-	}
-
-	// Now loop through the remaining directory components until something
-	// of the form <volume_name>\...\<one_or_more_dirs>\<base_name> fits.
-	//
-	// Assert that the whole filename doesn't fit -- this should have been
-	// handled earlier.
-
-	ASSERT(cchVolName + (int)lstrlen(lpszCur) > cchMax);
-	while (cchVolName + 4 + (int)lstrlen(lpszCur) > cchMax)
-	{
-		do
-		{
-			lpszCur = _tcsinc(lpszCur);
-			ASSERT(*lpszCur != '\0');
-		}
-		while (*lpszCur != '\\');
-	}
-
-	// Form the resultant string and we're done.
-	lpszCanon[cchVolName] = '\0';
-	lstrcat(lpszCanon, _T("\\..."));
-	lstrcat(lpszCanon, lpszCur);
-}
-#endif
-
-static BOOL GetDisplayName(char* filename, CString& strName, LPCTSTR lpszCurDir, int nCurDir, BOOL bAtLeastName)
-{
-	LPTSTR lpch = strName.GetBuffer(_MAX_PATH);
-#ifndef _MAC
-	lstrcpy(lpch, filename);
-	// nLenDir is the length of the directory part of the full path
-	int nLenDir = lstrlen(lpch) - (AfxGetFileName(lpch, NULL, 0) - 1);
-	BOOL bSameDir = FALSE;
-	if (nLenDir == nCurDir)
-	{
-		TCHAR chSave = lpch[nLenDir];
-		lpch[nCurDir] = 0;  // terminate at same location as current dir
-		bSameDir = lstrcmpi(lpszCurDir, lpch) == 0;
-		lpch[nLenDir] = chSave;
-	}
-	// copy the full path, otherwise abbreviate the name
-	if (bSameDir)
-	{
-		// copy file name only since directories are same
-		char szTemp[_MAX_PATH];
-		AfxGetFileTitle(lpch+nCurDir, szTemp, sizeof(szTemp));
-		lstrcpyn(lpch, szTemp, _MAX_PATH);
-	}
-	else
-	{
-		// strip the extension if the system calls for it
-		char szTemp[_MAX_PATH];
-		AfxGetFileTitle(lpch+nLenDir, szTemp, sizeof(szTemp));
-		lstrcpyn(lpch+nLenDir, szTemp, _MAX_PATH-nLenDir);
-
-		// abbreviate name based on what will fit in limited space
-		AbbreviateName(lpch, 30, bAtLeastName);
-	}
-#else
-	// for Mac just show the file title name without path
-	AfxGetFileTitle(filename, lpch, _MAX_PATH);
-#endif
-	strName.ReleaseBuffer();
-	return TRUE;
-}
-
-void SystemUpdateRecentMenu(char names[4][LC_MAXPATH])
-{
-	CBMPMenu* pMenu = (CBMPMenu*)GetMainMenu(0);
-	if (!pMenu)
-		return;
-	UINT nState;
-
-	pMenu->DeleteMenu(ID_FILE_MRU_FILE2, MF_BYCOMMAND);
-	pMenu->DeleteMenu(ID_FILE_MRU_FILE3, MF_BYCOMMAND);
-	pMenu->DeleteMenu(ID_FILE_MRU_FILE4, MF_BYCOMMAND);
-
-	if (strlen(names[0]) == 0)
-	{
-		nState = pMenu->GetMenuState(ID_FILE_MRU_FILE1, MF_BYCOMMAND);
-		nState &= ~(MF_BITMAP|MF_OWNERDRAW|MF_SEPARATOR);
-		pMenu->ModifyMenu(ID_FILE_MRU_FILE1, MF_BYCOMMAND |
-		    MF_STRING | nState, ID_FILE_MRU_FILE1, "Recent File");
-		pMenu->EnableMenuItem(ID_FILE_MRU_FILE1, MF_BYCOMMAND | MF_DISABLED | MF_GRAYED);
-		return;
-	}
-
-#ifndef _MAC
-	TCHAR szCurDir[_MAX_PATH];
-	GetCurrentDirectory(_MAX_PATH, szCurDir);
-	int nCurDir = lstrlen(szCurDir);
-	ASSERT(nCurDir >= 0);
-	szCurDir[nCurDir] = '\\';
-	szCurDir[++nCurDir] = '\0';
-#endif
-
-	CString strName;
-	CString strTemp;
-	for (int i = 0; i < 4; i++)
-	{
-		if (strlen(names[i]) == 0)
-			break;
-		if (!GetDisplayName(names[i], strName, szCurDir, nCurDir, TRUE))
-			break;
-
-		// double up any '&' characters so they are not underlined
-		LPCTSTR lpszSrc = strName;
-		LPTSTR lpszDest = strTemp.GetBuffer(strName.GetLength()*2);
-		while (*lpszSrc != 0)
-		{
-			if (*lpszSrc == '&')
-				*lpszDest++ = '&';
-			if (_istlead(*lpszSrc))
-				*lpszDest++ = *lpszSrc++;
-			*lpszDest++ = *lpszSrc++;
-		}
-		*lpszDest = 0;
-		strTemp.ReleaseBuffer();
-
-		// insert mnemonic + the file name
-		char buf[200];
-		sprintf(buf, "&%d %s", i+1, strTemp);
-
-		if (i != 0)
-		{
-			UINT x = pMenu->GetMenuItemCount() - 2;
-			pMenu->InsertMenu(x, MF_BYPOSITION|MF_STRING, ID_FILE_MRU_FILE1 + i, buf);
-		}
-		else
-		{
-			nState = pMenu->GetMenuState(ID_FILE_MRU_FILE1, MF_BYCOMMAND);
-			nState &= ~(MF_BITMAP|MF_OWNERDRAW|MF_SEPARATOR);
-			pMenu->ModifyMenu(ID_FILE_MRU_FILE1, MF_BYCOMMAND |
-			    MF_STRING | nState, ID_FILE_MRU_FILE1 + i, buf);
-			pMenu->EnableMenuItem(ID_FILE_MRU_FILE1, MF_BYCOMMAND | MF_ENABLED);
-		}
-	}
+	theApp.UpdateMRU(names);
 }
 
 // if x = -1, get cursor pos 
 void SystemDoPopupMenu(int nMenu, int x, int y)
 {
-	CMenu* pPopup;
+	CMenu PopupMenus;
+	PopupMenus.LoadMenu(IDR_POPUPS);
+
 	POINT pt;
 
 	if (x != -1)
@@ -1177,8 +831,8 @@ void SystemDoPopupMenu(int nMenu, int x, int y)
 	else
 		GetCursorPos(&pt);
 
-	pPopup = menuPopups.GetSubMenu(nMenu);
-	pPopup->TrackPopupMenu(TPM_LEFTALIGN | TPM_LEFTBUTTON, pt.x, pt.y, AfxGetMainWnd());
+	CMFCPopupMenu* Popup = new CMFCPopupMenu();
+	Popup->Create(AfxGetMainWnd(), pt.x, pt.y, PopupMenus.GetSubMenu(nMenu)->Detach());
 }
 
 // Private MFC function only sets the title if it's different
@@ -1198,9 +852,14 @@ int SystemDoMessageBox(const char* prompt, int nMode)
 }
 
 int Sys_MessageBox (const char* text, const char* caption, int type)
+
 {
+
 	return AfxMessageBox(text, type);
+
 }
+
+
 
 extern BOOL AFXAPI AfxFullPath(LPTSTR lpszPathOut, LPCTSTR lpszFileIn);
 
@@ -1233,7 +892,7 @@ bool SystemDoDialog(int nMode, void* param)
 		case LC_DLG_FILE_SAVE_PROJECT:
 		{
 			CFileDialog dlg(FALSE, "*.lcd", (char*)param, OFN_HIDEREADONLY|OFN_PATHMUSTEXIST|OFN_OVERWRITEPROMPT|OFN_ENABLEHOOK|OFN_ENABLETEMPLATE,
-				"LeoCAD Projects (*.lcd)|*.lcd|LDraw Files (*.dat;*.ldr;*.mpd)|*.dat;*.ldr;*.mpd|All Files (*.*)|*.*||");
+				"LeoCAD Projects (*.lcd)|*.lcd|LDraw Files (*.dat;*.ldr)|*.dat;*.ldr|All Files (*.*)|*.*||");
 
 			dlg.m_ofn.lpfnHook = OFNSaveHookProc;
 			dlg.m_ofn.hInstance = AfxGetInstanceHandle();
@@ -1279,16 +938,16 @@ bool SystemDoDialog(int nMode, void* param)
 
 				CFileDialog dlg(TRUE, ".dat\0", NULL,OFN_ALLOWMULTISELECT | OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT | OFN_FILEMUSTEXIST,
 					"LDraw Files (*.dat)|*.dat|All Files (*.*)|*.*||",NULL);
-				dlg.m_ofn.lpstrFile = filename.GetBuffer(_MAX_PATH * 512);
-				dlg.m_ofn.nMaxFile = _MAX_PATH * 512;
+				dlg.m_ofn.lpstrFile = filename.GetBuffer(_MAX_PATH * 32);
+		    dlg.m_ofn.nMaxFile = _MAX_PATH;
 				dlg.m_ofn.lpstrInitialDir = opts->path;
 
-				if (dlg.DoModal() == IDOK)
+	      if (dlg.DoModal() == IDOK)
 				{
-					POSITION pos = dlg.GetStartPosition ();
+		      POSITION pos = dlg.GetStartPosition ();
 					int count = 0;
 
-					while (pos != NULL)
+		      while (pos != NULL)
 					{
 						dlg.GetNextPathName (pos);
 						count++;
@@ -1300,9 +959,9 @@ bool SystemDoDialog(int nMode, void* param)
 					pos = dlg.GetStartPosition ();
 					count = 0;
 
-					while (pos != NULL)
-					{
-						CString str = dlg.GetNextPathName (pos);
+		      while (pos != NULL)
+				  {
+		        CString str = dlg.GetNextPathName (pos);
 						opts->filenames[count] = (char*)malloc(LC_MAXPATH);
 						strcpy (opts->filenames[count], str);
 						count++;
@@ -1422,7 +1081,7 @@ bool SystemDoDialog(int nMode, void* param)
 				if (p != NULL)
 				{
 					strcpy(ext, p+1);
-					_strlwr(ext);
+					strlwr(ext);
 
 					if ((strcmp(ext, "jpg") == 0) || (strcmp(ext, "jpeg") == 0) ||
 						(strcmp(ext, "bmp") == 0) || (strcmp(ext, "gif") == 0) ||
@@ -1496,7 +1155,6 @@ bool SystemDoDialog(int nMode, void* param)
       dlg.m_bListStep = opts->liststep;
       dlg.m_bHighlight = opts->highlight;
       dlg.m_bHtmlExt = opts->htmlext;
-      dlg.m_strFolder = opts->path;
 
       if (dlg.DoModal() == IDOK)
 			{
@@ -1531,28 +1189,6 @@ bool SystemDoDialog(int nMode, void* param)
 		{
 			CFileDialog dlg(FALSE, "*.obj", NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT,
 				"Wavefront Files (*.obj)|*.obj|All Files (*.*)|*.*||", AfxGetMainWnd());
-			if (dlg.DoModal() == IDOK)
-			{
-				strcpy((char*)param, dlg.GetPathName());
-				return true;
-			}
-		} break;
-
-		case LC_DLG_VRML97:
-		{
-			CFileDialog dlg(FALSE, "*.wrl", NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT,
-				"VRML97 Files (*.wrl)|*.wrl|All Files (*.*)|*.*||", AfxGetMainWnd());
-			if (dlg.DoModal() == IDOK)
-			{
-				strcpy((char*)param, dlg.GetPathName());
-				return true;
-			}
-		} break;
-
-		case LC_DLG_X3DV:
-		{
-			CFileDialog dlg(FALSE, "*.x3dv", NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT,
-				"X3DV Files (*.x3dv)|*.x3dv|All Files (*.*)|*.*||", AfxGetMainWnd());
 			if (dlg.DoModal() == IDOK)
 			{
 				strcpy((char*)param, dlg.GetPathName());
@@ -1603,8 +1239,8 @@ bool SystemDoDialog(int nMode, void* param)
 
 			ps.m_PageGeneral.SetOptions(opts->nSaveInterval, opts->nMouse, opts->strPath, opts->strUser);
 			ps.m_PageDetail.SetOptions(opts->nDetail, opts->fLineWidth);
-			ps.m_PageDrawing.SetOptions(opts->nSnap, opts->nAngleSnap);
-			ps.m_PageColors.SetOptions();
+			ps.m_PageDrawing.SetOptions(opts->nSnap, opts->nAngleSnap, opts->nGridSize);
+			ps.m_PageScene.SetOptions(opts->nScene, opts->fDensity, opts->strBackground, opts->fBackground, opts->fFog, opts->fAmbient, opts->fGrad1, opts->fGrad2);
 			ps.m_PagePrint.SetOptions(opts->strHeader, opts->strFooter);
 			ps.m_PageKeyboard.SetOptions();
 
@@ -1612,8 +1248,8 @@ bool SystemDoDialog(int nMode, void* param)
 			{
 				ps.m_PageGeneral.GetOptions(&opts->nSaveInterval, &opts->nMouse, opts->strPath, opts->strUser);
 				ps.m_PageDetail.GetOptions(&opts->nDetail, &opts->fLineWidth);
-				ps.m_PageDrawing.GetOptions(&opts->nSnap, &opts->nAngleSnap);
-				ps.	m_PageColors.GetOptions();
+				ps.m_PageDrawing.GetOptions(&opts->nSnap, &opts->nAngleSnap, &opts->nGridSize);
+				ps.m_PageScene.GetOptions(&opts->nScene, &opts->fDensity, opts->strBackground, opts->fBackground, opts->fFog, opts->fAmbient, opts->fGrad1, opts->fGrad2);
 				ps.m_PagePrint.GetOptions(opts->strHeader, opts->strFooter);
 				ps.m_PageKeyboard.GetOptions();
 				AfxGetMainWnd()->PostMessage(WM_LC_UPDATE_SETTINGS);
@@ -1627,72 +1263,33 @@ bool SystemDoDialog(int nMode, void* param)
 
 		case LC_DLG_PROPERTIES:
 		{
+			CPropertiesSheet ps;
 			LC_PROPERTIESDLG_OPTS* opts = (LC_PROPERTIESDLG_OPTS*)param;
-			CPropertiesSheet ps(opts->PiecesUsed.GetSize() != 0);
 
-			ps.SetTitle("Model Properties", 0);
-			ps.m_PageSummary.m_Name = opts->Name;
-			ps.m_PageSummary.m_Author = opts->Author;
-			ps.m_PageSummary.m_Description = opts->Description;
-			ps.m_PageSummary.m_Comments = opts->Comments;
-
-			if (opts->SceneFlags & LC_SCENE_BG)
-				ps.m_PageScene.m_nBackground = 2;
-			else if (opts->SceneFlags & LC_SCENE_GRADIENT)
-				ps.m_PageScene.m_nBackground = 1;
-			else
-				ps.m_PageScene.m_nBackground = 0;
-			ps.m_PageScene.m_bTile = (opts->SceneFlags & LC_SCENE_BG_TILE) != 0;
-			ps.m_PageScene.m_bFog = (opts->SceneFlags & LC_SCENE_FOG) != 0;
-			ps.m_PageScene.m_bFloor = (opts->SceneFlags & LC_SCENE_FLOOR) != 0;
-			ps.m_PageScene.m_nFogDensity = (BYTE)(opts->FogDensity * 100);
-			ps.m_PageScene.m_strBackground = opts->BackgroundImage;
-			ps.m_PageScene.m_crBackground = RGB(opts->BackgroundColor[0] * 255, opts->BackgroundColor[1] * 255, opts->BackgroundColor[2] * 255);
-			ps.m_PageScene.m_crFog = RGB(opts->FogColor[0] * 255, opts->FogColor[1] * 255, opts->FogColor[2] * 255);
-			ps.m_PageScene.m_crAmbient = RGB(opts->AmbientColor[0] * 255, opts->AmbientColor[1] * 255, opts->AmbientColor[2] * 255);
-			ps.m_PageScene.m_crGrad1 = RGB(opts->Gradient1[0] * 255, opts->Gradient1[1] * 255, opts->Gradient1[2] * 255);
-			ps.m_PageScene.m_crGrad2 = RGB(opts->Gradient2[0] * 255, opts->Gradient2[1] * 255, opts->Gradient2[2] * 255);
-
-			ps.m_PagePieces.m_PiecesUsed = opts->PiecesUsed;
+			ps.SetTitle(opts->strTitle, PSH_PROPTITLE);
+			ps.m_PageSummary.m_strAuthor = opts->strAuthor;
+			ps.m_PageSummary.m_strDescription = opts->strDescription;
+			ps.m_PageSummary.m_strComments = opts->strComments;
+			ps.m_PageGeneral.m_strFilename = opts->strFilename;
+			ps.m_PagePieces.names = opts->names;
+			ps.m_PagePieces.count = opts->count;
+			ps.m_PagePieces.lines = opts->lines;
 
 			if (ps.DoModal() == IDOK)
 			{
-				opts->Name = ps.m_PageSummary.m_Name;
-				opts->Author = ps.m_PageSummary.m_Author;
-				opts->Description = ps.m_PageSummary.m_Description;
-				opts->Comments = ps.m_PageSummary.m_Comments;
-
-				opts->SceneFlags = 0;
-				if (ps.m_PageScene.m_nBackground == 2)
-					opts->SceneFlags |= LC_SCENE_BG;
-				else if (ps.m_PageScene.m_nBackground == 1)
-					opts->SceneFlags |= LC_SCENE_GRADIENT;
-				if (ps.m_PageScene.m_bTile)
-					opts->SceneFlags |= LC_SCENE_BG_TILE;
-				if (ps.m_PageScene.m_bFog)
-					opts->SceneFlags |= LC_SCENE_FOG;
-				if (ps.m_PageScene.m_bFloor)
-					opts->SceneFlags |= LC_SCENE_FLOOR;
-				opts->FogDensity = (float)ps.m_PageScene.m_nFogDensity / 100;
-				opts->BackgroundImage = ps.m_PageScene.m_strBackground;
-				opts->BackgroundColor[0] = (float)GetRValue(ps.m_PageScene.m_crBackground) / 255;
-				opts->BackgroundColor[1] = (float)GetGValue(ps.m_PageScene.m_crBackground) / 255;
-				opts->BackgroundColor[2] = (float)GetBValue(ps.m_PageScene.m_crBackground) / 255;
-				opts->FogColor[0] = (float)GetRValue(ps.m_PageScene.m_crFog) / 255;
-				opts->FogColor[1] = (float)GetGValue(ps.m_PageScene.m_crFog) / 255;
-				opts->FogColor[2] = (float)GetBValue(ps.m_PageScene.m_crFog) / 255;
-				opts->AmbientColor[0] = (float)GetRValue(ps.m_PageScene.m_crAmbient) / 255;
-				opts->AmbientColor[1] = (float)GetGValue(ps.m_PageScene.m_crAmbient) / 255;
-				opts->AmbientColor[2] = (float)GetBValue(ps.m_PageScene.m_crAmbient) / 255;
-				opts->Gradient1[0] = (float)GetRValue(ps.m_PageScene.m_crGrad1) / 255;
-				opts->Gradient1[1] = (float)GetGValue(ps.m_PageScene.m_crGrad1) / 255;
-				opts->Gradient1[2] = (float)GetBValue(ps.m_PageScene.m_crGrad1) / 255;
-				opts->Gradient2[0] = (float)GetRValue(ps.m_PageScene.m_crGrad2) / 255;
-				opts->Gradient2[1] = (float)GetGValue(ps.m_PageScene.m_crGrad2) / 255;
-				opts->Gradient2[2] = (float)GetBValue(ps.m_PageScene.m_crGrad2) / 255;
+				strcpy(opts->strAuthor, ps.m_PageSummary.m_strAuthor);
+				strcpy(opts->strDescription, ps.m_PageSummary.m_strDescription);
+				strcpy(opts->strComments, ps.m_PageSummary.m_strComments);
 
 				return true;
 			}
+		} break;
+
+		case LC_DLG_TERRAIN:
+		{
+			CTerrainDlg dlg((Terrain*)param, false);
+			if (dlg.DoModal() == IDOK)
+				return true;
 		} break;
 
 		case LC_DLG_LIBRARY:
@@ -1700,8 +1297,8 @@ bool SystemDoDialog(int nMode, void* param)
 			CLibraryDlg dlg;
 			dlg.DoModal();
 
-			CPiecesBar* pBar = (CPiecesBar*)((CFrameWnd*)AfxGetMainWnd())->GetControlBar(ID_VIEW_PIECES_BAR);
-			pBar->UpdatePiecesTree();
+			CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
+			pFrame->m_wndPiecesBar.UpdatePiecesTree(false);
 
 			return true;
 		} break;
@@ -1717,7 +1314,7 @@ bool SystemDoDialog(int nMode, void* param)
 		{
 			if (StepModeless == NULL)
 			{
-				CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
+				CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 				CView* pView = pFrame->GetActiveView();
 				StepModeless = new CStepDlg(&StepModeless, pView);
 				StepModeless->Create(IDD_STEP, pView);
@@ -1756,6 +1353,7 @@ bool SystemDoDialog(int nMode, void* param)
 			if (dlg.DoModal() == IDOK)
 			{
 				strcpy((char*)param, dlg.m_strName);
+
 				return true;
 			}
 		} break;
@@ -1777,19 +1375,11 @@ bool SystemDoDialog(int nMode, void* param)
 			}
 		} break;
 
-		case LC_DLG_MODEL_LIST:
-		{
-			CModelListDlg Dlg;
-			Dlg.DoModal();
-			return true;
-		} break;
-
 		case LC_DLG_ABOUT:
 		{
 			CAboutDlg dlg;
 			dlg.m_hViewDC = pfnwglGetCurrentDC();
 			dlg.DoModal();
-			return true;
 		} break;
 	}
 
@@ -1799,7 +1389,7 @@ bool SystemDoDialog(int nMode, void* param)
 /////////////////////////////////////////////////////////////////////////////
 // Memory rendering functions
 
-struct LC_RENDER
+typedef struct
 {
 	HDC hdc;
 	HDC oldhdc;
@@ -1807,12 +1397,12 @@ struct LC_RENDER
 	HGLRC oldhrc;
 	HBITMAP hbm;
 	HBITMAP oldhbm;
-};
+} LC_RENDER;
 
 void* Sys_StartMemoryRender(int width, int height)
 {
 	LC_RENDER* render = (LC_RENDER*)malloc(sizeof(LC_RENDER));
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 	CView* pView = pFrame->GetActiveView();
 	CDC* pDC = pView->GetDC();
 	render->oldhdc = pfnwglGetCurrentDC();
@@ -1875,7 +1465,7 @@ void SystemPieceComboAdd(char* name)
 
 void SystemCaptureMouse()
 {
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 	CView* pView = pFrame->GetActiveView();
 	pView->SetCapture();
 }
@@ -1885,7 +1475,7 @@ void SystemReleaseMouse()
 	ReleaseCapture();
 }
 
-void SystemExportClipboard(lcFile* clip)
+void SystemExportClipboard(File* clip)
 {
 	if (clip == NULL)
 		return;
@@ -1905,9 +1495,9 @@ void SystemExportClipboard(lcFile* clip)
 //		AfxMessageBox(IDS_CANNOT_OPEN_CLIPBOARD);
 }
 
-lcFile* SystemImportClipboard()
+File* SystemImportClipboard()
 {
-	lcFile* clip = NULL;
+	File* clip = NULL;
 
 	if (ClipboardFormat != 0)
 	if (OpenClipboard(NULL))
@@ -1915,7 +1505,7 @@ lcFile* SystemImportClipboard()
 		HANDLE hData = ::GetClipboardData(ClipboardFormat);
 		if (hData != NULL)
 		{
-			clip = new lcFileMem();
+			clip = new FileMem();
 
 			BYTE* lpBuffer = (BYTE*)::GlobalLock(hData);
 			long nBufferSize = ::GlobalSize(hData);
@@ -1934,7 +1524,7 @@ lcFile* SystemImportClipboard()
 
 bool Sys_KeyDown(int key)
 {
-  return GetKeyState(key) < 0;
+	return GetKeyState(key) < 0;
 }
 
 
@@ -1942,7 +1532,7 @@ void SystemPumpMessages()
 {
 	MSG msg;
 
-  while(PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
+	while(PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
 	{
 		TranslateMessage(&msg);
 		DispatchMessage(&msg);
@@ -1954,79 +1544,39 @@ long SystemGetTicks()
 	return GetTickCount();
 }
 
-u64 SystemGetMilliseconds()
-{
-	static LARGE_INTEGER TicksPerSecond;
-	LARGE_INTEGER Now;
-
-	QueryPerformanceCounter(&Now);
-
-	if (!TicksPerSecond.QuadPart)
-		QueryPerformanceFrequency(&TicksPerSecond);
-
-	return (u64)(Now.QuadPart / (TicksPerSecond.QuadPart / 1000.0));
-}
-
 void SystemStartProgressBar(int nLower, int nUpper, int nStep, const char* Text)
 {
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 	if (!pFrame)
 		return;
-	CCADStatusBar* pStatusBar = (CCADStatusBar*)pFrame->GetControlBar(AFX_IDW_STATUS_BAR);
+	CCADStatusBar* pStatusBar = &pFrame->m_wndStatusBar;
 
 	pStatusBar->ShowProgressBar(TRUE);
 	pStatusBar->SetProgressBarRange(nLower, nUpper);
 	pStatusBar->SetProgressBarStep(nStep);
 	pStatusBar->SetProgressBarPos(0);
 
-  ((CMainFrame*)AfxGetMainWnd())->SetStatusBarMessage(Text); 
-	((CMainFrame*)AfxGetMainWnd())->SetMessageText(Text);
+	pFrame->SetStatusBarMessage(Text); 
+	pFrame->SetMessageText(Text);
 }
 
-void SystemEndProgressBar()
+void SytemEndProgressBar()
 {
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 	if (!pFrame)
 		return;
-	CCADStatusBar* pStatusBar = (CCADStatusBar*)pFrame->GetControlBar(AFX_IDW_STATUS_BAR);
 
-	pStatusBar->ShowProgressBar(FALSE);
+	pFrame->m_wndStatusBar.ShowProgressBar(FALSE);
 
-  ((CMainFrame*)AfxGetMainWnd())->SetStatusBarMessage(""); 
-	((CMainFrame*)AfxGetMainWnd())->SetMessageText(AFX_IDS_IDLEMESSAGE);
+	pFrame->SetStatusBarMessage(""); 
+	pFrame->SetMessageText(AFX_IDS_IDLEMESSAGE);
 }
 
-void SystemStepProgressBar()
+void SytemStepProgressBar()
 {
-	CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
+	CMainFrame* pFrame = (CMainFrame*)AfxGetMainWnd();
 	if (!pFrame)
 		return;
-	CCADStatusBar* pStatusBar = (CCADStatusBar*)pFrame->GetControlBar(AFX_IDW_STATUS_BAR);
 
-	pStatusBar->StepProgressBar();
-}
-
-void SystemUpdateViewLayout()
-{
-	CMainFrame* Frame = (CMainFrame*)AfxGetMainWnd();
-
-	if (Frame)
-		Frame->OnViewResetViews();
-}
-
-String SystemGetViewLayout()
-{
-	CMainFrame* Frame = (CMainFrame*)AfxGetMainWnd();
-	String Layout;
-
-	if (Frame)
-	{
-		Frame->GetViewLayout(NULL, Layout);
-	}
-	else
-	{
-		Layout = Sys_ProfileLoadString("Settings", "ViewLayout", "V4|Main");
-	}
-
-	return Layout;
+	pFrame->m_wndStatusBar.StepProgressBar();
 }

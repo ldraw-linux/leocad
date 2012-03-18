@@ -4,11 +4,11 @@
 #include "glwindow.h"
 #include "file.h"
 #include "algebra.h"
-#include "lc_array.h"
+#include "array.h"
 
 class PieceInfo;
 
-typedef	enum LC_MFW_TYPES
+enum LC_MFW_TYPES
 {
 	LC_MFW_HAT,
 	LC_MFW_HEAD,
@@ -38,10 +38,10 @@ struct lcMinifigPieceInfo
 class MinifigWizard : public GLWindow
 {
 public:
-	MinifigWizard(GLWindow *share);
-	~MinifigWizard();
+	MinifigWizard (GLWindow *share);
+	~MinifigWizard ();
 
-	void OnDraw();
+	void OnDraw ();
 	void OnInitialUpdate();
 
 	void Calculate();
@@ -50,14 +50,14 @@ public:
 	void SetColor(int Type, int Color);
 	void SetAngle(int Type, float Angle);
 
-	void GetMinifigNames(char*** names, int* count);
-	void SaveMinifig(const char* name);
-	bool LoadMinifig(const char* name);
-	void DeleteMinifig(const char* name);
+	void GetMinifigNames (char ***names, int *count);
+	void SaveMinifig (const char* name);
+	bool LoadMinifig (const char* name);
+	void DeleteMinifig (const char* name);
 
-	void ParseSettings(lcFile& Settings);
+	void ParseSettings(File& Settings);
 
-	lcObjArray<lcMinifigPieceInfo> mSettings[LC_MFW_NUMITEMS];
+	ObjArray<lcMinifigPieceInfo> mSettings[LC_MFW_NUMITEMS];
 
 	PieceInfo* m_Info[LC_MFW_NUMITEMS];
 	int m_Colors[LC_MFW_NUMITEMS];
@@ -66,9 +66,9 @@ public:
 
 protected:
 	// saved minifig templates
-	int m_MinifigCount;
-	char** m_MinifigNames;
-	char** m_MinifigTemplates;
+	int  m_MinifigCount;
+	char **m_MinifigNames;
+	char **m_MinifigTemplates;
 };
 
 #endif // _MINIFIG_H_

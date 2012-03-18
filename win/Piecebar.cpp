@@ -1,17 +1,11 @@
-// SizingControlBar.cpp : implementation file
-//
-
-#include "lc_global.h"
-#include "afxpriv.h"    // for CDockContext
+#include "stdafx.h"
 #include "resource.h"
 #include "piecebar.h"
 #include "library.h"
 #include "pieceinf.h"
 #include "project.h"
-#include "lc_colors.h"
+#include "globals.h"
 #include "lc_application.h"
-#include "lc_model.h"
-#include "preview.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -54,12 +48,7 @@ CPiecesBar::CPiecesBar()
 {
 	int i = AfxGetApp()->GetProfileInt("Settings", "Piecebar Options", 0);
 	m_bSubParts = (i & PIECEBAR_SUBPARTS) != 0;
-	m_bNumbers = (i & PIECEBAR_PARTNUMBERS) != 0;
-
-	m_dwSCBStyle |= SCBS_SHOWEDGES;
 	m_nPreviewHeight = AfxGetApp()->GetProfileInt("Settings", "Preview Height", 93);
-
-	m_szMinHorz = m_szMinVert = m_szMinFloat = CSize(228, 200);
 }
 
 CPiecesBar::~CPiecesBar()
@@ -67,12 +56,12 @@ CPiecesBar::~CPiecesBar()
 	AfxGetApp()->WriteProfileInt("Settings", "Preview Height", m_nPreviewHeight);
 }
 
-BEGIN_MESSAGE_MAP(CPiecesBar, CSizingControlBarG)
-	//{{AFX_MSG_MAP(CPiecesBar)
-	ON_WM_SIZE()
+BEGIN_MESSAGE_MAP(CPiecesBar, CDockablePane)
 	ON_WM_CREATE()
+	ON_WM_SIZE()
+	ON_WM_ERASEBKGND()
 	ON_WM_CONTEXTMENU()
-	//}}AFX_MSG_MAP
+	ON_LBN_SELCHANGE(IDW_COLORSLIST, OnSelChangeColor)
 	ON_MESSAGE(WM_LC_SPLITTER_MOVED, OnSplitterMoved)
 END_MESSAGE_MAP()
 
@@ -80,42 +69,49 @@ END_MESSAGE_MAP()
 /////////////////////////////////////////////////////////////////////////
 // CPiecesBar message handlers
 
-void CPiecesBar::OnSize(UINT nType, int cx, int cy) 
+void CPiecesBar::AdjustLayout(int cx, int cy)
 {
-	CSizingControlBarG::OnSize(nType, cx, cy);
-
 	if (!IsWindow(m_wndColorsList.m_hWnd))
 		return;
 
-	int off = 72+2+5;
-//	int ColorWidth = ((cx-2) / LC_COLORLIST_NUM_COLS) * LC_COLORLIST_NUM_COLS + 2;
-	m_wndColorsList.SetWindowPos(NULL, 5, cy-off, cx - 10, 72+2, SWP_NOZORDER);
+	int off = 31;
+	m_wndColorsList.SetWindowPos (NULL, (cx-210)/2, cy-off, 212, 26, SWP_NOZORDER);
 
 	off += 30;
 	m_wndPiecesCombo.SetWindowPos (NULL, 5, cy-off, cx-10, 140, SWP_NOZORDER);
 
-	m_wndSplitter.SetWindowPos(NULL, 5, m_nPreviewHeight+6, cx-10, 4, SWP_NOZORDER);
-	m_PiecesTree.SetWindowPos(NULL, 5, m_nPreviewHeight+10, cx-10, cy-off-15-m_nPreviewHeight, SWP_NOZORDER);
-	m_wndPiecePreview.SetWindowPos(NULL, 5, 5, cx-10, m_nPreviewHeight, 0);
-	m_wndPiecePreview.EnableWindow(TRUE);
-	m_wndPiecePreview.ShowWindow(SW_SHOW);
-	m_wndSplitter.ShowWindow(SW_SHOW);
+	m_wndSplitter.SetWindowPos (NULL, 5, m_nPreviewHeight+6, cx-10, 4, SWP_NOZORDER);
+	m_PiecesTree.SetWindowPos (NULL, 5, m_nPreviewHeight+10, cx-10, cy-off-15-m_nPreviewHeight, SWP_NOZORDER);
+	m_wndPiecePreview.SetWindowPos (NULL, 5, 5, cx-10, m_nPreviewHeight, 0);
+	m_wndPiecePreview.EnableWindow (TRUE);
 
+	InvalidateRect(NULL, TRUE);
+	m_wndPiecePreview.InvalidateRect(NULL, FALSE);
+	m_wndSplitter.InvalidateRect(NULL, TRUE);
+	m_PiecesTree.InvalidateRect(NULL, TRUE);
+
+	m_wndPiecePreview.ShowWindow (SW_SHOW);
+	m_wndSplitter.ShowWindow (SW_SHOW);
 	m_wndPiecesCombo.ShowWindow(SW_SHOW);
 }
 
-int CPiecesBar::OnCreate(LPCREATESTRUCT lpCreateStruct) 
+int CPiecesBar::OnCreate(LPCREATESTRUCT lpCreateStruct)
 {
-	if (CSizingControlBarG::OnCreate(lpCreateStruct) == -1)
+	if (CDockablePane::OnCreate(lpCreateStruct) == -1)
 		return -1;
 
 	m_PiecesTree.Create(WS_VISIBLE|WS_TABSTOP|WS_BORDER|TVS_SHOWSELALWAYS|TVS_HASBUTTONS|TVS_HASLINES|TVS_LINESATROOT|TVS_INFOTIP, 
 	                    CRect(0,0,0,0), this, IDW_PIECESTREE);
 
-	m_wndPiecesCombo.Create(CBS_DROPDOWN|CBS_SORT|CBS_HASSTRINGS|WS_VISIBLE|WS_CHILD|
-	                        WS_VSCROLL|WS_TABSTOP, CRect(0,0,0,0), this, IDW_PIECESCOMBO);
+	m_wndColorsList.Create(LBS_MULTICOLUMN|LBS_NOINTEGRALHEIGHT|LBS_NOTIFY|
+	                       LBS_OWNERDRAWFIXED|WS_VISIBLE|WS_TABSTOP|WS_CHILD|WS_BORDER,
+	                       CRect (0,0,0,0), this, IDW_COLORSLIST);
 
-	m_wndColorsList.Create(WS_VISIBLE|WS_TABSTOP|WS_CHILD, CRect(0, 0, 0, 0), this, IDW_COLORSLIST);
+	for (int i = 0; i < LC_MAXCOLORS; i++)
+		m_wndColorsList.AddString("");
+
+	m_wndPiecesCombo.Create(CBS_DROPDOWN|CBS_SORT|CBS_HASSTRINGS|WS_VISIBLE|WS_CHILD|
+	                        WS_VSCROLL|WS_TABSTOP, CRect (0,0,0,0), this, IDW_PIECESCOMBO);
 
 	//  Create a font for the combobox
 	LOGFONT logFont;
@@ -136,9 +132,8 @@ int CPiecesBar::OnCreate(LPCREATESTRUCT lpCreateStruct)
 		m_wndPiecesCombo.SetFont(&m_Font);
 	}
 
-	m_wndPiecePreview.Create(NULL, NULL, WS_BORDER|WS_CHILD|WS_VISIBLE,
-	                         CRect(0, 0, 0, 0), this, IDW_PIECEPREVIEW);
-
+	m_wndPiecePreview.Create (NULL, NULL, WS_BORDER|WS_CHILD|WS_VISIBLE, CRect(0, 0, 0, 0), this, IDW_PIECEPREVIEW);
+	
 	CreateWindow("STATIC", "", WS_VISIBLE|WS_CHILD|SS_ETCHEDFRAME, 0, 0, 0, 0,
 	             m_hWnd, (HMENU)IDW_PIECEBAR_SPLITTER, AfxGetInstanceHandle(), NULL);
 
@@ -152,6 +147,32 @@ int CPiecesBar::OnCreate(LPCREATESTRUCT lpCreateStruct)
 	return 0;
 }
 
+BOOL CPiecesBar::OnEraseBkgnd(CDC* pDC)
+{
+	CRect rectClient;
+	GetClientRect(rectClient);
+
+	CMFCVisualManager::GetInstance()->OnFillBarBackground(pDC, this, rectClient, rectClient);
+
+	return TRUE;
+}
+
+void CPiecesBar::OnSize(UINT nType, int cx, int cy)
+{
+	CDockablePane::OnSize(nType, cx, cy);
+	AdjustLayout(cx, cy);
+}
+
+void CPiecesBar::OnSelChangeColor()
+{
+	int i = m_wndColorsList.GetCurSel();
+	if (i == LB_ERR)
+		return;
+
+	lcGetActiveProject()->HandleNotify(LC_COLOR_CHANGED, (i % 2 == 0) ? (i/2) : (((i-1)/2)+14));
+	m_wndPiecePreview.PostMessage (WM_PAINT);
+}
+
 LONG CPiecesBar::OnSplitterMoved(UINT lParam, LONG wParam)
 {
 	UNREFERENCED_PARAMETER(wParam);
@@ -161,25 +182,12 @@ LONG CPiecesBar::OnSplitterMoved(UINT lParam, LONG wParam)
 	else
 		m_nPreviewHeight += lParam;
 
-	SetWindowPos(NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED);
+	CRect rectClient;
+	GetClientRect(rectClient);
+
+	AdjustLayout(rectClient.Width(), rectClient.Height());
 
 	return TRUE;
-}
-
-/////////////////////////////////////////////////////////////////////////
-// CPiecesBar implementation helpers
-
-void CPiecesBar::OnUpdateCmdUI(CFrameWnd * pTarget, BOOL bDisableIfNoHndler)
-{
-//	CWnd::OnUpdateCmdUI(pTarget, FALSE);
-//	int nID = ID_PIECE_GROUP02;
-
-//	int sta = m_wndGroupsBar.GetToolBarCtrl().GetState(nID) & ~TBSTATE_ENABLED;
-//	if (bEnable)
-//		sta |= TBSTATE_ENABLED|TBSTATE_CHECKED;
-//	m_wndGroupsBar.GetToolBarCtrl().SetState(nID, sta);
-
-	UpdateDialogControls(pTarget, FALSE);
 }
 
 void CPiecesBar::OnContextMenu(CWnd* pWnd, CPoint point) 
@@ -258,7 +266,7 @@ void CPiecesBar::SelectPiece(const char* Category, PieceInfo* Info)
 		PieceInfo* Parent;
 
 		// Find the parent of this patterned piece and expand it.
-		char ParentName[9];
+		char ParentName[LC_PIECE_NAME_LEN];
 		strcpy(ParentName, Info->m_strName);
 		*strchr(ParentName, 'P') = '\0';
 
@@ -270,20 +278,17 @@ void CPiecesBar::SelectPiece(const char* Category, PieceInfo* Info)
 
 			while (Item != NULL)
 			{
-				if (m_PiecesTree.GetItemData(Item) == (LPARAM)Parent)
+				CString Name = m_PiecesTree.GetItemText(Item);
+
+				if (Name == Parent->m_strDescription)
 				{
-					CString Name = m_PiecesTree.GetItemText(Item);
+					m_PiecesTree.Expand(Item, TVE_EXPAND);
 
-					if (Name == Parent->m_strDescription)
-					{
-						m_PiecesTree.Expand(Item, TVE_EXPAND);
+					// If both descriptions begin with the same text, only show the difference.
+					if (!strncmp(Info->m_strDescription, Parent->m_strDescription, strlen(Parent->m_strDescription)))
+						PieceName = Info->m_strDescription + strlen(Parent->m_strDescription) + 1;
 
-						// If both descriptions begin with the same text, only show the difference.
-						if (!strncmp(Info->m_strDescription, Parent->m_strDescription, strlen(Parent->m_strDescription)))
-							PieceName = Info->m_strDescription + strlen(Parent->m_strDescription) + 1;
-
-						break;
-					}
+					break;
 				}
 
 				Item = m_PiecesTree.GetNextSiblingItem(Item);
@@ -338,8 +343,16 @@ void CPiecesBar::UpdatePiecesTree(const char* OldCategory, const char* NewCatego
 	}
 	else if (NewCategory)
 	{
-		HTREEITEM Item;
-		Item = m_PiecesTree.InsertItem(TVIF_CHILDREN|TVIF_PARAM|TVIF_TEXT, NewCategory, 0, 0, 0, 0, 0, TVI_ROOT, TVI_SORT);
+		TVINSERTSTRUCT Insert;
+
+		memset(&Insert, 0, sizeof(Insert));
+		Insert.hParent = TVI_ROOT;
+		Insert.hInsertAfter = TVI_SORT;
+		Insert.item.mask = TVIF_CHILDREN|TVIF_PARAM|TVIF_TEXT;
+		Insert.item.pszText = (LPSTR)NewCategory;
+		Insert.item.cChildren = 1;
+
+		HTREEITEM Item = m_PiecesTree.InsertItem(&Insert);
 		m_PiecesTree.EnsureVisible(Item);
 	}
 	else if (OldCategory)
@@ -363,76 +376,51 @@ void CPiecesBar::UpdatePiecesTree(const char* OldCategory, const char* NewCatego
 	}
 }
 
-void CPiecesBar::UpdatePiecesTreeSearch()
+void CPiecesBar::UpdatePiecesTree(bool SearchOnly)
 {
-	HTREEITEM Item = m_PiecesTree.GetChildItem(TVI_ROOT);
+	PiecesLibrary *Lib = lcGetPiecesLibrary();
 
-	while (Item != NULL)
+	if (SearchOnly)
 	{
-		CString Name = m_PiecesTree.GetItemText(Item);
+		HTREEITEM Item = m_PiecesTree.GetChildItem(TVI_ROOT);
 
-		if (Name == "Search Results")
-			break;
+		while (Item != NULL)
+		{
+			CString Name = m_PiecesTree.GetItemText(Item);
 
-		Item = m_PiecesTree.GetNextSiblingItem(Item);
-	}
+			if (Name == "Search Results")
+				break;
 
-	if (Item == NULL)
-	{
-		Item = m_PiecesTree.InsertItem(TVIF_CHILDREN|TVIF_PARAM|TVIF_TEXT, "Search Results", 0, 0, 0, 0, 0, TVI_ROOT, TVI_LAST);
-	}
+			Item = m_PiecesTree.GetNextSiblingItem(Item);
+		}
 
-	m_PiecesTree.Expand(Item, TVE_COLLAPSE | TVE_COLLAPSERESET);
-	m_PiecesTree.EnsureVisible(Item);
-	m_PiecesTree.Expand(Item, TVE_EXPAND);
-}
+		if (Item == NULL)
+		{
+			Item = m_PiecesTree.InsertItem(TVIF_CHILDREN|TVIF_PARAM|TVIF_TEXT, "Search Results", 0, 0, 0, 0, 0, TVI_ROOT, TVI_LAST);
+		}
 
-void CPiecesBar::UpdatePiecesTreeModels()
-{
-	HTREEITEM Item = m_PiecesTree.GetChildItem(TVI_ROOT);
-
-	while (Item != NULL)
-	{
-		CString Name = m_PiecesTree.GetItemText(Item);
-
-		if (Name == "Models")
-			break;
-
-		Item = m_PiecesTree.GetNextSiblingItem(Item);
-	}
-
-	if (Item == NULL)
-	{
-		Item = m_PiecesTree.InsertItem(TVIF_CHILDREN|TVIF_PARAM|TVIF_TEXT, "Models", 0, 0, 0, 0, 0, TVI_ROOT, TVI_LAST);
-	}
-
-	if (m_PiecesTree.GetItemState(Item, TVIS_EXPANDED) & TVIS_EXPANDED)
-	{
 		m_PiecesTree.Expand(Item, TVE_COLLAPSE | TVE_COLLAPSERESET);
+		m_PiecesTree.EnsureVisible(Item);
 		m_PiecesTree.Expand(Item, TVE_EXPAND);
 	}
-}
-
-void CPiecesBar::UpdatePiecesTree()
-{
-	PiecesLibrary* Lib = lcGetPiecesLibrary();
-
-	m_PiecesTree.SetRedraw(FALSE);
-	m_PiecesTree.DeleteAllItems();
-
-	for (int i = 0; i < Lib->GetNumCategories(); i++)
+	else
 	{
-		if (Lib->GetCategoryName(i) == "Search Results")
-			continue;
+		m_PiecesTree.SetRedraw(FALSE);
+		m_PiecesTree.DeleteAllItems();
 
-		m_PiecesTree.InsertItem(TVIF_CHILDREN|TVIF_PARAM|TVIF_TEXT, Lib->GetCategoryName(i), 0, 0, 0, 0, 0, TVI_ROOT, TVI_SORT);
+		for (int i = 0; i < Lib->GetNumCategories(); i++)
+		{
+			if (Lib->GetCategoryName(i) == "Search Results")
+				continue;
+
+			m_PiecesTree.InsertItem(TVIF_CHILDREN|TVIF_PARAM|TVIF_TEXT, Lib->GetCategoryName(i), 0, 0, 0, 0, 0, TVI_ROOT, TVI_SORT);
+		}
+
+		m_PiecesTree.InsertItem(TVIF_CHILDREN|TVIF_PARAM|TVIF_TEXT, "Search Results", 0, 0, 0, 0, 0, TVI_ROOT, TVI_LAST);
+
+		m_PiecesTree.SetRedraw(TRUE);
+		m_PiecesTree.Invalidate();
 	}
-
-	m_PiecesTree.InsertItem(TVIF_CHILDREN|TVIF_PARAM|TVIF_TEXT, "Models", 0, 0, 0, 0, 0, TVI_ROOT, TVI_LAST);
-	m_PiecesTree.InsertItem(TVIF_CHILDREN|TVIF_PARAM|TVIF_TEXT, "Search Results", 0, 0, 0, 0, 0, TVI_ROOT, TVI_LAST);
-
-	m_PiecesTree.SetRedraw(TRUE);
-	m_PiecesTree.Invalidate();
 }
 
 void CPiecesBar::RefreshPiecesTree()
@@ -459,42 +447,39 @@ BOOL CPiecesBar::OnNotify(WPARAM wParam, LPARAM lParam, LRESULT* pResult)
 
 		if (Notify->hdr.code == TVN_SELCHANGED)
 		{
-			void* Selection = (void*)Notify->itemNew.lParam;
+			PieceInfo* Info = (PieceInfo*)Notify->itemNew.lParam;
 
-			if (Selection)
-				g_App->m_PiecePreview->SetSelection(Selection);
-
-			return TRUE;
+			if (Info != NULL)
+			{
+				lcGetActiveProject()->SetCurrentPiece(Info);
+				m_wndPiecePreview.SetPieceInfo(Info);
+				m_wndPiecePreview.PostMessage(WM_PAINT);
+			}
 		}
 		else if (Notify->hdr.code == TVN_BEGINDRAG)
 		{
-			if (Notify->itemNew.lParam)
-			{
-				m_PiecesTree.SelectItem(Notify->itemNew.hItem);
+			PieceInfo* Info = (PieceInfo*)Notify->itemNew.lParam;
 
-				lcGetActiveProject()->BeginPieceDrop();
+			if (Info != NULL)
+			{
+				lcGetActiveProject()->BeginPieceDrop(Info);
 
 				// Force a cursor update.
-				CFrameWnd* pFrame = (CFrameWnd*)AfxGetMainWnd();
+				CFrameWndEx* pFrame = (CFrameWndEx*)AfxGetMainWnd();
 				CView* pView = pFrame->GetActiveView();
 				pView->PostMessage(WM_LC_SET_CURSOR, 0, 0);
 			}
-
-			return TRUE;
 		}
 		else if (Notify->hdr.code == TVN_GETINFOTIP)
 		{
 			LPNMTVGETINFOTIP Tip = (LPNMTVGETINFOTIP)lParam;
 			HTREEITEM Item = Tip->hItem;
-			void* Data = (void*)m_PiecesTree.GetItemData(Item);
+			PieceInfo* Info = (PieceInfo*)m_PiecesTree.GetItemData(Item);
 
-			if (Data)
+			if (Info != NULL)
 			{
-				PieceInfo* Info = (PieceInfo*)Data;
 				_snprintf(Tip->pszText, Tip->cchTextMax, "%s (%s)", Info->m_strDescription, Info->m_strName);
 			}
-
-			return TRUE;
 		}
 		else if (Notify->hdr.code == TVN_ITEMEXPANDING)
 		{
@@ -520,81 +505,45 @@ BOOL CPiecesBar::OnNotify(WPARAM wParam, LPARAM lParam, LRESULT* pResult)
 					}
 				}
 
+				// Check if we're expanding a category item.
 				if (Notify->itemNew.lParam == NULL)
 				{
 					HTREEITEM CategoryItem = Notify->itemNew.hItem;
 					CString CategoryName = m_PiecesTree.GetItemText(CategoryItem);
+					int CategoryIndex = Lib->FindCategoryIndex((const char*)CategoryName);
 
-					if (CategoryName == "Models")
+					PtrArray<PieceInfo> SinglePieces, GroupedPieces;
+
+					if (CategoryIndex != -1)
 					{
-						// List models.
-						Project* project = lcGetActiveProject();
-						bool Empty = true;
+						int i;
 
-						for (int i = 0; i < project->m_ModelList.GetSize(); i++)
+						Lib->GetCategoryEntries(CategoryIndex, true, SinglePieces, GroupedPieces);
+
+						// Merge and sort the arrays.
+						SinglePieces += GroupedPieces;
+						SinglePieces.Sort(PiecesSortFunc, NULL);
+
+						for (i = 0; i < SinglePieces.GetSize(); i++)
 						{
-							lcModel* Model = project->m_ModelList[i];
+							PieceInfo* Info = SinglePieces[i];
 
-							if ((Model == project->m_ActiveModel) || (Model->IsSubModel(project->m_ActiveModel)))
+							if (!m_bSubParts && Info->IsSubPiece())
 								continue;
 
-							Empty = false;
-
-							m_PiecesTree.InsertItem(TVIF_PARAM|TVIF_TEXT, Model->m_Name, 0, 0, 0, 0, (LPARAM)Model->m_PieceInfo, CategoryItem, TVI_LAST);
+							if (GroupedPieces.FindIndex(Info) == -1)
+								m_PiecesTree.InsertItem(TVIF_PARAM|TVIF_TEXT, Info->m_strDescription, 0, 0, 0, 0, (LPARAM)Info, CategoryItem, TVI_LAST);
+							else
+								m_PiecesTree.InsertItem(TVIF_CHILDREN|TVIF_PARAM|TVIF_TEXT, Info->m_strDescription, 0, 0, 0, 0, (LPARAM)Info, CategoryItem, TVI_LAST);
 						}
-
-						if (Empty)
-							m_PiecesTree.InsertItem(TVIF_PARAM|TVIF_TEXT, "No Models", 0, 0, 0, 0, (LPARAM)NULL, CategoryItem, TVI_LAST);
 					}
-					else 
+
+					if (CategoryName == "Search Results")
 					{
-						// Expanding a category item.
-						int CategoryIndex = Lib->FindCategoryIndex((const char*)CategoryName);
-
-						lcPtrArray<PieceInfo> SinglePieces, GroupedPieces;
-
-						if (CategoryIndex != -1)
+						// Let the user know if the search is empty.
+						if ((SinglePieces.GetSize() == 0) && (GroupedPieces.GetSize() == 0))
 						{
-							int i;
-
-							Lib->GetCategoryEntries(CategoryIndex, true, SinglePieces, GroupedPieces);
-
-							// Merge and sort the arrays.
-							SinglePieces += GroupedPieces;
-							SinglePieces.Sort(PiecesSortFunc, NULL);
-
-							for (i = 0; i < SinglePieces.GetSize(); i++)
-							{
-								PieceInfo* Info = SinglePieces[i];
-
-								if (!m_bSubParts && Info->IsSubPiece())
-									continue;
-
-								if (GroupedPieces.FindIndex(Info) == -1)
-									m_PiecesTree.InsertItem(TVIF_PARAM|TVIF_TEXT, Info->m_strDescription, 0, 0, 0, 0, (LPARAM)Info, CategoryItem, TVI_LAST);
-								else
-								{
-									TVINSERTSTRUCT NewItem;
-
-									NewItem.hParent = CategoryItem;
-									NewItem.hInsertAfter = TVI_LAST;
-									NewItem.item.mask = TVIF_CHILDREN|TVIF_PARAM|TVIF_TEXT;
-									NewItem.item.lParam = (LPARAM)Info;
-									NewItem.item.cChildren = 1;
-									NewItem.item.pszText = Info->m_strDescription;
-
-									m_PiecesTree.InsertItem(&NewItem);
-								}
-							}
-						}
-
-						if (CategoryName == "Search Results")
-						{
-							// Let the user know if the search is empty.
-							if ((SinglePieces.GetSize() == 0) && (GroupedPieces.GetSize() == 0))
-							{
-								m_PiecesTree.InsertItem(TVIF_PARAM|TVIF_TEXT, "No pieces found", 0, 0, 0, 0, 0, CategoryItem, TVI_SORT);
-							}
+							m_PiecesTree.InsertItem(TVIF_PARAM|TVIF_TEXT, "No pieces found", 0, 0, 0, 0, 0, CategoryItem, TVI_SORT);
 						}
 					}
 				}
@@ -606,7 +555,7 @@ BOOL CPiecesBar::OnNotify(WPARAM wParam, LPARAM lParam, LRESULT* pResult)
 					CString CategoryName = m_PiecesTree.GetItemText(CategoryItem);
 					int CategoryIndex = Lib->FindCategoryIndex((const char*)CategoryName);
 
-					lcPtrArray<PieceInfo> Pieces;
+					PtrArray<PieceInfo> Pieces;
 					Lib->GetPatternedPieces(Parent, Pieces);
 
 					Pieces.Sort(PiecesSortFunc, NULL);
@@ -635,17 +584,13 @@ BOOL CPiecesBar::OnNotify(WPARAM wParam, LPARAM lParam, LRESULT* pResult)
 
 				m_PiecesTree.SetRedraw(TRUE);
 				m_PiecesTree.Invalidate();
-
-				return TRUE;
 			}
 			else if (Notify->action == TVE_COLLAPSE)
 			{
 				m_PiecesTree.Expand(Notify->itemNew.hItem, TVE_COLLAPSE | TVE_COLLAPSERESET);
-
-				return TRUE;
 			}
 		}
 	}
 
-	return CSizingControlBarG::OnNotify(wParam, lParam, pResult);
+	return CDockablePane::OnNotify(wParam, lParam, pResult);
 }

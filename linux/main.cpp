@@ -11,10 +11,10 @@
 #include <pwd.h>
 #include <unistd.h>
 #include <string.h>
-#include "lc_global.h"
 #include "opengl.h"
 #include "project.h"
 #include "toolbar.h"
+#include "globals.h"
 #include "main.h"
 #include "system.h"
 #include "config.h"
@@ -23,6 +23,7 @@
 #include "lc_application.h"
 #include "library.h"
 #include "preview.h"
+#include "camera.h"
 
 View* view;
 
@@ -52,72 +53,72 @@ static gint main_quit (GtkWidget *widget, GdkEvent* event, gpointer data);
 // =============================================================================
 // Static functions
 
-static void init_paths(char *argv0)
+static void init_paths (char *argv0)
 {
-	char temppath[PATH_MAX];
-	char *home;
+  char temppath[PATH_MAX];
+  char *home;
 
-	home = getenv("HOME");
-	if (home == NULL)
-	{
-		uid_t id = getuid();
-		struct passwd *pwd;
+  home = getenv ("HOME");
+  if (home == NULL)
+  {
+    uid_t id = getuid();
+    struct passwd *pwd;
 
-		setpwent();
-		while ((pwd = getpwent()) != NULL)
-		if (pwd->pw_uid == id)
-		{
-			home = pwd->pw_dir;
-			break;
-		}
-		endpwent();
-	}
+    setpwent();
+    while ((pwd = getpwent()) != NULL)
+      if (pwd->pw_uid == id)
+      {
+	home = pwd->pw_dir;
+	break;
+      }
+    endpwent();
+  }
 
-	strcpy(temppath, argv0);
-	if (!strrchr(temppath, '/'))
-	{
-		char *path;
-		char *last;
-		int found;
+  strcpy (temppath, argv0);
+  if (!strrchr(temppath, '/'))
+  {
+    char *path;
+    char *last;
+    int found;
 
-		found = 0;
-		path = getenv("PATH");
-		do
-		{
-			temppath[0] = '\0';
+    found = 0;
+    path = getenv("PATH");
+    do
+    {
+      temppath[0] = '\0';
 
-			last = strchr(path, ':');
-			if (!last)
-				last = path + strlen(path);
+      last = strchr(path, ':');
+      if (!last)
+	last = path + strlen (path);
 
-			if (*path == '~')
-			{
+      if (*path == '~')
+      {
 				if (home)
-					strcpy(temppath, home);
+	strcpy(temppath, home);
 				else
 					strcpy(temppath, ".");
 				path++;
-			}
+      }
 
-			if (last > (path+1))
-			{
-				strncat(temppath, path, (last-path));
-				strcat(temppath, "/");
-			}
-			strcat(temppath, "./");
-			strcat(temppath, argv0);
+      if (last > (path+1))
+      {
+	strncat(temppath, path, (last-path));
+	strcat(temppath, "/");
+      }
+      strcat (temppath, "./");
+      strcat (temppath, argv0);
 
-			if (access(temppath, X_OK) == 0)
+      if (access(temppath, X_OK) == 0 )
 				found++;
-			path = last+1;
+      path = last+1;
 
-		} while (*last && !found);
-	}
-	else
-		argv0 = strrchr(argv0, '/') + 1;
+    } while (*last && !found);
+  }
+  else
+    argv0 = strrchr (argv0, '/') + 1;
 
-	if (realpath(temppath, app_path))
-		*(strrchr(app_path, '/') + 1) = '\0';
+  if (realpath (temppath, app_path))
+    *(strrchr (app_path, '/') + 1) = '\0';
 }
 
 // Functions
@@ -127,7 +128,7 @@ void OnCommandDirect(GtkWidget *w, gpointer data)
   if (ignore_commands)
     return;
 
-  lcGetActiveProject()->HandleCommand((LC_COMMANDS)LC_POINTER_TO_INT(data), 0);
+  lcGetActiveProject()->HandleCommand((LC_COMMANDS)GPOINTER_TO_INT(data), 0);
 }
 
 static void view_destroy (GtkWidget *widget, gpointer data)
@@ -138,7 +139,7 @@ static void view_destroy (GtkWidget *widget, gpointer data)
 void OnCommand(GtkWidget* widget, gpointer data)
 {
   Project* project = lcGetActiveProject();
-  int id = LC_POINTER_TO_INT(data);
+  int id = GPOINTER_TO_INT(data);
 
   if (ignore_commands)
     return;
@@ -152,12 +153,6 @@ void OnCommand(GtkWidget* widget, gpointer data)
   if (id >= ID_ACTION_SELECT && id <= ID_ACTION_ROLL)
   {
     project->SetAction(id - ID_ACTION_SELECT);
-    return;
-  }
-
-  if (id >= ID_VIEW_VIEWPORTS_01 && id <= ID_VIEW_VIEWPORTS_14)
-  {
-    project->HandleCommand(LC_VIEW_VIEWPORTS, id - ID_VIEW_VIEWPORTS_01);
     return;
   }
 
@@ -248,8 +243,8 @@ void OnCommand(GtkWidget* widget, gpointer data)
       gtk_container_add (GTK_CONTAINER (wnd), frame);
       gtk_frame_set_shadow_type (GTK_FRAME (frame), GTK_SHADOW_IN);               
 
-      View *v = new View(project, view);
-      v->CreateFromWindow(&w);
+      View *v = new View (project, view);
+      v->CreateFromWindow (&w);
 
       gtk_container_add (GTK_CONTAINER (frame), w);
       gtk_widget_show (w);
@@ -486,7 +481,7 @@ static void update_window_layout ()
   // first thing we need to create the widgets
   if (drawing_area == NULL)
   {
-    view->CreateFromWindow(&drawing_area);
+    view->CreateFromWindow (&drawing_area);
 
     gtk_widget_set_events (GTK_WIDGET (drawing_area), GDK_EXPOSURE_MASK | GDK_KEY_PRESS_MASK |
 			   GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK |
@@ -597,7 +592,8 @@ int main (int argc, char* argv[])
     return 1;
   }
 
-  view = new View(lcGetActiveProject(), NULL);
+  view = new View (lcGetActiveProject(), NULL);
+  view->m_Camera = lcGetActiveProject()->GetCamera(LC_CAMERA_MAIN);
 
   //  main_window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
   gtk_window_set_title (GTK_WINDOW (((GtkWidget*)(*main_window))), "LeoCAD");
@@ -723,12 +719,13 @@ int main (int argc, char* argv[])
 
 #include "pixmaps/icon32.xpm"
 
+	lcGetActiveProject()->UpdateInterface();
   main_window->UpdateMRU ();
 
   GdkPixmap *gdkpixmap;
   GdkBitmap *mask;
 
-  gdkpixmap = gdk_pixmap_create_from_xpm_d(((GtkWidget*)(*main_window))->window, &mask,
+  gdkpixmap = gdk_pixmap_create_from_xpm_d (((GtkWidget*)(*main_window))->window, &mask,
                                            &((GtkWidget*)(*main_window))->style->bg[GTK_STATE_NORMAL], (gchar**)icon32);
   gdk_window_set_icon (((GtkWidget*)(*main_window))->window, NULL, gdkpixmap, mask);
 
@@ -740,12 +737,15 @@ int main (int argc, char* argv[])
 			    pieces_width);
 
 
-  lcGetActiveProject()->SetActiveView(view);
   PieceInfo* Info = lcGetPiecesLibrary()->FindPieceInfo("3005");
   if (!Info)
     Info = lcGetPiecesLibrary()->GetPieceInfo(0);
   if (Info)
-    g_App->m_PiecePreview->SetSelection(Info);
+  {
+    lcGetActiveProject()->SetCurrentPiece(Info);
+    extern PiecePreview* preview;
+    preview->SetCurrentPiece(Info);
+  }
 
   gtk_main();
 

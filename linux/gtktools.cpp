@@ -11,10 +11,10 @@ GtkWidget* new_pixmap(GtkWidget *widget, const char **data)
   GtkWidget *pixmap;
 
   gdkpixmap = gdk_pixmap_create_from_xpm_d(widget->window, &mask, &widget->style->bg[GTK_STATE_NORMAL], (gchar**)data);
-  pixmap = gtk_pixmap_new(gdkpixmap, mask);
+  pixmap = gtk_pixmap_new (gdkpixmap, mask);
 
-  gdk_pixmap_unref(gdkpixmap);
-  gdk_pixmap_unref(mask);
+  gdk_pixmap_unref (gdkpixmap);
+  gdk_pixmap_unref (mask);
 
   return pixmap;
 }
@@ -35,7 +35,7 @@ GtkWidget* clist_title_with_arrow(GtkWidget* clist, char col, const char* label_
   return arrow;
 }
 
-void set_notebook_tab(GtkWidget *notebook, gint page_num, GtkWidget *widget)
+void set_notebook_tab (GtkWidget *notebook, gint page_num, GtkWidget *widget)
 {
   gtk_notebook_set_tab_label(GTK_NOTEBOOK(notebook), gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), page_num), widget);
   /*
@@ -52,7 +52,7 @@ void set_notebook_tab(GtkWidget *notebook, gint page_num, GtkWidget *widget)
   */
 }
 
-void set_button_pixmap(GtkWidget* widget, float* color)
+void set_button_pixmap (GtkWidget* widget, float* color)
 {
   if (widget->window == NULL)
     return;
@@ -79,7 +79,7 @@ void set_button_pixmap(GtkWidget* widget, float* color)
   gdk_gc_destroy(gc);
 }
 
-void set_button_pixmap2(GtkWidget* widget, float* color)
+void set_button_pixmap2 (GtkWidget* widget, unsigned char* color)
 {
   GdkColor c;
   GdkGC* gc;
@@ -95,9 +95,9 @@ void set_button_pixmap2(GtkWidget* widget, float* color)
   pixmap = gdk_pixmap_new (widget->window, widget->allocation.width - 10,
 			   widget->allocation.height - 10, -1);
 
-  c.red = (gushort)(color[0]*0xFFFF);
-  c.green = (gushort)(color[1]*0xFFFF);
-  c.blue = (gushort)(color[2]*0xFFFF);
+  c.red = color[0]*256;
+  c.green = color[1]*256;
+  c.blue = color[2]*256;
   gdk_color_alloc (gtk_widget_get_colormap(widget), &c);
   gdk_gc_set_foreground(gc, &c);
 

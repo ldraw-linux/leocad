@@ -1,599 +1,852 @@
-#include "lc_global.h"
-#include "camera.h"
+// Camera object.
 
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
 #include "opengl.h"
+#include "globals.h"
 #include "defines.h"
+#include "vector.h"
+#include "matrix.h"
 #include "file.h"
-#include "lc_application.h"
-#include "lc_colors.h"
+#include "camera.h"
+#include "tr.h"
 
-#define LC_CAMERA_SAVE_VERSION 7 // LeoCAD 0.76
+#define LC_CAMERA_SAVE_VERSION 6 // LeoCAD 0.73
+
+GLuint Camera::m_nTargetList = 0;
 
 static LC_OBJECT_KEY_INFO camera_key_info[LC_CK_COUNT] =
 {
-	{ "Camera Position", 3, LC_CK_EYE },
-	{ "Camera Target", 3, LC_CK_TARGET },
-	{ "Camera Roll", 1, LC_CK_ROLL }
+  { "Camera Position", 3, LC_CK_EYE },
+  { "Camera Target", 3, LC_CK_TARGET },
+  { "Camera Up Vector", 3, LC_CK_UP }
 };
 
 // =============================================================================
 // CameraTarget class
 
-CameraTarget::CameraTarget(lcCamera* Parent)
-	: lcObject(LC_OBJECT_CAMERA_TARGET)
+CameraTarget::CameraTarget (Camera *pParent)
+  : Object (LC_OBJECT_CAMERA_TARGET)
 {
-	m_Parent = Parent;
-	m_Name = Parent->m_Name + ".Target";
+  m_pParent = pParent;
+  /*
+  strcpy (m_strName, pParent->GetName ());
+  m_strName[LC_OBJECT_NAME_LEN-8] = '\0';
+  strcat (m_strName, ".Target");
+  */
 }
 
-CameraTarget::~CameraTarget()
+CameraTarget::~CameraTarget ()
 {
 }
 
-void CameraTarget::ClosestLineIntersect(lcClickLine& ClickLine) const
+void CameraTarget::MinIntersectDist (LC_CLICKLINE* pLine)
 {
-	BoundingBox Box;
-	Box.m_Max = Vector3(0.2f, 0.2f, 0.2f);
-	Box.m_Min = Vector3(-0.2f, -0.2f, -0.2f);
+  float dist = (float)BoundingBoxIntersectDist (pLine);
 
-	Matrix44 WorldView = ((lcCamera*)m_Parent)->m_WorldView;
-	WorldView.SetTranslation(Mul30(-((lcCamera*)m_Parent)->m_TargetPosition, WorldView));
-
-	Vector3 Start = Mul31(ClickLine.Start, WorldView);
-	Vector3 End = Mul31(ClickLine.End, WorldView);
-
-	float Dist;
-	if (BoundingBoxRayMinIntersectDistance(Box, Start, End, &Dist) && (Dist < ClickLine.Dist))
-	{
-		ClickLine.Object = this;
-		ClickLine.Dist = Dist;
-	}
+  if (dist < pLine->mindist)
+  {
+    pLine->mindist = dist;
+    pLine->pClosest = this;
+  }
 }
 
-bool CameraTarget::IntersectsVolume(const Vector4* Planes, int NumPlanes) const
+void CameraTarget::Select (bool bSelecting, bool bFocus, bool bMultiple)
 {
-	BoundingBox Box;
-	Box.m_Max = Vector3(0.2f, 0.2f, 0.2f);
-	Box.m_Min = Vector3(-0.2f, -0.2f, -0.2f);
-
-	// Transform the planes to local space.
-	Vector4* LocalPlanes = new Vector4[NumPlanes];
-	int i;
-
-	Matrix44 WorldView = ((lcCamera*)m_Parent)->m_WorldView;
-	WorldView.SetTranslation(Mul30(-((lcCamera*)m_Parent)->m_TargetPosition, WorldView));
-
-	for (i = 0; i < NumPlanes; i++)
-	{
-		LocalPlanes[i] = Vector4(Mul30(Vector3(Planes[i]), WorldView));
-		LocalPlanes[i][3] = Planes[i][3] - Dot3(Vector3(WorldView[3]), Vector3(LocalPlanes[i]));
-	}
-
-	bool Intersect = BoundingBoxIntersectsVolume(Box, LocalPlanes, NumPlanes);
-
-	delete[] LocalPlanes;
-
-	return Intersect;
+  m_pParent->SelectTarget (bSelecting, bFocus, bMultiple);
 }
 
-void CameraTarget::Select(bool bSelecting, bool bFocus, bool bMultiple)
+const char* CameraTarget::GetName() const
 {
-	m_Parent->SelectTarget(bSelecting, bFocus, bMultiple);
+	return m_pParent->GetName();
 }
 
 /////////////////////////////////////////////////////////////////////////////
 // Camera construction/destruction
 
-lcCamera::lcCamera()
-	: lcObject(LC_OBJECT_CAMERA)
+Camera::Camera ()
+  : Object (LC_OBJECT_CAMERA)
 {
-	Initialize();
+  Initialize();
 }
 
-lcCamera::lcCamera(lcCamera* Camera)
-	: lcObject(LC_OBJECT_CAMERA)
+// Start with a standard camera.
+Camera::Camera (unsigned char nType, Camera* pPrev)
+  : Object (LC_OBJECT_CAMERA)
 {
-	Initialize();
+  if (nType > 7)
+    nType = 8;
 
-	ChangeKey(1, true, Camera->m_Position, LC_CK_EYE);
-	ChangeKey(1, true, Camera->m_TargetPosition, LC_CK_TARGET);
-	ChangeKey(1, true, &Camera->m_Roll, LC_CK_ROLL);
+  char names[8][7] = { "Front", "Back",  "Top",  "Under", "Left", "Right", "Main", "User" };
+  float eyes[8][3] = { { 50,0,0 }, { -50,0,0 }, { 0,0,50 }, { 0,0,-50 },
+		       { 0,50,0 }, { 0,-50,0 }, { -10,-10,5}, { 0,5,0 } };
+  float ups [8][3] = {  { 0,0,1 }, { 0,0,1 }, { 1,0,0 }, { -1,0,0 }, { 0,0,1 },
+			{ 0,0,1 }, {-0.2357f, -0.2357f, 0.94281f }, { 0,0,1 } };
 
-	UpdatePosition(1);
+  Initialize();
+
+  ChangeKey (1, false, true, eyes[nType], LC_CK_EYE);
+  ChangeKey (1, false, true, ups[nType], LC_CK_UP);
+  ChangeKey (1, true, true, eyes[nType], LC_CK_EYE);
+  ChangeKey (1, true, true, ups[nType], LC_CK_UP);
+
+  strcpy (m_strName, names[nType]);
+  if (nType != 8)
+    m_nState = LC_CAMERA_HIDDEN;
+  m_nType = nType;
+
+  if (pPrev)
+    pPrev->m_pNext = this;
+
+  UpdatePosition(1, false);
 }
 
-lcCamera::lcCamera(const Vector3& Position, const Vector3& Target)
-	: lcObject(LC_OBJECT_CAMERA)
+// From OnMouseMove(), case LC_ACTION_ROTATE_VIEW
+Camera::Camera (const float *eye, const float *target, const float *up, Camera* pCamera)
+  : Object (LC_OBJECT_CAMERA)
 {
-	Initialize();
+  // Fix the up vector
+  Vector upvec(up), frontvec(eye[0]-target[0], eye[1]-target[1], eye[2]-target[2]), sidevec;
+  frontvec.Normalize();
+  sidevec.Cross(frontvec, upvec);
+  upvec.Cross(sidevec, frontvec);
+  upvec.Normalize();
 
-	float roll = 0.0f;
+  Initialize();
 
-	ChangeKey(1, true, Position, LC_CK_EYE);
-	ChangeKey(1, true, Target, LC_CK_TARGET);
-	ChangeKey(1, true, &roll, LC_CK_ROLL);
+  ChangeKey (1, false, true, eye, LC_CK_EYE);
+  ChangeKey (1, false, true, target, LC_CK_TARGET);
+  ChangeKey (1, false, true, upvec, LC_CK_UP);
+  ChangeKey (1, true, true, eye, LC_CK_EYE);
+  ChangeKey (1, true, true, target, LC_CK_TARGET);
+  ChangeKey (1, true, true, upvec, LC_CK_UP);
 
-	UpdatePosition(1);
+  int i, max = 0;
+
+  for (;;)
+  {
+    if (strncmp (pCamera->m_strName, "Camera ", 7) == 0)
+      if (sscanf(pCamera->m_strName, "Camera %d", &i) == 1)
+	if (i > max) 
+	  max = i;
+
+    if (pCamera->m_pNext == NULL)
+    {
+      sprintf(m_strName, "Camera %d", max+1);
+      pCamera->m_pNext = this;
+      break;
+    }
+    else
+      pCamera = pCamera->m_pNext;
+  }
+
+  UpdatePosition (1, false);
 }
 
-lcCamera::~lcCamera()
+// From LC_ACTION_CAMERA
+Camera::Camera (float ex, float ey, float ez, float tx, float ty, float tz, Camera* pCamera)
+  : Object (LC_OBJECT_CAMERA)
 {
-	delete m_Target;
+  // Fix the up vector
+  Vector upvec(0,0,1), frontvec(ex-tx, ey-ty, ez-tz), sidevec;
+  frontvec.Normalize();
+  if (frontvec == upvec)
+    sidevec = Vector(1,0,0);
+  else
+    sidevec.Cross(frontvec, upvec);
+  upvec.Cross(sidevec, frontvec);
+  upvec.Normalize();
+
+  Initialize();
+
+  float eye[3] = { ex, ey, ez }, target[3] = { tx, ty, tz };
+
+  ChangeKey (1, false, true, eye, LC_CK_EYE);
+  ChangeKey (1, false, true, target, LC_CK_TARGET);
+  ChangeKey (1, false, true, upvec, LC_CK_UP);
+  ChangeKey (1, true, true, eye, LC_CK_EYE);
+  ChangeKey (1, true, true, target, LC_CK_TARGET);
+  ChangeKey (1, true, true, upvec, LC_CK_UP);
+
+  int i, max = 0;
+
+  if (pCamera)
+    for (;;)
+    {
+      if (strncmp (pCamera->m_strName, "Camera ", 7) == 0)
+	if (sscanf(pCamera->m_strName, "Camera %d", &i) == 1)
+	  if (i > max) 
+	    max = i;
+
+      if (pCamera->m_pNext == NULL)
+      {
+	sprintf(m_strName, "Camera %d", max+1);
+	pCamera->m_pNext = this;
+	break;
+      }
+      else
+	pCamera = pCamera->m_pNext;
+    }
+
+  UpdatePosition (1, false);
 }
 
-void lcCamera::Initialize()
+Camera::~Camera()
 {
-	m_FOV = 30;
-	m_NearDist = 1;
-	m_FarDist = 500;
+  if (m_nList != 0)
+    glDeleteLists (m_nList, 1);
 
-	m_nState = 0;
+  delete m_pTarget;
+}
 
-	float *values[] = { m_Position, m_TargetPosition, &m_Roll };
-	RegisterKeys(values, camera_key_info, LC_CK_COUNT);
+void Camera::Initialize()
+{
+  m_fovy = 30;
+  m_zNear = 1;
+  m_zFar = 500;
 
-	m_Target = new CameraTarget(this);
+  m_pNext = NULL;
+  m_nState = 0;
+  m_nList = 0;
+  m_nType = LC_CAMERA_USER;
+  m_nList = 0;
+
+  m_pTR = NULL;
+  for (unsigned char i = 0 ; i < sizeof(m_strName) ; i++ )
+    m_strName[i] = 0;
+
+  float *values[] = { m_fEye, m_fTarget, m_fUp };
+  RegisterKeys (values, camera_key_info, LC_CK_COUNT);
+
+  m_pTarget = new CameraTarget (this);
 }
 
 /////////////////////////////////////////////////////////////////////////////
 // Camera save/load
 
-bool lcCamera::FileLoad(lcFile& file)
+bool Camera::FileLoad (File& file)
 {
-	u8 version, ch;
+  unsigned char version, ch;
 
-	file.ReadBytes(&version);
+  file.ReadByte (&version, 1);
 
-	if (version > LC_CAMERA_SAVE_VERSION)
-		return false;
+  if (version > LC_CAMERA_SAVE_VERSION)
+    return false;
 
-	if (version > 5)
-		if (!lcObject::FileLoad(file))
-			return false;
+  if (version > 5)
+    if (!Object::FileLoad (file))
+      return false;
 
-	if (version == 6)
-	{
-		for (LC_OBJECT_KEY* node = m_Keys; node; node = node->Next)
-		{
-			if (node->Type == LC_CK_ROLL)
-			{
-				node->Value[0] = 0.0f;
-				node->Value[1] = 0.0f;
-				node->Value[2] = 0.0f;
-				node->Value[3] = 0.0f;
-			}
-		}
-	}
+  if (version == 4)
+  {
+    file.Read(m_strName, 80);
+    m_strName[80] = 0;
+  }
+  else
+  {
+    file.Read(&ch, 1);
+    if (ch == 0xFF)
+      return false; // don't read CString
+    file.Read(m_strName, ch);
+    m_strName[ch] = 0;
+  }
 
-	if (version == 4)
-	{
-		char buf[81];
-		file.Read(buf, 80);
-		buf[80] = 0;
-		m_Name = buf;
-	}
-	else
-	{
-		file.Read(&ch, 1);
-		if (ch == 0xFF)
-			return false; // don't read CString
-		char buf[81];
-		file.Read(buf, ch);
-		buf[ch] = 0;
-		m_Name = buf;
-	}
+  if (version < 3)
+  {
+    double d[3];
+    float f[3];
 
-	if (version < 3)
-	{
-		double d[3];
-		float f[3];
+    file.ReadDouble (d, 3);
+    f[0] = (float)d[0];
+    f[1] = (float)d[1];
+    f[2] = (float)d[2];
+    ChangeKey (1, false, true, f, LC_CK_EYE);
+    ChangeKey (1, true, true, f, LC_CK_EYE);
 
-		file.ReadDoubles(d, 3);
-		f[0] = (float)d[0];
-		f[1] = (float)d[1];
-		f[2] = (float)d[2];
-		ChangeKey(1, true, f, LC_CK_EYE);
+    file.ReadDouble (d, 3);
+    f[0] = (float)d[0];
+    f[1] = (float)d[1];
+    f[2] = (float)d[2];
+    ChangeKey (1, false, true, f, LC_CK_TARGET);
+    ChangeKey (1, true, true, f, LC_CK_TARGET);
 
-		file.ReadDoubles(d, 3);
-		f[0] = (float)d[0];
-		f[1] = (float)d[1];
-		f[2] = (float)d[2];
-		ChangeKey(1, true, f, LC_CK_TARGET);
+    file.ReadDouble (d, 3);
+    f[0] = (float)d[0];
+    f[1] = (float)d[1];
+    f[2] = (float)d[2];
+    ChangeKey (1, false, true, f, LC_CK_UP);
+    ChangeKey (1, true, true, f, LC_CK_UP);
+  }
 
-		file.ReadDoubles(d, 3);
-		float roll = 0.0f;
-		ChangeKey(1, true, &roll, LC_CK_ROLL);
-	}
+  if (version == 3)
+  {
+    file.Read(&ch, 1);
 
-	if (version == 3)
-	{
-		file.ReadBytes(&ch);
+    while (ch--)
+    {
+      unsigned char step;
+      double eye[3], target[3], up[3];
+      float f[3];
 
-		while (ch--)
-		{
-			u8 step;
-			double eye[3], target[3], up[3];
-			float f[3];
+      file.ReadDouble (eye, 3);
+      file.ReadDouble (target, 3);
+      file.ReadDouble (up, 3);
+      file.ReadByte (&step, 1);
 
-			file.ReadDoubles(eye, 3);
-			file.ReadDoubles(target, 3);
-			file.ReadDoubles(up, 3);
-			file.ReadBytes(&step);
+      if (up[0] == 0 && up[1] == 0 && up[2] == 0)
+	up[2] = 1;
 
-			f[0] = (float)eye[0];
-			f[1] = (float)eye[1];
-			f[2] = (float)eye[2];
-			ChangeKey(step, true, f, LC_CK_EYE);
+      f[0] = (float)eye[0];
+      f[1] = (float)eye[1];
+      f[2] = (float)eye[2];
+      ChangeKey (step, false, true, f, LC_CK_EYE);
+      ChangeKey (step, true, true, f, LC_CK_EYE);
 
-			f[0] = (float)target[0];
-			f[1] = (float)target[1];
-			f[2] = (float)target[2];
-			ChangeKey(step, true, f, LC_CK_TARGET);
+      f[0] = (float)target[0];
+      f[1] = (float)target[1];
+      f[2] = (float)target[2];
+      ChangeKey (step, false, true, f, LC_CK_TARGET);
+      ChangeKey (step, true, true, f, LC_CK_TARGET);
 
-			float roll = 0.0f;
-			ChangeKey(step, true, &roll, LC_CK_ROLL);
+      f[0] = (float)up[0];
+      f[1] = (float)up[1];
+      f[2] = (float)up[2];
+      ChangeKey (step, false, true, f, LC_CK_UP);
+      ChangeKey (step, true, true, f, LC_CK_UP);
 
-			u32 snapshot;
-			u32 cam;
-			file.ReadInts(&snapshot);
-			file.ReadInts(&cam);
+      int snapshot; // BOOL under Windows
+      int cam;
+      file.ReadLong (&snapshot, 1);
+      file.ReadLong (&cam, 1);
 //			if (cam == -1)
 //				node->pCam = NULL;
 //			else
 //				node->pCam = pDoc->GetCamera(i);
-		}
-	}
+    }
+  }
 
-	if (version < 4)
-	{
-		double d;
-		file.ReadDoubles(&d); m_FOV = (float)d;
-		file.ReadDoubles(&d); m_FarDist = (float)d;
-		file.ReadDoubles(&d); m_NearDist = (float)d;
-	}
-	else
-	{
-		int n;
+  if (version < 4)
+  {
+    double d;
+    file.ReadDouble (&d, 1); m_fovy = (float)d;
+    file.ReadDouble (&d, 1); m_zFar = (float)d;
+    file.ReadDouble (&d, 1); m_zNear= (float)d;
+  }
+  else
+  {
+    int n;
 
-		if (version < 6)
-		{
-			unsigned short time;
-			float param[4];
-			unsigned char type;
+    if (version < 6)
+    {
+      unsigned short time;
+      float param[4];
+      unsigned char type;
 
-			file.ReadInts(&n);
-			while (n--)
-			{
-				file.ReadShorts(&time);
-				file.ReadFloats(param, 3);
-				file.ReadBytes(&type);
+      file.ReadLong (&n, 1);
+      while (n--)
+      {
+        file.ReadShort (&time, 1);
+        file.ReadFloat (param, 3);
+        file.ReadByte (&type, 1);
 
-				ChangeKey(time, true, param, type);
-			}
+        ChangeKey (time, false, true, param, type);
+      }
 
-			file.ReadInts(&n);
-			while (n--)
-			{
-				file.ReadShorts(&time);
-				file.ReadFloats(param, 3);
-				file.ReadBytes(&type);
-			}
-		}
+      file.ReadLong (&n, 1);
+      while (n--)
+      {
+        file.ReadShort (&time, 1);
+        file.ReadFloat (param, 3);
+        file.ReadByte (&type, 1);
 
-		file.ReadFloats(&m_FOV);
-		file.ReadFloats(&m_FarDist);
-		file.ReadFloats(&m_NearDist);
+        ChangeKey (time, true, true, param, type);
+      }
+    }
 
-		if (version < 5)
-		{
-			file.ReadInts(&n);
-			if (n != 0)
-				m_nState |= LC_CAMERA_HIDDEN;
-		}
-		else
-		{
-			unsigned char Type;
-			file.ReadBytes(&m_nState);
-			file.ReadBytes(&Type);
-		}
-	}
+    file.ReadFloat (&m_fovy, 1);
+    file.ReadFloat (&m_zFar, 1);
+    file.ReadFloat (&m_zNear, 1);
 
-	if ((version > 1) && (version < 4))
-	{
-		unsigned long show;
-		int user;
+    if (version < 5)
+    {
+      file.ReadLong (&n, 1);
+      if (n != 0)
+	m_nState |= LC_CAMERA_HIDDEN;
+    }
+    else
+    {
+      file.ReadByte (&m_nState, 1);
+      file.ReadByte (&m_nType, 1);
+    }
+  }
 
-		file.ReadInts(&show);
-//		if (version > 2)
-		file.ReadInts(&user);
-		if (show == 0)
-			m_nState |= LC_CAMERA_HIDDEN;
-	}
+  if ((version > 1) && (version < 4))
+  {
+    unsigned long show;
+    int user;
 
-	return true;
+    file.ReadLong (&show, 1);
+//			if (version > 2)
+    file.ReadLong (&user, 1);
+    if (show == 0)
+      m_nState |= LC_CAMERA_HIDDEN;
+  }
+
+  return true;
 }
 
-void lcCamera::FileSave(lcFile& file) const
+void Camera::FileSave (File& file) const
 {
-	unsigned char ch = LC_CAMERA_SAVE_VERSION;
+  unsigned char ch = LC_CAMERA_SAVE_VERSION;
 
-	file.WriteBytes(&ch, 1);
+  file.WriteByte (&ch, 1);
 
-	lcObject::FileSave(file);
+  Object::FileSave (file);
 
-	ch = (u8)m_Name.GetLength();
-	file.WriteBytes(&ch);
-	file.Write((char*)m_Name, ch);
+  ch = (unsigned char)strlen(m_strName);
+  file.Write (&ch, 1);
+  file.Write (m_strName, ch);
 
-	file.WriteFloats(&m_FOV);
-	file.WriteFloats(&m_FarDist);
-	file.WriteFloats(&m_NearDist);
-	// version 5
-	file.WriteBytes(&m_nState);
-	unsigned char Type = 0;
-	file.WriteBytes(&Type);
+  file.WriteFloat (&m_fovy, 1);
+  file.WriteFloat (&m_zFar, 1);
+  file.WriteFloat (&m_zNear, 1);
+  // version 5
+  file.WriteByte (&m_nState, 1);
+  file.WriteByte (&m_nType, 1);
 }
 
 /////////////////////////////////////////////////////////////////////////////
 // Camera operations
 
-void lcCamera::Move(u32 Time, bool AddKey, const Vector3& Delta)
+void Camera::Move (unsigned short nTime, bool bAnimation, bool bAddKey, float dx, float dy, float dz)
 {
-	/*
-	if (IsSide())
-	{
-		m_Position += Delta;
-		m_TargetPosition += Delta;
+  if (IsSide())
+  {
+    m_fEye[0] += dx;
+    m_fEye[1] += dy;
+    m_fEye[2] += dz;
+    m_fTarget[0] += dx;
+    m_fTarget[1] += dy;
+    m_fTarget[2] += dz;
 
-		ChangeKey(Time, AddKey, m_Position, LC_CK_EYE);
-		ChangeKey(Time, AddKey, m_TargetPosition, LC_CK_TARGET);
-	}
-	else
-	*/
-	{
-		if (IsEyeSelected())
-		{
-			m_Position += Delta;
+    ChangeKey(nTime, bAnimation, bAddKey, m_fEye, LC_CK_EYE);
+    ChangeKey(nTime, bAnimation, bAddKey, m_fTarget, LC_CK_TARGET);
+  }
+  else
+  {
+    if (IsEyeSelected())
+    {
+      m_fEye[0] += dx;
+      m_fEye[1] += dy;
+      m_fEye[2] += dz;
 
-			ChangeKey(Time, AddKey, m_Position, LC_CK_EYE);
-		}
+      ChangeKey(nTime, bAnimation, bAddKey, m_fEye, LC_CK_EYE);
+    }
 
-		if (IsTargetSelected())
-		{
-			m_TargetPosition += Delta;
+    if (IsTargetSelected())
+    {
+      m_fTarget[0] += dx;
+      m_fTarget[1] += dy;
+      m_fTarget[2] += dz;
 
-			ChangeKey(Time, AddKey, m_TargetPosition, LC_CK_TARGET);
-		}
-	}
+      ChangeKey(nTime, bAnimation, bAddKey, m_fTarget, LC_CK_TARGET);
+    }
+
+    // Fix the up vector
+    Vector upvec(m_fUp), sidevec;
+    Vector frontvec(m_fTarget[0]-m_fEye[0], m_fTarget[1]-m_fEye[1], m_fTarget[2]-m_fEye[2]);
+    sidevec.Cross(frontvec, upvec);
+    upvec.Cross(sidevec, frontvec);
+    upvec.Normalize();
+    upvec.ToFloat(m_fUp);
+
+    ChangeKey(nTime, bAnimation, bAddKey, m_fUp, LC_CK_UP);
+  }
 }
 
-void lcCamera::Select(bool bSelecting, bool bFocus, bool bMultiple)
+void Camera::Select (bool bSelecting, bool bFocus, bool bMultiple)
 {
-	if (bSelecting == true)
-	{
-		if (bFocus == true)
-		{
-			m_nState |= (LC_CAMERA_FOCUSED|LC_CAMERA_SELECTED);
+  if (bSelecting == true)
+  {
+    if (bFocus == true)
+    {
+      m_nState |= (LC_CAMERA_FOCUSED|LC_CAMERA_SELECTED);
 
-			m_Target->Select(false, true, bMultiple);
-		}
-		else
-			m_nState |= LC_CAMERA_SELECTED;
+      m_pTarget->Select (false, true, bMultiple);
+    }
+    else
+      m_nState |= LC_CAMERA_SELECTED;
 
-		if (bMultiple == false)
-			m_Target->Select(false, false, bMultiple);
-	}
-	else
-	{
-		if (bFocus == true)
-			m_nState &= ~(LC_CAMERA_FOCUSED);
-		else
-			m_nState &= ~(LC_CAMERA_SELECTED|LC_CAMERA_FOCUSED);
-	} 
+    if (bMultiple == false)
+      m_pTarget->Select (false, false, bMultiple);
+  }
+  else
+  {
+    if (bFocus == true)
+      m_nState &= ~(LC_CAMERA_FOCUSED);
+    else
+      m_nState &= ~(LC_CAMERA_SELECTED|LC_CAMERA_FOCUSED);
+  } 
 }
 
-void lcCamera::SelectTarget(bool bSelecting, bool bFocus, bool bMultiple)
+void Camera::SelectTarget (bool bSelecting, bool bFocus, bool bMultiple)
 {
-	// FIXME: the target should handle this
+  // FIXME: the target should handle this
 
-	if (bSelecting == true)
-	{
-		if (bFocus == true)
-		{
-			m_nState |= (LC_CAMERA_TARGET_FOCUSED|LC_CAMERA_TARGET_SELECTED);
+  if (bSelecting == true)
+  {
+    if (bFocus == true)
+    {
+      m_nState |= (LC_CAMERA_TARGET_FOCUSED|LC_CAMERA_TARGET_SELECTED);
 
-			Select(false, true, bMultiple);
-		}
-		else
-			m_nState |= LC_CAMERA_TARGET_SELECTED;
+      Select (false, true, bMultiple);
+    }
+    else
+      m_nState |= LC_CAMERA_TARGET_SELECTED;
 
-		if (bMultiple == false)
-			Select(false, false, bMultiple);
-	}
-	else
-	{
-		if (bFocus == true)
-			m_nState &= ~(LC_CAMERA_TARGET_FOCUSED);
-		else
-			m_nState &= ~(LC_CAMERA_TARGET_SELECTED|LC_CAMERA_TARGET_FOCUSED);
-	} 
+    if (bMultiple == false)
+      Select (false, false, bMultiple);
+  }
+  else
+  {
+    if (bFocus == true)
+      m_nState &= ~(LC_CAMERA_TARGET_FOCUSED);
+    else
+      m_nState &= ~(LC_CAMERA_TARGET_SELECTED|LC_CAMERA_TARGET_FOCUSED);
+  } 
 }
 
-void lcCamera::UpdatePosition(u32 Time)
+void Camera::UpdatePosition(unsigned short nTime, bool bAnimation)
 {
-	CalculateKeys(Time);
+  CalculateKeys(nTime, bAnimation);
 
-	CalculateMatrices();
+	UpdateBoundingBox();
 }
 
-void lcCamera::Render(float fLineWidth)
+void Camera::UpdateBoundingBox()
 {
-	// Draw camera.
-	glPushMatrix();
-	glMultMatrixf(m_ViewWorld);
+  // Fix the up vector
+  Vector frontvec(m_fEye[0]-m_fTarget[0], m_fEye[1]-m_fTarget[1], m_fEye[2]-m_fTarget[2]);
+  Vector upvec(m_fUp), sidevec;
 
-	glEnableClientState(GL_VERTEX_ARRAY);
-	float verts[34][3] =
-	{
-		{  0.3f,  0.3f,  0.3f }, { -0.3f,  0.3f,  0.3f },
-		{ -0.3f,  0.3f,  0.3f }, { -0.3f, -0.3f,  0.3f },
-		{ -0.3f, -0.3f,  0.3f }, {  0.3f, -0.3f,  0.3f },
-		{  0.3f, -0.3f,  0.3f }, {  0.3f,  0.3f,  0.3f },
-		{  0.3f,  0.3f, -0.3f }, { -0.3f,  0.3f, -0.3f },
-		{ -0.3f,  0.3f, -0.3f }, { -0.3f, -0.3f, -0.3f },
-		{ -0.3f, -0.3f, -0.3f }, {  0.3f, -0.3f, -0.3f },
-		{  0.3f, -0.3f, -0.3f }, {  0.3f,  0.3f, -0.3f },
-		{  0.3f,  0.3f,  0.3f }, {  0.3f,  0.3f, -0.3f },
-		{ -0.3f,  0.3f,  0.3f }, { -0.3f,  0.3f, -0.3f },
-		{ -0.3f, -0.3f,  0.3f }, { -0.3f, -0.3f, -0.3f },
-		{  0.3f, -0.3f,  0.3f }, {  0.3f, -0.3f, -0.3f },
-		{ -0.3f, -0.3f, -0.6f }, { -0.3f,  0.3f, -0.6f },
-		{  0.0f,  0.0f, -0.3f }, { -0.3f, -0.3f, -0.6f },
-		{  0.3f, -0.3f, -0.6f }, {  0.0f,  0.0f, -0.3f },
-		{  0.3f,  0.3f, -0.6f }, {  0.3f, -0.3f, -0.6f },
-		{  0.3f,  0.3f, -0.6f }, { -0.3f,  0.3f, -0.6f }
-	};
+  sidevec.Cross(frontvec, upvec);
+  upvec.Cross(sidevec, frontvec);
+  upvec.Normalize();
+  upvec.ToFloat(m_fUp);
 
-	if (IsEyeSelected())
-	{
-		glLineWidth(2.0f);
-		lcSetColor((m_nState & LC_CAMERA_FOCUSED) != 0 ? LC_COLOR_FOCUS : LC_COLOR_SELECTION);
-	}
-	else
-	{
-		glLineWidth(1.0f);
-		glColor4f(0.5f, 0.8f, 0.5f, 1.0f);
-	}
+  float len = frontvec.Length();
 
-	glVertexPointer(3, GL_FLOAT, 0, verts);
-	glDrawArrays(GL_LINES, 0, 24);
-	glDrawArrays(GL_LINE_STRIP, 24, 10);
+  Matrix mat;
+  mat.CreateLookat (m_fEye, m_fTarget, m_fUp);
+  mat.Invert ();
 
-	glPopMatrix();
+  mat.SetTranslation (m_fEye[0], m_fEye[1], m_fEye[2]);
+  BoundingBoxCalculate (&mat);
+  mat.SetTranslation (m_fTarget[0], m_fTarget[1], m_fTarget[2]);
+  m_pTarget->BoundingBoxCalculate (&mat);
+  mat.SetTranslation (0, 0, 0);
 
-	// Draw target box.
-	glPushMatrix();
-	Matrix44 TargetMat = m_ViewWorld;
-	TargetMat.SetTranslation(m_TargetPosition);
-	glMultMatrixf(TargetMat);
+	if (!m_nList)
+		return;
 
-	if (IsTargetSelected())
-	{
-		glLineWidth(2.0f);
-		lcSetColor((m_nState & LC_CAMERA_TARGET_FOCUSED) != 0 ? LC_COLOR_FOCUS : LC_COLOR_SELECTION);
-	}
-	else
-	{
-		glLineWidth(1.0f);
-		glColor4f(0.5f, 0.8f, 0.5f, 1.0f);
-	}
+  glNewList(m_nList, GL_COMPILE);
 
-	glEnableClientState(GL_VERTEX_ARRAY);
-	float box[24][3] =
-	{ 
-		{  0.2f,  0.2f,  0.2f }, { -0.2f,  0.2f,  0.2f },
-		{ -0.2f,  0.2f,  0.2f }, { -0.2f, -0.2f,  0.2f },
-		{ -0.2f, -0.2f,  0.2f }, {  0.2f, -0.2f,  0.2f },
-		{  0.2f, -0.2f,  0.2f }, {  0.2f,  0.2f,  0.2f },
-		{  0.2f,  0.2f, -0.2f }, { -0.2f,  0.2f, -0.2f },
-		{ -0.2f,  0.2f, -0.2f }, { -0.2f, -0.2f, -0.2f },
-		{ -0.2f, -0.2f, -0.2f }, {  0.2f, -0.2f, -0.2f },
-		{  0.2f, -0.2f, -0.2f }, {  0.2f,  0.2f, -0.2f },
-		{  0.2f,  0.2f,  0.2f }, {  0.2f,  0.2f, -0.2f },
-		{ -0.2f,  0.2f,  0.2f }, { -0.2f,  0.2f, -0.2f },
-		{ -0.2f, -0.2f,  0.2f }, { -0.2f, -0.2f, -0.2f },
-		{  0.2f, -0.2f,  0.2f }, {  0.2f, -0.2f, -0.2f }
-	};
-	glVertexPointer(3, GL_FLOAT, 0, box);
-	glDrawArrays(GL_LINES, 0, 24);
-	glPopMatrix();
+  glPushMatrix();
+  glTranslatef(m_fEye[0], m_fEye[1], m_fEye[2]);
+  glMultMatrixf(mat.m);
 
-	glLineWidth(1.0f);
+  glEnableClientState(GL_VERTEX_ARRAY);
+  float verts[34][3] = {
+    {  0.3f,  0.3f,  0.3f }, { -0.3f,  0.3f,  0.3f },
+    { -0.3f,  0.3f,  0.3f }, { -0.3f, -0.3f,  0.3f },
+    { -0.3f, -0.3f,  0.3f }, {  0.3f, -0.3f,  0.3f },
+    {  0.3f, -0.3f,  0.3f }, {  0.3f,  0.3f,  0.3f },
+    {  0.3f,  0.3f, -0.3f }, { -0.3f,  0.3f, -0.3f },
+    { -0.3f,  0.3f, -0.3f }, { -0.3f, -0.3f, -0.3f },
+    { -0.3f, -0.3f, -0.3f }, {  0.3f, -0.3f, -0.3f },
+    {  0.3f, -0.3f, -0.3f }, {  0.3f,  0.3f, -0.3f },
+    {  0.3f,  0.3f,  0.3f }, {  0.3f,  0.3f, -0.3f },
+    { -0.3f,  0.3f,  0.3f }, { -0.3f,  0.3f, -0.3f },
+    { -0.3f, -0.3f,  0.3f }, { -0.3f, -0.3f, -0.3f },
+    {  0.3f, -0.3f,  0.3f }, {  0.3f, -0.3f, -0.3f },
+    { -0.3f, -0.3f, -0.6f }, { -0.3f,  0.3f, -0.6f },
+    {  0.0f,  0.0f, -0.3f }, { -0.3f, -0.3f, -0.6f },
+    {  0.3f, -0.3f, -0.6f }, {  0.0f,  0.0f, -0.3f },
+    {  0.3f,  0.3f, -0.6f }, {  0.3f, -0.3f, -0.6f },
+    {  0.3f,  0.3f, -0.6f }, { -0.3f,  0.3f, -0.6f } };
+  glVertexPointer (3, GL_FLOAT, 0, verts);
+  glDrawArrays(GL_LINES, 0, 24);
+  glDrawArrays(GL_LINE_STRIP, 24, 10);
 
-	float Line[2][3] =
-	{
-		{ m_Position[0], m_Position[1], m_Position[2] },
-		{ m_TargetPosition[0], m_TargetPosition[1], m_TargetPosition[2] },
-	};
+//	glBegin(GL_LINES);
+//	glVertex3f(0,0,0);
+//	glVertex3f(0,0,len);
+//	glEnd();
 
-	glVertexPointer(3, GL_FLOAT, 0, Line);
-	glColor4f(0.5f, 0.8f, 0.5f, 1.0f);
-	glDrawArrays(GL_LINES, 0, 2);
+  glTranslatef(0, 0, -len);
 
-	if (IsSelected())
-	{
-		glPushMatrix();
-		glMultMatrixf(m_ViewWorld);
+  glEndList();
 
-		float Dist = Length(m_TargetPosition - m_Position);
-		Matrix44 Projection;
-		Projection = CreatePerspectiveMatrix(m_FOV, 1.33f, 0.01f, Dist);
-		Projection = Inverse(Projection);
-		glMultMatrixf(Projection);
+  if (m_nTargetList == 0)
+  {
+    m_nTargetList = glGenLists(1);
+    glNewList (m_nTargetList, GL_COMPILE);
 
-		// Draw the view frustum.
-		float verts[16][3] =
-		{
-			{  1,  1,  1 }, { -1,  1, 1 },
-			{ -1,  1,  1 }, { -1, -1, 1 },
-			{ -1, -1,  1 }, {  1, -1, 1 },
-			{  1, -1,  1 }, {  1,  1, 1 },
-			{  1,  1, -1 }, {  1,  1, 1 },
-			{ -1,  1, -1 }, { -1,  1, 1 },
-			{ -1, -1, -1 }, { -1, -1, 1 },
-			{  1, -1, -1 }, {  1, -1, 1 },
-		};
-
-		glVertexPointer(3, GL_FLOAT, 0, verts);
-		glDrawArrays(GL_LINES, 0, 16);
-
-		glPopMatrix();
-	}
-
-	glDisableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    float box[24][3] = { 
+      {  0.2f,  0.2f,  0.2f }, { -0.2f,  0.2f,  0.2f },
+      { -0.2f,  0.2f,  0.2f }, { -0.2f, -0.2f,  0.2f },
+      { -0.2f, -0.2f,  0.2f }, {  0.2f, -0.2f,  0.2f },
+      {  0.2f, -0.2f,  0.2f }, {  0.2f,  0.2f,  0.2f },
+      {  0.2f,  0.2f, -0.2f }, { -0.2f,  0.2f, -0.2f },
+      { -0.2f,  0.2f, -0.2f }, { -0.2f, -0.2f, -0.2f },
+      { -0.2f, -0.2f, -0.2f }, {  0.2f, -0.2f, -0.2f },
+      {  0.2f, -0.2f, -0.2f }, {  0.2f,  0.2f, -0.2f },
+      {  0.2f,  0.2f,  0.2f }, {  0.2f,  0.2f, -0.2f },
+      { -0.2f,  0.2f,  0.2f }, { -0.2f,  0.2f, -0.2f },
+      { -0.2f, -0.2f,  0.2f }, { -0.2f, -0.2f, -0.2f },
+      {  0.2f, -0.2f,  0.2f }, {  0.2f, -0.2f, -0.2f } };
+    glVertexPointer (3, GL_FLOAT, 0, box);
+    glDrawArrays(GL_LINES, 0, 24);
+    glPopMatrix();
+    glEndList();
+  }
 }
 
-void lcCamera::ClosestLineIntersect(lcClickLine& ClickLine) const
+void Camera::Render(float fLineWidth)
 {
-	BoundingBox Box;
-	Box.m_Max = Vector3(0.2f, 0.2f, 0.2f);
-	Box.m_Min = Vector3(-0.2f, -0.2f, -0.2f);
-
-	Vector3 Start = Mul31(ClickLine.Start, m_WorldView);
-	Vector3 End = Mul31(ClickLine.End, m_WorldView);
-
-	float Dist;
-	if (BoundingBoxRayMinIntersectDistance(Box, Start, End, &Dist) && (Dist < ClickLine.Dist))
+	// Create the display lists if this is the first time we're rendered.
+	if (!m_nList)
 	{
-		ClickLine.Object = this;
-		ClickLine.Dist = Dist;
+    m_nList = glGenLists(1);
+		UpdateBoundingBox();
 	}
 
-	m_Target->ClosestLineIntersect(ClickLine);
+  if (IsEyeSelected())
+  {
+    glLineWidth(fLineWidth*2);
+    glColor3ubv(FlatColorArray[(m_nState & LC_CAMERA_FOCUSED) != 0 ? LC_COL_FOCUSED : LC_COL_SELECTED]);
+    glCallList(m_nList);
+    glLineWidth(fLineWidth);
+  }
+  else
+  {
+    glColor3f(0.5f, 0.8f, 0.5f);
+    glCallList(m_nList);
+  }
+
+  if (IsTargetSelected())
+  {
+    glLineWidth(fLineWidth*2);
+    glColor3ubv(FlatColorArray[(m_nState & LC_CAMERA_TARGET_FOCUSED) != 0 ? LC_COL_FOCUSED : LC_COL_SELECTED]);
+    glCallList(m_nTargetList);
+    glLineWidth(fLineWidth);
+  }
+  else
+  {
+    glColor3f(0.5f, 0.8f, 0.5f);
+    glCallList(m_nTargetList);
+  }
+
+  glColor3f(0.5f, 0.8f, 0.5f);
+  glBegin(GL_LINES);
+  glVertex3fv(m_fEye);
+  glVertex3fv(m_fTarget);
+  glEnd();
+
+  if (IsSelected())
+  {
+    Matrix projection, modelview;
+    Vector frontvec(m_fTarget[0]-m_fEye[0], m_fTarget[1]-m_fEye[1], m_fTarget[2]-m_fEye[2]);
+    float len = frontvec.Length();
+
+    glPushMatrix ();
+
+    modelview.CreateLookat (m_fEye, m_fTarget, m_fUp);
+    modelview.Invert ();
+    glMultMatrixf (modelview.m);
+
+    projection.CreatePerspective (m_fovy, 1.33f, 0.01f, len);
+    projection.Invert ();
+    glMultMatrixf (projection.m);
+
+    // draw the viewing frustum
+    glBegin(GL_LINE_LOOP);
+    glVertex3i(1, 1, 1);
+    glVertex3i(-1, 1, 1);
+    glVertex3i(-1, -1, 1);
+    glVertex3i(1, -1, 1);
+    glEnd();
+
+    glBegin(GL_LINES);
+    glVertex3i(1, 1, -1);
+    glVertex3i(1, 1, 1);
+    glVertex3i(-1, 1, -1);
+    glVertex3i(-1, 1, 1);
+    glVertex3i(-1, -1, -1);
+    glVertex3i(-1, -1, 1);
+    glVertex3i(1, -1, -1);
+    glVertex3i(1, -1, 1);
+    glEnd();
+
+    glPopMatrix();
+  }
 }
 
-bool lcCamera::IntersectsVolume(const Vector4* Planes, int NumPlanes) const
+void Camera::MinIntersectDist(LC_CLICKLINE* pLine)
 {
-	BoundingBox Box;
-	Box.m_Max = Vector3(0.3f, 0.3f, 0.3f);
-	Box.m_Min = Vector3(-0.3f, -0.3f, -0.3f);
+  float dist;
 
-	// Transform the planes to local space.
-	Vector4* LocalPlanes = new Vector4[NumPlanes];
-	int i;
+  if (m_nState & LC_CAMERA_HIDDEN)
+    return;
 
-	for (i = 0; i < NumPlanes; i++)
-	{
-		LocalPlanes[i] = Vector4(Mul30(Vector3(Planes[i]), m_WorldView));
-		LocalPlanes[i][3] = Planes[i][3] - Dot3(Vector3(m_WorldView[3]), Vector3(LocalPlanes[i]));
-	}
+  dist = (float)BoundingBoxIntersectDist (pLine);
+  if (dist < pLine->mindist)
+  {
+    pLine->mindist = dist;
+    pLine->pClosest = this;
+  }
 
-	bool Intersect = BoundingBoxIntersectsVolume(Box, LocalPlanes, NumPlanes);
+  m_pTarget->MinIntersectDist (pLine);
+}
 
-	delete[] LocalPlanes;
+void Camera::LoadProjection(float fAspect)
+{
+  if (m_pTR != NULL)
+    m_pTR->BeginTile();
+  else
+  {
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(m_fovy, fAspect, m_zNear, m_zFar);
+/*
+		ymax = 10;//(m_zFar-m_zNear)*tan(DTOR*m_fovy)/3;
+		ymin = -ymax;
+		xmin = ymin * fAspect;
+		xmax = ymax * fAspect;
+		znear = -60;
+		zfar = 60;
+		glOrtho(xmin, xmax, ymin, ymax, znear, zfar);
+*/
+  }
 
-	if (!Intersect)
-		Intersect = m_Target->IntersectsVolume(Planes, NumPlanes);
+  glMatrixMode(GL_MODELVIEW);
+  glLoadIdentity();
+  gluLookAt(m_fEye[0], m_fEye[1], m_fEye[2], m_fTarget[0], m_fTarget[1], m_fTarget[2], m_fUp[0], m_fUp[1], m_fUp[2]);
+}
 
-	return Intersect;
+void Camera::DoZoom(int dy, int mouse, unsigned short nTime, bool bAnimation, bool bAddKey)
+{
+  Vector frontvec(m_fEye[0]-m_fTarget[0], m_fEye[1]-m_fTarget[1], m_fEye[2]-m_fTarget[2]);
+  frontvec.Normalize();
+  frontvec *= 2.0f*dy/(21-mouse);
+
+  // TODO: option to move eye, target or both
+  m_fEye[0] += frontvec[0];
+  m_fEye[1] += frontvec[1];
+  m_fEye[2] += frontvec[2];
+  m_fTarget[0] += frontvec[0];
+  m_fTarget[1] += frontvec[1];
+  m_fTarget[2] += frontvec[2];
+
+  ChangeKey(nTime, bAnimation, bAddKey, m_fEye, LC_CK_EYE);
+  ChangeKey(nTime, bAnimation, bAddKey, m_fTarget, LC_CK_TARGET);
+  UpdatePosition(nTime, bAnimation);
+}
+
+void Camera::DoPan(int dx, int dy, int mouse, unsigned short nTime, bool bAnimation, bool bAddKey)
+{
+  Vector upvec(m_fUp), frontvec(m_fEye[0]-m_fTarget[0], m_fEye[1]-m_fTarget[1], m_fEye[2]-m_fTarget[2]), sidevec;
+  sidevec.Cross(frontvec, upvec);
+  sidevec.Normalize();
+  sidevec *= 2.0f*dx/(21-mouse);
+  upvec.Normalize();
+  upvec *= -2.0f*dy/(21-mouse);
+
+  m_fEye[0] += upvec[0] + sidevec[0];
+  m_fEye[1] += upvec[1] + sidevec[1];
+  m_fEye[2] += upvec[2] + sidevec[2];
+  m_fTarget[0] += upvec[0] + sidevec[0];
+  m_fTarget[1] += upvec[1] + sidevec[1];
+  m_fTarget[2] += upvec[2] + sidevec[2];
+
+  ChangeKey(nTime, bAnimation, bAddKey, m_fEye, LC_CK_EYE);
+  ChangeKey(nTime, bAnimation, bAddKey, m_fTarget, LC_CK_TARGET);
+  UpdatePosition(nTime, bAnimation);
+}
+
+void Camera::DoRotate(int dx, int dy, int mouse, unsigned short nTime, bool bAnimation, bool bAddKey, float* /*center*/)
+{
+  Vector upvec(m_fUp), frontvec(m_fEye[0]-m_fTarget[0], m_fEye[1]-m_fTarget[1], m_fEye[2]-m_fTarget[2]), sidevec;
+  sidevec.Cross(frontvec, upvec);
+  sidevec.Normalize();
+  sidevec *= 2.0f*dx/(21-mouse);
+  upvec.Normalize();
+  upvec *= -2.0f*dy/(21-mouse);
+
+  // TODO: option to move eye or target
+  float len = frontvec.Length();
+  frontvec += Vector(upvec[0] + sidevec[0], upvec[1] + sidevec[1], upvec[2] + sidevec[2]);
+  frontvec.Normalize();
+  frontvec *= len;
+  frontvec += Vector(m_fTarget);
+  frontvec.ToFloat(m_fEye);
+
+  // Calculate new up
+  upvec = Vector(m_fUp[0], m_fUp[1], m_fUp[2]);
+  frontvec = Vector(m_fEye[0]-m_fTarget[0], m_fEye[1]-m_fTarget[1], m_fEye[2]-m_fTarget[2]);
+  sidevec.Cross(frontvec, upvec);
+  upvec.Cross(sidevec, frontvec);
+  upvec.Normalize();
+  upvec.ToFloat(m_fUp);
+
+  ChangeKey(nTime, bAnimation, bAddKey, m_fEye, LC_CK_EYE);
+  ChangeKey(nTime, bAnimation, bAddKey, m_fUp, LC_CK_UP);
+  UpdatePosition(nTime, bAnimation);
+}
+
+void Camera::DoRoll(int dx, int mouse, unsigned short nTime, bool bAnimation, bool bAddKey)
+{
+  Matrix mat;
+  float front[3] = { m_fEye[0]-m_fTarget[0], m_fEye[1]-m_fTarget[1], m_fEye[2]-m_fTarget[2] };
+
+  mat.FromAxisAngle(front, 2.0f*dx/(21-mouse));
+  mat.TransformPoints(m_fUp, 1);
+
+  ChangeKey(nTime, bAnimation, bAddKey, m_fUp, LC_CK_UP);
+  UpdatePosition(nTime, bAnimation);
+}
+
+void Camera::StartTiledRendering(int tw, int th, int iw, int ih, float fAspect)
+{
+  m_pTR = new TiledRender();
+  m_pTR->TileSize(tw, th, 0);
+  m_pTR->ImageSize(iw, ih);
+  m_pTR->Perspective(m_fovy, fAspect, m_zNear, m_zFar);
+}
+
+void Camera::GetTileInfo(int* row, int* col, int* width, int* height)
+{
+  if (m_pTR != NULL)
+  {
+    *row = m_pTR->m_Rows - m_pTR->m_CurrentRow - 1;
+    *col = m_pTR->m_CurrentColumn;
+    *width = m_pTR->m_CurrentTileWidth;
+    *height = m_pTR->m_CurrentTileHeight;
+  }
+}
+
+bool Camera::EndTile()
+{
+  if (m_pTR != NULL)
+  {
+    if (m_pTR->EndTile())
+      return true;
+
+    delete m_pTR;
+    m_pTR = NULL;
+  }
+
+  return false;
 }

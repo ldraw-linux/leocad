@@ -1,11 +1,12 @@
 // texdlg.cpp : implementation file
 //
 
-#include "lc_global.h"
+#include "stdafx.h"
 #include "leocad.h"
 #include "texdlg.h"
 #include "library.h"
 #include "project.h"
+#include "globals.h"
 #include "texture.h"
 #include "lc_application.h"
 

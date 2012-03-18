@@ -6,6 +6,7 @@ Leonardo Zide <leo@gerf.org>
 Contributions:
 Christian Höltje <docwhat@gerf.org>
 Joerg Scheurich <rusmufti@helpdesk.bera.rus.uni-stuttgart.de>
+Nicolas Schodet <nico-leocad@ni.fr.eu.org>
 Renaud Breard <renaud@islande.net>
 
 Linux man page and Debian packages:

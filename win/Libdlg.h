@@ -1,7 +1,7 @@
 #ifndef _LIBDLG_H_
 #define _LIBDLG_H_
 
-#include "lc_array.h"
+#include "array.h"
 #include "str.h"
 
 class PieceInfo;
@@ -36,7 +36,7 @@ public:
 	void UpdateTree();
 	void UpdateList();
 
-	bool ImportPieces(const lcObjArray<String>& FileList);
+	bool ImportPieces(const ObjArray<String>& FileList);
 
 	CToolBar m_wndToolBar;
 	CImageList m_TreeImages;

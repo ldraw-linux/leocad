@@ -24,8 +24,6 @@
   !define MUI_ICON "setup.ico"
   !define MUI_UNICON "setup.ico"
 
-  SetCompressor /SOLID lzma
-
 ;--------------------------------
 ;Interface Settings
 
@@ -65,13 +63,10 @@ Section "LeoCAD" SecLeoCAD
   File "..\..\win\release\textures.bin"
   File "..\..\win\release\textures.idx"
   File "..\..\win\release\sysfont.txf"
-
-  ; Store installation folder
+  
+  ;Store installation folder
   WriteRegStr HKCU "Software\BT Software\LeoCAD" "InstallPath" $INSTDIR
-
-  ; Overwrite old Pieces Library path.
-  WriteRegStr HKCU "Software\BT Software\LeoCAD\Settings" "PiecesLibrary" $INSTDIR
-
+  
   CreateShortCut "$SMPROGRAMS\LeoCAD.lnk" "$INSTDIR\LeoCAD.exe"
 
   ;Create uninstaller

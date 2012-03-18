@@ -1,9 +1,49 @@
-#ifndef _PROPSPGS_H_
-#define _PROPSPGS_H_
+// PropsPgs.h : header file
+//
+
+#ifndef __PROPSPGS_H__
+#define __PROPSPGS_H__
 
 #include "defines.h"
-#include "typedefs.h"
-#include "lc_array.h"
+
+/////////////////////////////////////////////////////////////////////////////
+// CPropertiesGeneral dialog
+
+class CPropertiesGeneral : public CPropertyPage
+{
+	DECLARE_DYNCREATE(CPropertiesGeneral)
+
+// Construction
+public:
+	CString m_strFilename;
+	CPropertiesGeneral();
+	~CPropertiesGeneral();
+
+// Dialog Data
+	//{{AFX_DATA(CPropertiesGeneral)
+	enum { IDD = IDD_PROPGENERAL };
+		// NOTE - ClassWizard will add data members here.
+		//    DO NOT EDIT what you see in these blocks of generated code !
+	//}}AFX_DATA
+
+
+// Overrides
+	// ClassWizard generate virtual function overrides
+	//{{AFX_VIRTUAL(CPropertiesGeneral)
+	protected:
+	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV support
+	//}}AFX_VIRTUAL
+
+// Implementation
+protected:
+	// Generated message map functions
+	//{{AFX_MSG(CPropertiesGeneral)
+	virtual BOOL OnInitDialog();
+	//}}AFX_MSG
+	DECLARE_MESSAGE_MAP()
+
+};
+
 
 /////////////////////////////////////////////////////////////////////////////
 // CPropertiesSummary dialog
@@ -20,10 +60,9 @@ public:
 // Dialog Data
 	//{{AFX_DATA(CPropertiesSummary)
 	enum { IDD = IDD_PROPSUMMARY };
-	CString m_Name;
-	CString	m_Author;
-	CString	m_Comments;
-	CString	m_Description;
+	CString	m_strAuthor;
+	CString	m_strComments;
+	CString	m_strDescription;
 	//}}AFX_DATA
 
 
@@ -41,62 +80,6 @@ protected:
 		// NOTE: the ClassWizard will add member functions here
 	//}}AFX_MSG
 	DECLARE_MESSAGE_MAP()
-};
-
-/////////////////////////////////////////////////////////////////////////////
-// CPropertiesScene dialog
-
-class CPropertiesScene : public CPropertyPage
-{
-	DECLARE_DYNCREATE(CPropertiesScene)
-
-// Construction
-public:
-	CPropertiesScene();
-	~CPropertiesScene();
-	COLORREF m_crBackground;
-	COLORREF m_crAmbient;
-	COLORREF m_crFog;
-	COLORREF m_crGrad1;
-	COLORREF m_crGrad2;
-
-// Dialog Data
-	//{{AFX_DATA(CPropertiesScene)
-	enum { IDD = IDD_PROPSCENE };
-	CButton	m_btnGrad1;
-	CButton	m_btnGrad2;
-	CButton	m_btnAmbient;
-	CButton	m_btnFog;
-	CButton	m_btnBackground;
-	CString	m_strBackground;
-	BOOL	m_bTile;
-	BOOL	m_bFog;
-	BYTE	m_nFogDensity;
-	BOOL	m_bFloor;
-	int		m_nBackground;
-	//}}AFX_DATA
-
-
-// Overrides
-	// ClassWizard generate virtual function overrides
-	//{{AFX_VIRTUAL(CPropertiesScene)
-	protected:
-	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV support
-	//}}AFX_VIRTUAL
-
-// Implementation
-protected:
-	// Generated message map functions
-	//{{AFX_MSG(CPropertiesScene)
-	afx_msg void OnBackgroundBrowse();
-	afx_msg void OnBackgroundColor();
-	afx_msg void OnAmbientLight();
-	afx_msg void OnFogColor();
-	virtual BOOL OnInitDialog();
-	afx_msg void OnGradColor1();
-	afx_msg void OnGradColor2();
-	//}}AFX_MSG
-	DECLARE_MESSAGE_MAP()
 
 };
 
@@ -112,6 +95,11 @@ class CPropertiesPieces : public CPropertyPage
 public:
 	CPropertiesPieces();
 	~CPropertiesPieces();
+	char** names;
+	unsigned short* count;
+	int lines;
+	int col[LC_MAXCOLORS];
+	int totalcount[LC_MAXCOLORS];
 
 // Dialog Data
 	//{{AFX_DATA(CPropertiesPieces)
@@ -119,10 +107,6 @@ public:
 	CListCtrl	m_List;
 	//}}AFX_DATA
 
-	lcObjArray<lcPiecesUsedEntry> m_PiecesUsed;
-	int* m_ColorColumn;
-	int m_SortColumn;
-	bool m_SortAscending;
 
 // Overrides
 	// ClassWizard generate virtual function overrides
@@ -139,6 +123,9 @@ protected:
 	afx_msg void OnColumnclickPropPiecesList(NMHDR* pNMHDR, LRESULT* pResult);
 	//}}AFX_MSG
 	DECLARE_MESSAGE_MAP()
+
 };
 
-#endif // _PROPSPGS_H_
+
+
+#endif // __PROPSPGS_H__

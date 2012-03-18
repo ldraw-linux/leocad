@@ -1,13 +1,11 @@
 #ifndef _PROJECT_H_
 #define _PROJECT_H_
 
-#include "lc_message.h"
-
 #include "object.h"
 #include "defines.h"
 #include "typedefs.h"
 #include "opengl.h"
-#include "lc_array.h"
+#include "array.h"
 #include "algebra.h"
 
 typedef enum 
@@ -31,31 +29,18 @@ typedef enum
 	LC_OVERLAY_YZ
 } LC_OVERLAY_MODES;
 
-enum LC_TOUCH_PHASE
-{
-	LC_TOUCH_BEGAN,
-	LC_TOUCH_MOVED,
-	LC_TOUCH_ENDED
-};
-
-struct TouchState
-{
-	LC_TOUCH_PHASE Phase;
-	int TapCount;
-	int x, y;
-	int StartX, StartY;
-};
-
-class lcGroup;
-class GroupInfo;
+class Piece;
+class Camera;
+class Light;
+class Group;
 class Texture;
+class Terrain;
 class PieceInfo;
 class Matrix;
 class View;
 class Image;
 class PiecesLibrary;
 class TexFont;
-class lcModel;
 
 // Undo support
 
@@ -63,13 +48,13 @@ class lcModel;
 
 typedef struct LC_UNDOINFO
 {
-	lcFileMem file;
+	FileMem file;
 	char strText[21];
 	LC_UNDOINFO* pNext;
 	LC_UNDOINFO() { pNext = NULL; };
 } LC_UNDOINFO;
 
-class Project : public lcListener
+class Project
 {
 public:
 // Constructors
@@ -84,25 +69,45 @@ public:
 		{ m_bModified = bModified; }
 
 	// Access to protected members
-	u32 GetLastStep();
+	unsigned char GetLastStep();
 	bool IsAnimation()
-		{ return m_Animation; }
+		{ return m_bAnimation; }
 	void SetAnimation(bool Anim)
-	{ m_Animation = Anim; } // only to be called from lcApplication::Initialize()
+	{ m_bAnimation = Anim; } // only to be called from lcApplication::Initialize()
+	unsigned short GetCurrentTime ()
+		{ return m_bAnimation ? m_nCurFrame : m_nCurStep; }
+	void SetCurrentPiece(PieceInfo* pInfo)
+		{ m_pCurPiece = pInfo; }
+	int GetCurrentColor () const
+		{ return m_nCurColor; }
 	float* GetBackgroundColor()
 		{ return m_fBackground; }
 	unsigned char GetAction() const
 		{ return m_nCurAction; }
+	unsigned long GetSnap() const
+		{ return m_nSnap; }
 	int GetOverlayMode() const
 		{ return m_OverlayMode; }
 	void GetSnapIndex(int* SnapXY, int* SnapZ, int* SnapAngle) const;
 	void GetSnapDistance(float* SnapXY, float* SnapZ) const;
 	void GetSnapDistanceText(char* SnapXY, char* SnapZ) const;
-	const Vector3& GetOverlayCenter() const
-		{ return m_OverlayCenter; }
+	Camera* GetCamera(int i);
+	void GetTimeRange(int* from, int* to)
+	{
+		*from = m_bAnimation ? m_nCurFrame : m_nCurStep;
+		*to = m_bAnimation ? m_nTotalFrames : 255;
+	}
+	unsigned short GetTotalFrames () const
+		{ return m_nTotalFrames; }
 
 	void ConvertToUserUnits(Vector3& Value) const;
 	void ConvertFromUserUnits(Vector3& Value) const;
+	void GetArrays(Piece** ppPiece, Camera** ppCamera, Light** ppLight)
+	{
+		*ppPiece = m_pPieces;
+		*ppCamera = m_pCameras;
+		*ppLight = m_pLights;
+	}
 
 	void UpdateInterface();
 	void SetPathName (const char* lpszPathName, bool bAddToMRU);
@@ -112,37 +117,25 @@ public:
 	// Special notifications
 	void DeleteContents(bool bUndo); // delete doc items etc
 	void LoadDefaults(bool cameras);
-	void BeginPieceDrop();
+	void BeginPieceDrop(PieceInfo* Info);
 	void BeginColorDrop();
 
 	void CreateImages(Image* images, int width, int height, unsigned short from, unsigned short to, bool hilite);
-	void Render(View* view, bool AllowFast, bool RenderInterface);
+	void Render(View* view, bool bToMemory);
 	void CheckAutoSave();
-	void CheckAnimation();
 	bool GetSelectionCenter(Vector3& Center) const;
 	bool GetFocusPosition(Vector3& Position) const;
-	lcObject* GetFocusObject() const;
-	lcGroup* AddGroup(const char* name, lcGroup* pParent, float x, float y, float z);
+	Object* GetFocusObject() const;
+	Group* AddGroup (const char* name, Group* pParent, float x, float y, float z);
 
-	void ToggleObjectSelectedState(lcObject* Object, bool AllowMultiple);
-	void UpdateSelection();
-
-	// Views.
-	void AddView(View* pView);
-	void RemoveView(View* pView);
+	void AddView(View* view);
+	void RemoveView(View* view);
 	void UpdateAllViews();
-	View* GetFirstView() const
-		{ return m_ViewList.GetSize() ? m_ViewList[0] : NULL; }
-	View* GetActiveView() const
-		{ return m_ActiveView; }
 	bool SetActiveView(View* view);
-
-public:
-	lcModel* m_ActiveModel;
-	lcPtrArray<lcModel> m_ModelList;
-
-	// Font used to draw text on the screen.
-	TexFont* m_pScreenFont;
+	View* GetActiveView() const
+	{
+		return m_ActiveView;
+	}
 
 // Implementation
 protected:
@@ -152,11 +145,14 @@ protected:
 	bool m_bModified;    // changed since last saved
 
 	View* m_ActiveView;
-	lcPtrArray<View> m_ViewList;
+	PtrArray<View> m_ViewList;
 
 	char m_strAuthor[101];
 	char m_strDescription[101];
 	char m_strComments[256];
+
+	// Piece library
+	TexFont* m_pScreenFont;
 
 	// Undo support
 	LC_UNDOINFO* m_pUndoList;
@@ -164,25 +160,30 @@ protected:
 	bool m_bUndoOriginal;
 	void CheckPoint (const char* text);
 
-	lcFile* m_pClipboard[10];
+	// Objects
+	Piece* m_pPieces;
+	Camera* m_pCameras;
+	Light* m_pLights;
+	Group* m_pGroups;
+	Terrain* m_pTerrain;
+	File* m_pClipboard[10];
 	unsigned char m_nCurClipboard;
 
-	void AddModel(lcModel* Model);
-	void DeleteModel(lcModel* Model);
-	void SetActiveModel(lcModel* Model);
-	void UpdateAllModelMeshes();
+	CONNECTION_TYPE m_pConnections[LC_CONNECTIONS];
 
+	void AddPiece(Piece* pPiece);
+	void RemovePiece(Piece* pPiece);
 	bool RemoveSelectedObjects();
-	void GetPieceInsertPosition(lcPiece* OffsetPiece, Vector3& Position, Vector4& Rotation);
-	void GetPieceInsertPosition(int MouseX, int MouseY, Vector3& Position, Vector4& Orientation);
-	lcObject* FindObjectFromPoint(int x, int y, bool PiecesOnly = false);
-	void FindObjectsInBox(float x1, float y1, float x2, float y2, lcPtrArray<lcObject>& Objects);
+	void GetPieceInsertPosition(Piece* OffsetPiece, Vector3& Position, Vector4& Rotation);
+	void GetPieceInsertPosition(View* view, int MouseX, int MouseY, Vector3& Position, Vector4& Orientation);
+	Object* FindObjectFromPoint(View* view, int x, int y, bool PiecesOnly = false);
+	void FindObjectsInBox(float x1, float y1, float x2, float y2, PtrArray<Object>& Objects);
 	void SelectAndFocusNone(bool bFocusOnly);
 	void CalculateStep();
 
 	// Movement.
 	bool MoveSelectedObjects(Vector3& Move, Vector3& Remainder, bool Snap);
-	bool RotateSelectedObjects(Vector3& Delta, Vector3& Remainder, bool Snap);
+	bool RotateSelectedObjects(Vector3& Delta, Vector3& Remainder);
 	void SnapVector(Vector3& Delta) const
 	{
 		Vector3 Dummy;
@@ -193,48 +194,38 @@ protected:
 
 	// Rendering functions.
 	void RenderBackground(View* view);
-	void RenderScene(View* view, bool Interface);
+	void RenderScenePieces(View* view);
 	void RenderSceneBoxes(View* view);
+	void RenderSceneObjects(View* view);
+	void RenderViewports(View* view);
 	void RenderOverlays(View* view);
-	void RenderInterface(View* view);
+
 	void RenderInitialize();
+	void CreateHTMLPieceList(FILE* f, int nStep, bool bImages, const char* ext);
 
-	void CreateHTMLPieceList(FILE* f, u32 nStep, bool bImages, const char* ext);
-
-	// Animation playback.
-	bool m_PlayingAnimation;
-	u64 m_LastFrameTime;
-
-	lcFile* m_pTrackFile;
+	bool m_bStopRender;
+	File* m_pTrackFile;
 	bool m_bTrackCancel;
 	int m_nTracking;
 	int m_nDownX;
 	int m_nDownY;
 	float m_fTrack[3];
+	int m_nMouse;
 	Vector3 m_MouseSnapLeftover;
 	Vector3 m_MouseTotalDelta;
-
-	lcObjArray<TouchState> m_TouchState;
-	int FindTouchIndex(int x, int y) const
-	{
-		for (int TouchIndex = 0; TouchIndex < m_TouchState.GetSize(); TouchIndex++)
-			if ((m_TouchState[TouchIndex].x == x) && (m_TouchState[TouchIndex].y == y))
-				return TouchIndex;
-
-		return -1;
-	}
 
 	int m_OverlayMode;
 	bool m_OverlayActive;
 	Vector3 m_OverlayCenter;
 	Vector3 m_OverlayTrackStart;
 	Vector3 m_OverlayDelta;
-	void MouseUpdateOverlays(int x, int y);
+	void MouseUpdateOverlays(View* view, int x, int y);
 	void ActivateOverlay();
 	void UpdateOverlayScale();
 
 	bool StopTracking(bool bAccept);
 	void StartTracking(int mode);
+	void UpdateSelection();
 	void RemoveEmptyGroups();
 
 public:
@@ -248,27 +239,33 @@ public:
 	void OnRightButtonUp(View* view, int x, int y, bool bControl, bool bShift);
 	void OnMouseMove(View* view, int x, int y, bool bControl, bool bShift);
 	bool OnKeyDown(char nKey, bool bControl, bool bShift);
-	void OnTouch(View* view, LC_TOUCH_PHASE Phase, int TapCount, int x, int y, int PrevX, int PrevY);
 
 	void SetAction(int nAction);
 	void HandleNotify(LC_NOTIFY id, unsigned long param);
 	void HandleCommand(LC_COMMANDS id, unsigned long nParam);
-	void ProcessMessage(lcMessageType Message, void* Data);
+	void HandleMessage(int Message, void* Data);
 
 protected:
 	// State variables
 	int m_nCurAction;
 	int m_PreviousAction;
 	bool m_RestoreAction;
-	bool m_Animation;
+	PieceInfo* m_pCurPiece;
+	PieceInfo* m_PreviousPiece;
+	unsigned char m_nCurColor;
+	bool m_bAnimation;
 	bool m_bAddKeys;
 	unsigned char m_nFPS;
+	unsigned char m_nCurStep;
+	unsigned short m_nCurFrame;
+	unsigned short m_nTotalFrames;
 
 	unsigned long m_nScene;
 	unsigned long m_nDetail;
 	unsigned long m_nSnap;
 	unsigned short m_nMoveSnap;
 	unsigned short m_nAngleSnap;
+	unsigned short m_nGridSize;
 	float m_fLineWidth;
 	float m_fFogDensity;
 	float m_fFogColor[4];
@@ -279,6 +276,7 @@ protected:
 	char m_strFooter[256];
 	char m_strHeader[256];
 
+	GLuint m_nGridList;
 	unsigned long m_nAutosave;
 	unsigned long m_nSaveTimer;
 	char m_strModelsPath[LC_MAXPATH];
@@ -287,10 +285,12 @@ protected:
 
 protected:
 	// File load/save implementation.
-	bool DoSave(char* PathName);
+	bool DoSave(char* PathName, bool bReplace);
 	bool DoFileSave();
-	bool FileLoad(lcFile* file, bool bUndo, bool bMerge);
-	void FileSave(lcFile* file, bool bUndo);
+	bool FileLoad(File* file, bool bUndo, bool bMerge);
+	void FileSave(File* file, bool bUndo);
+	void FileReadLDraw(File* file, Matrix* prevmat, int* nOk, int DefColor, int* nStep, PtrArray<File>& FileArray);
+	void FileReadMPD(File& MPD, PtrArray<File>& FileArray) const;
 
 public:
 	// File helpers
@@ -308,35 +308,6 @@ protected:
 	friend class CCADView;
 	friend void PrintPiecesThread(void* pv);
 	friend void Export3DStudio();
-
-	// VRML/X3DV export
-	void exportVRML97File(char *filename);
-	void exportX3DVFile(char *filename);
-	void exportVRMLFile(char *filename, int dialect);
-	template<class type> void writeVRMLShapes(type color, FILE *stream, int coordinateCounter, lcPiece* pPiece, unsigned short group, float *pos, bool beginAndEnd);
-	void writeVRMLShapeBegin(FILE *stream, unsigned long currentColor, bool blackLines);
-	void writeVRMLShapeMeshBegin(FILE *stream);
-	void writeVRMLShapeMeshData(FILE *stream);
-	void writeVRMLShapeMeshEnd(FILE *stream);
-	void writeVRMLShapeEnd(FILE *stream);
-	void writeIndent(FILE *stream);
-	int indent;
-	int numDEF;
-	int VRMLdialect;
-	bool firstData;
-	int searchForVertex(float *vertex);
-	template<class type> void generateMeshData(type* info, float *pos, lcPiece* pPiece, int numVertices, int currentColor);
-	template<class type> void getMinMaxData(type* info, lcPiece* pPiece, GroupInfo* groupInfo);
-	template<class type> void getMinMax(type col, lcPiece* pPiece, unsigned short group, GroupInfo* groupInfo);
-	bool handleAsGroup(lcPiece* piece, GroupInfo groupInfo);
-	int numCoords;
-	float *coords;
-	int numCoordIndices;
-	int *coordIndices;
-	float centerOfMass[3];
-	int numFaceColors;
-	int *faceColors;
-	float VRMLScale;
 };
 
 #endif // _PROJECT_H_

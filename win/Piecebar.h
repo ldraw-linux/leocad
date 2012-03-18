@@ -13,61 +13,50 @@
 #include "PieceCmb.h"
 #include "PiecePrv.h"
 #include "Splitter.h"
-#include "sizecbar.h"
-#include "scbarg.h"
 
 /////////////////////////////////////////////////////////////////////////
 // CPiecesBar control bar
 
-class CPiecesBar : public CSizingControlBarG
+class CPiecesBar : public CDockablePane
 {
 public:
 	CPiecesBar();
-
-// Overrides
-public:
-	// ClassWizard generated virtual function overrides
-	//{{AFX_VIRTUAL(CPiecesBar)
-	public:
-	virtual BOOL OnNotify(WPARAM wParam, LPARAM lParam, LRESULT* pResult);
-	//}}AFX_VIRTUAL
-
-// Implementation
-public:
 	virtual ~CPiecesBar();
 
 public:
+	void AdjustLayout(int cx, int cy);
+
+protected:
+	virtual BOOL OnNotify(WPARAM wParam, LPARAM lParam, LRESULT* pResult);
+
+	afx_msg int OnCreate(LPCREATESTRUCT lpCreateStruct);
+	afx_msg void OnSize(UINT nType, int cx, int cy);
+	afx_msg BOOL OnEraseBkgnd(CDC* pDC);
+	afx_msg void OnContextMenu(CWnd* pWnd, CPoint point);
+
+	void OnSelChangeColor();
+	afx_msg LONG OnSplitterMoved(UINT lParam, LONG wParam);
+
+	DECLARE_MESSAGE_MAP()
+
+public:
 	BOOL m_bSubParts;
-	BOOL m_bNumbers;
-	CColorList    m_wndColorsList;
-	CPiecesCombo  m_wndPiecesCombo;
+	int m_nPreviewHeight;
+
 	CPiecePreview m_wndPiecePreview;
 	CySplitterWnd m_wndSplitter;
-
 	CTreeCtrl m_PiecesTree;
+	CPiecesCombo m_wndPiecesCombo;
+	CColorsList m_wndColorsList;
 
-	void UpdatePiecesTreeSearch();
-	void UpdatePiecesTreeModels();
-	void UpdatePiecesTree();
+	void UpdatePiecesTree(bool SearchOnly);
 	void UpdatePiecesTree(const char* OldCategory, const char* NewCategory);
 	void SelectPiece(const char* Category, PieceInfo* Info);
 	void RefreshPiecesTree();
 
-// Generated message map functions
 protected:
 	BOOL m_bNoContext;
 	CFont m_Font;
-	int m_nPreviewHeight;
-	void OnUpdateCmdUI(CFrameWnd* pTarget, BOOL bDisableIfNoHndler);
-	//{{AFX_MSG(CPiecesBar)
-	afx_msg void OnSize(UINT nType, int cx, int cy);
-	afx_msg int OnCreate(LPCREATESTRUCT lpCreateStruct);
-	afx_msg void OnContextMenu(CWnd* pWnd, CPoint point);
-	//}}AFX_MSG
-
-	afx_msg LONG OnSplitterMoved(UINT lParam, LONG wParam);
-
-	DECLARE_MESSAGE_MAP()
 };
 
 /////////////////////////////////////////////////////////////////////////

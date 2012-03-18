@@ -1,7 +1,7 @@
 // FigDlg.cpp : implementation file
 //
 
-#include "lc_global.h"
+#include "stdafx.h"
 #include "LeoCAD.h"
 #include "FigDlg.h"
 #include "minifig.h"
@@ -18,7 +18,7 @@ static char THIS_FILE[] = __FILE__;
 CMinifigDlg::CMinifigDlg(void* param, CWnd* pParent /*=NULL*/)
 	: CDialog(CMinifigDlg::IDD, pParent)
 {
-	m_pMinifig = (MinifigWizard*)param;
+  m_pMinifig = (MinifigWizard*)param;
 	m_pMinifigWnd = NULL;
 
 	//{{AFX_DATA_INIT(CMinifigDlg)
@@ -64,64 +64,62 @@ BOOL CMinifigDlg::OnInitDialog()
 {
 	CDialog::OnInitDialog();
 
-	ModifyStyle(0, WS_CLIPCHILDREN, 0);
+	ModifyStyle (0, WS_CLIPCHILDREN, 0);
 
 	RECT r;
 	//RECT r = { 200, 15, 400, 320 };
-	::GetWindowRect(::GetDlgItem(m_hWnd, IDC_PREVIEWSTATIC), &r);
-	ScreenToClient(&r);
+	::GetWindowRect (::GetDlgItem(m_hWnd, IDC_PREVIEWSTATIC), &r);
+	ScreenToClient (&r);
 
 	HINSTANCE hInst = AfxGetInstanceHandle();
 	WNDCLASS wndcls;
-LRESULT CALLBACK GLWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK GLWindowProc (HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 #define OPENGL_CLASSNAME _T("LeoCADOpenGLClass")
 #define MINIFIG_CLASSNAME _T("LeoCADMinifigOpenGLClass")
 
-	// check if our class is registered
-	if(!(GetClassInfo(hInst, MINIFIG_CLASSNAME, &wndcls)))
+  // check if our class is registered
+	if(!(GetClassInfo (hInst, MINIFIG_CLASSNAME, &wndcls)))
 	{
-		if (GetClassInfo(hInst, OPENGL_CLASSNAME, &wndcls))
-		{
-			// set our class name
-			wndcls.lpszClassName = MINIFIG_CLASSNAME;
-			wndcls.lpfnWndProc = GLWindowProc;
+  	if (GetClassInfo (hInst, OPENGL_CLASSNAME, &wndcls))
+	  {
+      // set our class name
+	  	wndcls.lpszClassName = MINIFIG_CLASSNAME;
+      wndcls.lpfnWndProc = GLWindowProc;
 
-			// register class
-			if (!AfxRegisterClass(&wndcls))
-				AfxThrowResourceException();
-		}
+  		// register class
+	  	if (!AfxRegisterClass (&wndcls))
+		  	AfxThrowResourceException();
+  	}
 		else
 			AfxThrowResourceException();
-	}
+  }
 
 	m_pMinifigWnd = new CWnd;
-	m_pMinifigWnd->CreateEx(0, MINIFIG_CLASSNAME, "LeoCAD", WS_BORDER | WS_CHILD | WS_VISIBLE, r, this, 0, m_pMinifig);
+	m_pMinifigWnd->CreateEx (0, MINIFIG_CLASSNAME, "LeoCAD", WS_BORDER | WS_CHILD | WS_VISIBLE, r, this, 0, m_pMinifig);
 
-	int i;
+	for (int i = 0; i < LC_MFW_NUMITEMS; i++)
+		((CColorPicker*)GetDlgItem (IDC_MF_HATCOLOR+i))->SetColorIndex (m_pMinifig->m_Colors[i]);
 
-	for (i = 0; i < LC_MFW_NUMITEMS; i++)
-		((CColorPicker*)GetDlgItem(IDC_MF_HATCOLOR+i))->SetColorIndex(m_pMinifig->m_Colors[i]);
-
-	for (i = 0; i < LC_MFW_NUMITEMS; i++)
+	for (int i = 0; i < LC_MFW_NUMITEMS; i++)
 	{
 		CComboBox* pCombo = (CComboBox*)GetDlgItem(i+IDC_MF_HAT);
-		lcObjArray<lcMinifigPieceInfo>& Pieces = m_pMinifig->mSettings[i];
+		ObjArray<lcMinifigPieceInfo>& Pieces = m_pMinifig->mSettings[i];
 
-		for (int j = 0; j < Pieces.GetSize(); j++)  
-			pCombo->AddString(Pieces[j].Description);  
+	    for (int j = 0; j < Pieces.GetSize(); j++)
+			pCombo->AddString(Pieces[j].Description);
 	}
 
-	for (i = 0; i < LC_MFW_NUMITEMS; i++)
+	for (int i = 0; i < LC_MFW_NUMITEMS; i++)
 	{
 		CComboBox* pCombo = (CComboBox*)GetDlgItem(i+IDC_MF_HAT);
 		pCombo->SetCurSel(m_pMinifig->GetSelectionIndex(i));
 	}
 
-	for (i = IDC_MF_HATSPIN; i <= IDC_MF_SHOERSPIN; i++)
+	for (int i = IDC_MF_HATSPIN; i <= IDC_MF_SHOERSPIN; i++)
 		((CSpinButtonCtrl*)GetDlgItem(i))->SetRange(-360, 360);
 
-	return TRUE;  // return TRUE unless you set the focus to a control
+  return TRUE;  // return TRUE unless you set the focus to a control
 	              // EXCEPTION: OCX Property Pages should return FALSE
 }
 
@@ -140,7 +138,7 @@ BOOL CMinifigDlg::DestroyWindow()
 LONG CMinifigDlg::OnColorSelEndOK(UINT lParam, LONG wParam)
 {
 	m_pMinifig->SetColor(wParam-IDC_MF_HATCOLOR, lParam);
-	m_pMinifig->Redraw();
+	m_pMinifig->Redraw ();
 
 	return TRUE;
 }
@@ -148,7 +146,7 @@ LONG CMinifigDlg::OnColorSelEndOK(UINT lParam, LONG wParam)
 void CMinifigDlg::OnPieceSelEndOK(UINT nID)
 {
 	CComboBox* Combo = (CComboBox*)GetDlgItem(nID);
-	m_pMinifig->SetSelectionIndex(nID - IDC_MF_HAT, Combo->GetCurSel()); 
+	m_pMinifig->SetSelectionIndex(nID - IDC_MF_HAT, Combo->GetCurSel());
 	m_pMinifig->Redraw();
 }
 

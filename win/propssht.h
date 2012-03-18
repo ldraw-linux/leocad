@@ -17,13 +17,13 @@ class CPropertiesSheet : public CPropertySheet
 
 // Construction
 public:
-	CPropertiesSheet(bool ShowPieces, CWnd* pWndParent = NULL);
+	CPropertiesSheet(CWnd* pWndParent = NULL);
 
 // Attributes
 public:
-	CPropertiesSummary m_PageSummary;
-	CPropertiesScene m_PageScene;
-	CPropertiesPieces m_PagePieces;
+	CPropertiesGeneral	m_PageGeneral;
+	CPropertiesSummary	m_PageSummary;
+	CPropertiesPieces	m_PagePieces;
 
 // Operations
 public:

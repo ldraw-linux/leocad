@@ -87,61 +87,6 @@ public:
 		return (pf) ? (pf - m_pData) : -1;
 	}
 
-	// Replace all occurrences of 'Old' with string 'New'.
-	int Replace(const char* Old, const char* New)
-	{
-		int SourceLen = strlen(Old);
-		if (!SourceLen)
-			return 0;
-
-		int ReplacementLen = strlen(New);
-
-		// Loop once to figure out the size of the result string.
-		int Count = 0;
-		char* Start = m_pData;
-		char* End = Start + GetLength();
-		while (Start < End)
-		{
-			char* Target;
-			while ((Target = strstr(Start, Old)) != NULL)
-			{
-				Count++;
-				Start = Target + SourceLen;
-			}
-			Start += strlen(Start) + 1;
-		}
-
-		if (!Count)
-			return 0;
-
-		// Grow buffer if needed.
-		int OldLength = GetLength();
-		int NewLength = OldLength + (ReplacementLen - SourceLen) * Count;
-
-		char* Buffer = GetBuffer(lcMax(NewLength, OldLength));
-
-		Start = Buffer;
-		End = Start + OldLength;
-
-		// Loop again to actually do the work.
-		while (Start < End)
-		{
-			char* Target;
-			while ((Target = strstr(Start, Old)) != NULL)
-			{
-				int Balance = OldLength - (int)(Target - Buffer + SourceLen);
-				memmove(Target + ReplacementLen, Target + SourceLen, Balance);
-				memcpy(Target, New, ReplacementLen);
-				Start = Target + ReplacementLen;
-				Target[ReplacementLen + Balance] = 0;
-				OldLength += (ReplacementLen - SourceLen);
-			}
-			Start += strlen(Start) + 1;
-		}
-
-		return Count;
-	}
-
 	char* GetBuffer(int len)
 	{
 		if (len > (int)strlen(m_pData))
@@ -208,21 +153,5 @@ inline bool operator>=(const String& s1, const char *s2)
 { return s1.Compare(s2) >= 0; }
 inline bool operator>=(const char *s1, const String& s2)
 { return s2.Compare(s1) <= 0; }
-
-inline String GetToken(char*& ptr)
-{
-	String Ret;
-
-	while (*ptr && *ptr <= 32)
-		ptr++;
-
-	while (*ptr > 32)
-	{
-		Ret += *ptr;
-		ptr++;
-	}
-
-	return Ret;
-}
 
 #endif // _STR_H_
