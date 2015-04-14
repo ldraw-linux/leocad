@@ -30,9 +30,7 @@ lcQPreferencesDialog::lcQPreferencesDialog(QWidget *parent, void *data) :
 	ui->lgeoPath->setText(options->LGEOPath);
 	ui->mouseSensitivity->setValue(options->Preferences.mMouseSensitivity);
 	ui->checkForUpdates->setCurrentIndex(options->CheckForUpdates);
-	ui->centimeterUnits->setChecked((options->Snap & LC_DRAW_CM_UNITS) != 0);
-	ui->noRelativeSnap->setChecked((options->Snap & LC_DRAW_GLOBAL_SNAP) != 0);
-	ui->fixedDirectionKeys->setChecked((options->Snap & LC_DRAW_MOVEAXIS) != 0);
+	ui->fixedDirectionKeys->setChecked((options->Preferences.mFixedAxes) != 0);
 
 	ui->antiAliasing->setChecked(options->AASamples != 1);
 	if (options->AASamples == 8)
@@ -85,24 +83,14 @@ void lcQPreferencesDialog::accept()
 		return;
 	}
 
-	options->Snap &= ~(LC_DRAW_CM_UNITS | LC_DRAW_GLOBAL_SNAP | LC_DRAW_MOVEAXIS);
-
-	strcpy(options->DefaultAuthor, ui->authorName->text().toLocal8Bit().data());
-	strcpy(options->ProjectsPath, ui->projectsFolder->text().toLocal8Bit().data());
-	strcpy(options->LibraryPath, ui->partsLibrary->text().toLocal8Bit().data());
-	strcpy(options->POVRayPath, ui->povrayExecutable->text().toLocal8Bit().data());
-	strcpy(options->LGEOPath, ui->lgeoPath->text().toLocal8Bit().data());
+	options->DefaultAuthor = ui->authorName->text();
+	options->ProjectsPath = ui->projectsFolder->text();
+	options->LibraryPath = ui->partsLibrary->text();
+	options->POVRayPath = ui->povrayExecutable->text();
+	options->LGEOPath = ui->lgeoPath->text();
 	options->Preferences.mMouseSensitivity = ui->mouseSensitivity->value();
 	options->CheckForUpdates = ui->checkForUpdates->currentIndex();
-
-	if (ui->centimeterUnits->isChecked())
-		options->Snap |= LC_DRAW_CM_UNITS;
-
-	if (ui->noRelativeSnap->isChecked())
-		options->Snap |= LC_DRAW_GLOBAL_SNAP;
-
-	if (ui->fixedDirectionKeys->isChecked())
-		options->Snap |= LC_DRAW_MOVEAXIS;
+	options->Preferences.mFixedAxes = ui->fixedDirectionKeys->isChecked();
 
 	if (!ui->antiAliasing->isChecked())
 		options->AASamples = 1;
@@ -254,7 +242,7 @@ void lcQPreferencesDialog::updateParts()
 	{
 		lcArray<PieceInfo*> singleParts, groupedParts;
 
-		library->SearchPieces(options->Categories[categoryIndex].Keywords, false, singleParts, groupedParts);
+		library->GetCategoryEntries(options->Categories[categoryIndex].Keywords, false, singleParts, groupedParts);
 
 		for (int partIndex = 0; partIndex < singleParts.GetSize(); partIndex++)
 		{
@@ -358,37 +346,31 @@ void lcQPreferencesDialog::on_deleteCategory_clicked()
 
 void lcQPreferencesDialog::on_importCategories_clicked()
 {
-	QString result = QFileDialog::getOpenFileName(this, tr("Import Categories"), "", tr("Text Files (*.txt);;All Files (*.*)"));
+	QString FileName = QFileDialog::getOpenFileName(this, tr("Import Categories"), "", tr("Text Files (*.txt);;All Files (*.*)"));
 
-	if (result.isEmpty())
+	if (FileName.isEmpty())
 		return;
 
-	char fileName[LC_MAXPATH];
-	strcpy(fileName, result.toLocal8Bit().data());
-
-	lcArray<lcLibraryCategory> categories;
-	if (!lcLoadCategories(fileName, categories))
+	lcArray<lcLibraryCategory> Categories;
+	if (!lcLoadCategories(FileName, Categories))
 	{
 		QMessageBox::warning(this, "LeoCAD", tr("Error loading categories file."));
 		return;
 	}
 
-	options->Categories = categories;
+	options->Categories = Categories;
 	options->CategoriesModified = true;
 	options->CategoriesDefault = false;
 }
 
 void lcQPreferencesDialog::on_exportCategories_clicked()
 {
-	QString result = QFileDialog::getSaveFileName(this, tr("Export Categories"), "", tr("Text Files (*.txt);;All Files (*.*)"));
+	QString FileName = QFileDialog::getSaveFileName(this, tr("Export Categories"), "", tr("Text Files (*.txt);;All Files (*.*)"));
 
-	if (result.isEmpty())
+	if (FileName.isEmpty())
 		return;
 
-	char fileName[LC_MAXPATH];
-	strcpy(fileName, result.toLocal8Bit().data());
-
-	if (!lcSaveCategories(fileName, options->Categories))
+	if (!lcSaveCategories(FileName, options->Categories))
 	{
 		QMessageBox::warning(this, "LeoCAD", tr("Error saving categories file."));
 		return;
@@ -419,7 +401,8 @@ bool lcQPreferencesDialog::eventFilter(QObject *object, QEvent *event)
 			return true;
 
 		Qt::KeyboardModifiers state = keyEvent->modifiers();
-		if (state & Qt::ShiftModifier)
+		QString text = QKeySequence(nextKey).toString();
+		if ((state & Qt::ShiftModifier) && (text.isEmpty() || !text.at(0).isPrint() || text.at(0).isLetter() || text.at(0).isSpace()))
 			nextKey |= Qt::SHIFT;
 		if (state & Qt::ControlModifier)
 			nextKey |= Qt::CTRL;
@@ -435,10 +418,7 @@ bool lcQPreferencesDialog::eventFilter(QObject *object, QEvent *event)
 		return true;
 	}
 
-	if (event->type() == QEvent::Shortcut || event->type() == QEvent::KeyRelease)
-		return true;
-
-	if (event->type() == QEvent::ShortcutOverride)
+	if (event->type() == QEvent::Shortcut || event->type() == QEvent::KeyRelease || event->type() == QEvent::ShortcutOverride)
 	{
 		event->accept();
 		return true;
@@ -567,22 +547,19 @@ void lcQPreferencesDialog::on_shortcutRemove_clicked()
 
 void lcQPreferencesDialog::on_shortcutsImport_clicked()
 {
-	QString result = QFileDialog::getOpenFileName(this, tr("Import shortcuts"), "", tr("Text Files (*.txt);;All Files (*.*)"));
+	QString FileName = QFileDialog::getOpenFileName(this, tr("Import shortcuts"), "", tr("Text Files (*.txt);;All Files (*.*)"));
 
-	if (result.isEmpty())
+	if (FileName.isEmpty())
 		return;
 
-	char fileName[LC_MAXPATH];
-	strcpy(fileName, result.toLocal8Bit().data());
-
-	lcKeyboardShortcuts shortcuts;
-	if (!lcLoadKeyboardShortcuts(fileName, shortcuts))
+	lcKeyboardShortcuts Shortcuts;
+	if (!lcLoadKeyboardShortcuts(FileName, Shortcuts))
 	{
 		QMessageBox::warning(this, "LeoCAD", tr("Error loading keyboard shortcuts file."));
 		return;
 	}
 
-	options->KeyboardShortcuts = shortcuts;
+	options->KeyboardShortcuts = Shortcuts;
 
 	options->ShortcutsModified = true;
 	options->ShortcutsDefault = false;
@@ -590,15 +567,12 @@ void lcQPreferencesDialog::on_shortcutsImport_clicked()
 
 void lcQPreferencesDialog::on_shortcutsExport_clicked()
 {
-	QString result = QFileDialog::getSaveFileName(this, tr("Export shortcuts"), "", tr("Text Files (*.txt);;All Files (*.*)"));
+	QString FileName = QFileDialog::getSaveFileName(this, tr("Export shortcuts"), "", tr("Text Files (*.txt);;All Files (*.*)"));
 
-	if (result.isEmpty())
+	if (FileName.isEmpty())
 		return;
 
-	char fileName[LC_MAXPATH];
-	strcpy(fileName, result.toLocal8Bit().data());
-
-	if (!lcSaveKeyboardShortcuts(fileName, options->KeyboardShortcuts))
+	if (!lcSaveKeyboardShortcuts(FileName, options->KeyboardShortcuts))
 	{
 		QMessageBox::warning(this, "LeoCAD", tr("Error saving keyboard shortcuts file."));
 		return;

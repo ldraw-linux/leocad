@@ -49,15 +49,3 @@ int stricmp(const char *str1, const char *str2)
 }
 
 #endif
-
-void SystemUpdateAnimation(bool bAnimation, bool bAddKeys)
-{
-}
-
-void SystemUpdatePlay(bool play, bool stop)
-{
-}
-
-void SystemPieceComboAdd(char* name)
-{
-}

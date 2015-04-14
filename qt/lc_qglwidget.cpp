@@ -4,8 +4,14 @@
 #include "project.h"
 #include "lc_library.h"
 #include "lc_application.h"
-#include "lc_qmainwindow.h"
 #include "lc_mainwindow.h"
+#include "lc_context.h"
+#include "view.h"
+#include "texfont.h"
+#include "lc_texture.h"
+#include "lc_mesh.h"
+
+static int gWidgetCount;
 
 void lcGLWidget::MakeCurrent()
 {
@@ -16,23 +22,9 @@ void lcGLWidget::MakeCurrent()
 
 void lcGLWidget::Redraw()
 {
-	QGLWidget* widget = (QGLWidget*)mWidget;
+	lcQGLWidget* Widget = (lcQGLWidget*)mWidget;
 
-	widget->updateGL();
-}
-
-void lcGLWidget::CaptureMouse()
-{
-	QGLWidget* widget = (QGLWidget*)mWidget;
-
-	widget->grabMouse();
-}
-
-void lcGLWidget::ReleaseMouse()
-{
-	QGLWidget* widget = (QGLWidget*)mWidget;
-
-	widget->releaseMouse();
+	Widget->mUpdateTimer.start(0);
 }
 
 void* lcGLWidget::GetExtensionAddress(const char* FunctionName)
@@ -45,9 +37,7 @@ void* lcGLWidget::GetExtensionAddress(const char* FunctionName)
 void lcGLWidget::ShowPopupMenu()
 {
 	QGLWidget* Widget = (QGLWidget*)mWidget;
-
-	lcQMainWindow *mainWindow = (lcQMainWindow*)gMainWindow->mHandle;
-	QAction **actions = mainWindow->actions;
+	QAction **actions = gMainWindow->mActions;
 
 	QMenu *popup = new QMenu(Widget);
 
@@ -126,12 +116,28 @@ void lcGLWidget::SetCursor(LC_CURSOR_TYPE CursorType)
 lcQGLWidget::lcQGLWidget(QWidget *parent, lcQGLWidget *share, lcGLWidget *owner, bool view)
 	: QGLWidget(parent, share)
 {
+	mWheelAccumulator = 0;
 	widget = owner;
 	widget->mWidget = this;
+
+	mUpdateTimer.setSingleShot(true);
+	connect(&mUpdateTimer, SIGNAL(timeout()), this, SLOT(updateGL()));
 
 	widget->MakeCurrent();
 	GL_InitializeSharedExtensions(widget);
 	widget->OnInitialUpdate();
+
+	// TODO: Find a better place for the grid texture and font
+	gTexFont.Load();
+	if (!gWidgetCount)
+	{
+		gGridTexture = new lcTexture;
+		gGridTexture->CreateGridTexture();
+
+		gPlaceholderMesh = new lcMesh;
+		gPlaceholderMesh->CreateBox();
+	}
+	gWidgetCount++;
 
 	preferredSize = QSize(0, 0);
 	setMouseTracking(true);
@@ -146,6 +152,17 @@ lcQGLWidget::lcQGLWidget(QWidget *parent, lcQGLWidget *share, lcGLWidget *owner,
 
 lcQGLWidget::~lcQGLWidget()
 {
+	gWidgetCount--;
+	gTexFont.Release();
+	if (!gWidgetCount)
+	{
+		delete gGridTexture;
+		gGridTexture = NULL;
+
+		delete gPlaceholderMesh;
+		gPlaceholderMesh = NULL;
+	}
+
 	if (isView)
 		delete widget;
 }
@@ -160,6 +177,12 @@ QSize lcQGLWidget::sizeHint() const
 
 void lcQGLWidget::initializeGL()
 {
+	glEnable(GL_POLYGON_OFFSET_FILL);
+	glPolygonOffset(0.5f, 0.1f);
+
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LEQUAL);
+	glDepthMask(GL_TRUE);
 }
 
 void lcQGLWidget::resizeGL(int width, int height)
@@ -197,8 +220,10 @@ void lcQGLWidget::keyReleaseEvent(QKeyEvent *event)
 
 void lcQGLWidget::mousePressEvent(QMouseEvent *event)
 {
-	widget->mInputState.x = event->x();
-	widget->mInputState.y = widget->mHeight - event->y() - 1;
+	float scale = deviceScale();
+
+	widget->mInputState.x = event->x() * scale;
+	widget->mInputState.y = widget->mHeight - event->y() * scale - 1;
 	widget->mInputState.Control = (event->modifiers() & Qt::ControlModifier) != 0;
 	widget->mInputState.Shift = (event->modifiers() & Qt::ShiftModifier) != 0;
 	widget->mInputState.Alt = (event->modifiers() & Qt::AltModifier) != 0;
@@ -221,8 +246,10 @@ void lcQGLWidget::mousePressEvent(QMouseEvent *event)
 
 void lcQGLWidget::mouseReleaseEvent(QMouseEvent *event)
 {
-	widget->mInputState.x = event->x();
-	widget->mInputState.y = widget->mHeight - event->y() - 1;
+	float scale = deviceScale();
+
+	widget->mInputState.x = event->x() * scale;
+	widget->mInputState.y = widget->mHeight - event->y() * scale - 1;
 	widget->mInputState.Control = (event->modifiers() & Qt::ControlModifier) != 0;
 	widget->mInputState.Shift = (event->modifiers() & Qt::ShiftModifier) != 0;
 	widget->mInputState.Alt = (event->modifiers() & Qt::AltModifier) != 0;
@@ -243,10 +270,32 @@ void lcQGLWidget::mouseReleaseEvent(QMouseEvent *event)
 	}
 }
 
+void lcQGLWidget::mouseDoubleClickEvent(QMouseEvent *event)
+{
+	float scale = deviceScale();
+
+	widget->mInputState.x = event->x() * scale;
+	widget->mInputState.y = widget->mHeight - event->y() * scale - 1;
+	widget->mInputState.Control = (event->modifiers() & Qt::ControlModifier) != 0;
+	widget->mInputState.Shift = (event->modifiers() & Qt::ShiftModifier) != 0;
+	widget->mInputState.Alt = (event->modifiers() & Qt::AltModifier) != 0;
+
+	switch (event->button())
+	{
+	case Qt::LeftButton:
+		widget->OnLeftButtonDoubleClick();
+		break;
+	default:
+		break;
+	}
+}
+
 void lcQGLWidget::mouseMoveEvent(QMouseEvent *event)
 {
-	widget->mInputState.x = event->x();
-	widget->mInputState.y = widget->mHeight - event->y() - 1;
+	float scale = deviceScale();
+
+	widget->mInputState.x = event->x() * scale;
+	widget->mInputState.y = widget->mHeight - event->y() * scale - 1;
 	widget->mInputState.Control = (event->modifiers() & Qt::ControlModifier) != 0;
 	widget->mInputState.Shift = (event->modifiers() & Qt::ShiftModifier) != 0;
 	widget->mInputState.Alt = (event->modifiers() & Qt::AltModifier) != 0;
@@ -256,22 +305,32 @@ void lcQGLWidget::mouseMoveEvent(QMouseEvent *event)
 
 void lcQGLWidget::wheelEvent(QWheelEvent *event)
 {
-	if (event->orientation() != Qt::Vertical)
+	if ((event->orientation() & Qt::Vertical) == 0)
 	{
 		event->ignore();
 		return;
 	}
 
-	widget->mInputState.x = event->x();
-	widget->mInputState.y = widget->mHeight - event->y() - 1;
+	float scale = deviceScale();
+
+	widget->mInputState.x = event->x() * scale;
+	widget->mInputState.y = widget->mHeight - event->y() * scale - 1;
 	widget->mInputState.Control = (event->modifiers() & Qt::ControlModifier) != 0;
 	widget->mInputState.Shift = (event->modifiers() & Qt::ShiftModifier) != 0;
 	widget->mInputState.Alt = (event->modifiers() & Qt::AltModifier) != 0;
 
-	int numDegrees = event->delta() / 8;
-	int numSteps = numDegrees / 15;
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 2, 0))
+	mWheelAccumulator += event->angleDelta().y() / 8;
+#else
+	mWheelAccumulator += event->delta() / 8;
+#endif
+	int numSteps = mWheelAccumulator / 15;
 
-	widget->OnMouseWheel(numSteps);
+	if (numSteps)
+	{
+		widget->OnMouseWheel(numSteps);
+		mWheelAccumulator -= numSteps * 15;
+	}
 
 	event->accept();
 }
@@ -288,7 +347,7 @@ void lcQGLWidget::dragEnterEvent(QDragEnterEvent *event)
 
 		dataStream >> id;
 
-		lcGetActiveProject()->BeginPieceDrop(lcGetPiecesLibrary()->FindPiece(id.toLocal8Bit().data(), false));
+		((View*)widget)->BeginPieceDrag();
 	}
 	else
 		event->ignore();
@@ -299,7 +358,7 @@ void lcQGLWidget::dragLeaveEvent(QDragLeaveEvent *event)
 	if (!isView)
 		return;
 
-	lcGetActiveProject()->EndPieceDrop(false);
+	((View*)widget)->EndPieceDrag(false);
 
 	event->accept();
 }
@@ -309,7 +368,15 @@ void lcQGLWidget::dragMoveEvent(QDragMoveEvent *event)
 	if (!isView || !event->mimeData()->hasFormat("application/vnd.leocad-part"))
 		return;
 
-	lcGetActiveProject()->OnPieceDropMove(event->pos().x(), widget->mHeight - event->pos().y() - 1);
+	float scale = deviceScale();
+
+	widget->mInputState.x = event->pos().x() * scale;
+	widget->mInputState.y = widget->mHeight - event->pos().y() * scale - 1;
+	widget->mInputState.Control = (event->keyboardModifiers() & Qt::ControlModifier) != 0;
+	widget->mInputState.Shift = (event->keyboardModifiers() & Qt::ShiftModifier) != 0;
+	widget->mInputState.Alt = (event->keyboardModifiers() & Qt::AltModifier) != 0;
+
+	widget->OnMouseMove();
 
 	event->accept();
 }
@@ -319,7 +386,8 @@ void lcQGLWidget::dropEvent(QDropEvent *event)
 	if (!isView || !event->mimeData()->hasFormat("application/vnd.leocad-part"))
 		return;
 
-	lcGetActiveProject()->EndPieceDrop(true);
+	((View*)widget)->EndPieceDrag(true);
+	setFocus(Qt::MouseFocusReason);
 
 	event->accept();
 }

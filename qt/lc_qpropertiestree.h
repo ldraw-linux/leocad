@@ -1,7 +1,6 @@
 #ifndef _LC_QPROPERTIESWIDGET_H_
 #define _LC_QPROPERTIESWIDGET_H_
 
-class Object;
 struct lcPartProperties;
 class lcQPropertiesTreeDelegate;
 
@@ -19,7 +18,7 @@ public:
 		return itemFromIndex(index);
 	}
 
-	void updateFocusObject(Object *newFocusObject);
+	void updateFocusObject(lcObject *newFocusObject);
 
 	QWidget *createEditor(QWidget *parent, QTreeWidgetItem *item) const;
 	bool lastColumn(int column) const;
@@ -33,6 +32,7 @@ public:
 	enum PropertyType
 	{
 		PropertyGroup,
+		PropertyBool,
 		PropertyFloat,
 		PropertyInt,
 		PropertyString,
@@ -41,6 +41,7 @@ public:
 	};
 
 protected slots:
+	void slotToggled(bool value);
 	void slotReturnPressed();
 	void slotSetValue(int value);
 	void slotColorButtonClicked();
@@ -54,13 +55,13 @@ protected:
 	QTreeWidgetItem *addProperty(QTreeWidgetItem *parent, const QString& label, PropertyType propertyType);
 
 	void setEmpty();
-	void setPart(Object *newFocusObject);
-	void setCamera(Object *newFocusObject);
-	void setLight(Object *newFocusObject);
+	void setPart(lcObject *newFocusObject);
+	void setCamera(lcObject *newFocusObject);
+	void setLight(lcObject *newFocusObject);
 
 	void getPartProperties(lcPartProperties *properties);
 
-	Object *focusObject;
+	lcObject *focusObject;
 
 	lcQPropertiesTreeDelegate *m_delegate;
 	QIcon m_expandIcon;
@@ -95,6 +96,7 @@ protected:
 	QTreeWidgetItem *cameraUpY;
 	QTreeWidgetItem *cameraUpZ;
 	QTreeWidgetItem *cameraSettings;
+	QTreeWidgetItem *cameraOrtho;
 	QTreeWidgetItem *cameraFOV;
 	QTreeWidgetItem *cameraNear;
 	QTreeWidgetItem *cameraFar;

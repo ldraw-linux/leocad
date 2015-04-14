@@ -17,7 +17,8 @@ lcQSelectDialog::lcQSelectDialog(QWidget *parent, void *data) :
 
 	options = (lcSelectDialogOptions*)data;
 
-	addChildren(ui->treeWidget->invisibleRootItem(), NULL);
+	AddChildren(ui->treeWidget->invisibleRootItem(), NULL);
+	ui->treeWidget->expandAll();
 
 	connect(ui->treeWidget, SIGNAL(itemChanged(QTreeWidgetItem*, int)), this, SLOT(itemChanged(QTreeWidgetItem*, int)));
 }
@@ -29,174 +30,207 @@ lcQSelectDialog::~lcQSelectDialog()
 
 void lcQSelectDialog::accept()
 {
-	saveSelection(ui->treeWidget->invisibleRootItem());
+	options->Objects.RemoveAll();
+
+	QList<QTreeWidgetItem*> Items;
+	Items.append(ui->treeWidget->invisibleRootItem());
+
+	while (!Items.isEmpty())
+	{
+		QTreeWidgetItem* Item = Items[0];
+		Items.removeFirst();
+
+		if (!Item->childCount())
+		{
+			if (Item->checkState(0) == Qt::Checked)
+			{
+				lcObject* Object = (lcObject*)Item->data(0, IndexRole).value<uintptr_t>();
+				options->Objects.Add(Object);
+			}
+		}
+		else
+		{
+			for (int ChildIdx = 0; ChildIdx < Item->childCount(); ChildIdx++)
+				Items.append(Item->child(ChildIdx));
+		}
+	}
 
 	QDialog::accept();
 }
 
 void lcQSelectDialog::on_selectAll_clicked()
 {
-	for (int objectIdx = 0; objectIdx < options->Selection.GetSize(); objectIdx++)
-		options->Selection[objectIdx] = true;
-
 	ui->treeWidget->blockSignals(true);
-	loadSelection(ui->treeWidget->invisibleRootItem());
+
+	QList<QTreeWidgetItem*> Items;
+	Items.append(ui->treeWidget->invisibleRootItem());
+
+	while (!Items.isEmpty())
+	{
+		QTreeWidgetItem* Item = Items[0];
+		Items.removeFirst();
+
+		if (!Item->childCount())
+			Item->setCheckState(0, Qt::Checked);
+		else
+		{
+			for (int ChildIdx = 0; ChildIdx < Item->childCount(); ChildIdx++)
+				Items.append(Item->child(ChildIdx));
+		}
+	}
+
 	ui->treeWidget->blockSignals(false);
 }
 
 void lcQSelectDialog::on_selectNone_clicked()
 {
-	for (int objectIdx = 0; objectIdx < options->Selection.GetSize(); objectIdx++)
-		options->Selection[objectIdx] = false;
-
 	ui->treeWidget->blockSignals(true);
-	loadSelection(ui->treeWidget->invisibleRootItem());
+
+	QList<QTreeWidgetItem*> Items;
+	Items.append(ui->treeWidget->invisibleRootItem());
+
+	while (!Items.isEmpty())
+	{
+		QTreeWidgetItem* Item = Items[0];
+		Items.removeFirst();
+
+		if (!Item->childCount())
+			Item->setCheckState(0, Qt::Unchecked);
+		else
+		{
+			for (int ChildIdx = 0; ChildIdx < Item->childCount(); ChildIdx++)
+				Items.append(Item->child(ChildIdx));
+		}
+	}
+
 	ui->treeWidget->blockSignals(false);
 }
 
 void lcQSelectDialog::on_selectInvert_clicked()
 {
-	for (int objectIdx = 0; objectIdx < options->Selection.GetSize(); objectIdx++)
-		options->Selection[objectIdx] = !options->Selection[objectIdx];
-
 	ui->treeWidget->blockSignals(true);
-	loadSelection(ui->treeWidget->invisibleRootItem());
+
+	QList<QTreeWidgetItem*> Items;
+	Items.append(ui->treeWidget->invisibleRootItem());
+
+	while (!Items.isEmpty())
+	{
+		QTreeWidgetItem* Item = Items[0];
+		Items.removeFirst();
+
+		if (!Item->childCount())
+			Item->setCheckState(0, Item->checkState(0) == Qt::Checked ? Qt::Unchecked : Qt::Checked);
+		else
+		{
+			for (int ChildIdx = 0; ChildIdx < Item->childCount(); ChildIdx++)
+				Items.append(Item->child(ChildIdx));
+		}
+	}
+
 	ui->treeWidget->blockSignals(false);
 }
 
 void lcQSelectDialog::itemChanged(QTreeWidgetItem *item, int column)
 {
-	int itemIndex = item->data(0, IndexRole).value<int>();
-	bool selected = (item->checkState(0) == Qt::Checked);
+	QTreeWidgetItem* ParentItem = item->parent();
 
-	if (options->Selection[itemIndex] == selected)
+	if (!ParentItem)
 		return;
 
-	options->Selection[itemIndex] = selected;
-
-	QTreeWidgetItem *parentItem = item->parent();
-
-	if (!parentItem)
-		return;
+	Qt::CheckState State = item->checkState(0);
 
 	for (;;)
 	{
-		QTreeWidgetItem *parentParentItem = parentItem->parent();
+		QTreeWidgetItem* ParentParentItem = ParentItem->parent();
 
-		if (parentParentItem)
-			parentItem = parentParentItem;
+		if (ParentParentItem)
+			ParentItem = ParentParentItem;
 		else
 			break;
 	}
 
 	ui->treeWidget->blockSignals(true);
-	setSelection(parentItem, selected);
+
+	QList<QTreeWidgetItem*> Items;
+	Items.append(ParentItem);
+
+	while (!Items.isEmpty())
+	{
+		QTreeWidgetItem* Item = Items[0];
+		Items.removeFirst();
+
+		if (!Item->childCount())
+			Item->setCheckState(0, State);
+		else
+		{
+			for (int ChildIdx = 0; ChildIdx < Item->childCount(); ChildIdx++)
+				Items.append(Item->child(ChildIdx));
+		}
+	}
+
 	ui->treeWidget->blockSignals(false);
 }
 
-void lcQSelectDialog::setSelection(QTreeWidgetItem *parentItem, bool selected)
+void lcQSelectDialog::AddChildren(QTreeWidgetItem* ParentItem, lcGroup* ParentGroup)
 {
-	for (int childIndex = 0; childIndex < parentItem->childCount(); childIndex++)
+	lcModel* Model = lcGetActiveModel();
+	const lcArray<lcGroup*>& Groups = Model->GetGroups();
+
+	for (int GroupIdx = 0; GroupIdx < Groups.GetSize(); GroupIdx++)
 	{
-		QTreeWidgetItem *childItem = parentItem->child(childIndex);
+		lcGroup* Group = Groups[GroupIdx];
 
-		if (childItem->childCount())
-			setSelection(childItem, selected);
-		else
-		{
-			int itemIndex = childItem->data(0, IndexRole).value<int>();
-
-			options->Selection[itemIndex] = selected;
-			childItem->setCheckState(0, selected ? Qt::Checked : Qt::Unchecked);
-		}
-	}
-}
-
-void lcQSelectDialog::loadSelection(QTreeWidgetItem *parentItem)
-{
-	for (int childIndex = 0; childIndex < parentItem->childCount(); childIndex++)
-	{
-		QTreeWidgetItem *childItem = parentItem->child(childIndex);
-
-		if (childItem->childCount())
-			loadSelection(childItem);
-		else
-		{
-			int itemIndex = childItem->data(0, IndexRole).value<int>();
-
-			childItem->setCheckState(0, options->Selection[itemIndex] ? Qt::Checked : Qt::Unchecked);
-		}
-	}
-}
-
-void lcQSelectDialog::saveSelection(QTreeWidgetItem *parentItem)
-{
-	for (int childIndex = 0; childIndex < parentItem->childCount(); childIndex++)
-	{
-		QTreeWidgetItem *childItem = parentItem->child(childIndex);
-
-		if (childItem->childCount())
-			saveSelection(childItem);
-		else
-		{
-			int itemIndex = childItem->data(0, IndexRole).value<int>();
-
-			options->Selection[itemIndex] = (childItem->checkState(0) == Qt::Checked);
-		}
-	}
-}
-
-void lcQSelectDialog::addChildren(QTreeWidgetItem *parentItem, Group *parentGroup)
-{
-	Project *project = lcGetActiveProject();
-
-	for (Group *group = project->m_pGroups; group; group = group->m_pNext)
-	{
-		if (group->m_pGroup != parentGroup)
+		if (Group->mGroup != ParentGroup)
 			continue;
 
-		QTreeWidgetItem *groupItem = new QTreeWidgetItem(parentItem, QStringList(group->m_strName));
+		QTreeWidgetItem* GroupItem = new QTreeWidgetItem(ParentItem, QStringList(Group->m_strName));
 
-		addChildren(groupItem, group);
+		AddChildren(GroupItem, Group);
 	}
 
-	int numObjects = 0;
+	const lcArray<lcPiece*>& Pieces = Model->GetPieces();
+	lcStep currentStep = Model->GetCurrentStep();
 
-	for (Piece *piece = project->m_pPieces; piece; piece = piece->m_pNext, numObjects++)
+	for (int PieceIdx = 0; PieceIdx < Pieces.GetSize(); PieceIdx++)
 	{
-		if (piece->GetGroup() != parentGroup)
+		lcPiece* Piece = Pieces[PieceIdx];
+
+		if (Piece->GetGroup() != ParentGroup || !Piece->IsVisible(currentStep))
 			continue;
 
-		if (!piece->IsVisible(project->GetCurrentTime()))
-			continue;
-
-		QTreeWidgetItem *pieceItem = new QTreeWidgetItem(parentItem, QStringList(piece->GetName()));
-		pieceItem->setData(0, IndexRole, qVariantFromValue(numObjects));
-		pieceItem->setCheckState(0, options->Selection[numObjects] ? Qt::Checked : Qt::Unchecked);
+		QTreeWidgetItem* PieceItem = new QTreeWidgetItem(ParentItem, QStringList(Piece->GetName()));
+		PieceItem->setData(0, IndexRole, qVariantFromValue<uintptr_t>((uintptr_t)Piece));
+		PieceItem->setCheckState(0, Piece->IsSelected() ? Qt::Checked : Qt::Unchecked);
 	}
 
-	if (!parentGroup)
+	if (!ParentGroup)
 	{
-		for (int cameraIdx = 0; cameraIdx < project->mCameras.GetSize(); cameraIdx++, numObjects++)
+		const lcArray<lcCamera*>& Cameras = Model->GetCameras();
+
+		for (int CameraIdx = 0; CameraIdx < Cameras.GetSize(); CameraIdx++)
 		{
-			Camera *camera = project->mCameras[cameraIdx];
+			lcCamera* Camera = Cameras[CameraIdx];
 
-			if (!camera->IsVisible())
+			if (!Camera->IsVisible())
 				continue;
 
-			QTreeWidgetItem *cameraItem = new QTreeWidgetItem(parentItem, QStringList(camera->GetName()));
-			cameraItem->setData(0, IndexRole, qVariantFromValue(numObjects));
-			cameraItem->setCheckState(0, options->Selection[numObjects] ? Qt::Checked : Qt::Unchecked);
+			QTreeWidgetItem *cameraItem = new QTreeWidgetItem(ParentItem, QStringList(Camera->GetName()));
+			cameraItem->setData(0, IndexRole, qVariantFromValue<uintptr_t>((uintptr_t)Camera));
+			cameraItem->setCheckState(0, Camera->IsSelected() ? Qt::Checked : Qt::Unchecked);
 		}
 
-		for (Light* light = project->m_pLights; light; light = light->m_pNext, numObjects++)
+		const lcArray<lcLight*>& Lights = Model->GetLights();
+
+		for (int LightIdx = 0; LightIdx < Lights.GetSize(); LightIdx++)
 		{
-			if (!light->IsVisible())
+			lcLight* Light = Lights[LightIdx];
+
+			if (!Light->IsVisible())
 				continue;
 
-			QTreeWidgetItem *lightItem = new QTreeWidgetItem(parentItem, QStringList(light->GetName()));
-			lightItem->setData(0, IndexRole, qVariantFromValue(numObjects));
-			lightItem->setCheckState(0, options->Selection[numObjects] ? Qt::Checked : Qt::Unchecked);
+			QTreeWidgetItem *lightItem = new QTreeWidgetItem(ParentItem, QStringList(Light->GetName()));
+			lightItem->setData(0, IndexRole, qVariantFromValue<uintptr_t>((uintptr_t)Light));
+			lightItem->setCheckState(0, Light->IsSelected() ? Qt::Checked : Qt::Unchecked);
 		}
 	}
 }

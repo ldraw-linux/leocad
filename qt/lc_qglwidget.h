@@ -16,6 +16,17 @@ public:
 	QSize preferredSize;
 	bool isView;
 
+	float deviceScale()
+	{
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 0, 0))
+		return windowHandle()->devicePixelRatio();
+#else
+		return 1.0f;
+#endif
+	}
+
+	QTimer mUpdateTimer;
+
 protected:
 	void initializeGL();
 	void resizeGL(int x, int h);
@@ -24,12 +35,15 @@ protected:
 	void keyReleaseEvent(QKeyEvent *event);
 	void mousePressEvent(QMouseEvent *event);
 	void mouseReleaseEvent(QMouseEvent *event);
+	void mouseDoubleClickEvent(QMouseEvent *event);
 	void mouseMoveEvent(QMouseEvent *event);
 	void wheelEvent(QWheelEvent *event);
 	void dragEnterEvent(QDragEnterEvent *event);
 	void dragLeaveEvent(QDragLeaveEvent *event);
 	void dragMoveEvent(QDragMoveEvent *event);
 	void dropEvent(QDropEvent *event);
+
+	int mWheelAccumulator;
 };
 
 #endif // _LC_VIEWWIDGET_H_

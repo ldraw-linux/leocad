@@ -4,112 +4,197 @@
 #include "object.h"
 #include "lc_math.h"
 
-#define LC_LIGHT_HIDDEN			0x01
-#define LC_LIGHT_SELECTED		0x02
-#define LC_LIGHT_FOCUSED		0x04
-#define LC_LIGHT_TARGET_SELECTED	0x08
-#define LC_LIGHT_TARGET_FOCUSED		0x10
-#define LC_LIGHT_ENABLED		0x20
+class View;
 
-class Light;
-class LightTarget;
+#define LC_LIGHT_HIDDEN            0x0001
+#define LC_LIGHT_DISABLED          0x0002
+#define LC_LIGHT_SPOT              0x0004
+#define LC_LIGHT_DIRECTIONAL       0x0008
+#define LC_LIGHT_POSITION_SELECTED 0x0010
+#define LC_LIGHT_POSITION_FOCUSED  0x0020
+#define LC_LIGHT_TARGET_SELECTED   0x0040
+#define LC_LIGHT_TARGET_FOCUSED    0x0080
 
-enum LC_LK_TYPES
+#define LC_LIGHT_SELECTION_MASK    (LC_LIGHT_POSITION_SELECTED | LC_LIGHT_TARGET_SELECTED)
+#define LC_LIGHT_FOCUS_MASK        (LC_LIGHT_POSITION_FOCUSED | LC_LIGHT_TARGET_FOCUSED)
+
+enum lcLightSection
 {
-	LC_LK_POSITION,
-	LC_LK_TARGET,
-	LC_LK_AMBIENT_COLOR,
-	LC_LK_DIFFUSE_COLOR,
-	LC_LK_SPECULAR_COLOR,
-	LC_LK_CONSTANT_ATTENUATION,
-	LC_LK_LINEAR_ATTENUATION,
-	LC_LK_QUADRATIC_ATTENUATION,
-	LC_LK_SPOT_CUTOFF,
-	LC_LK_SPOT_EXPONENT,
-	LC_LK_COUNT
+	LC_LIGHT_SECTION_POSITION,
+	LC_LIGHT_SECTION_TARGET
 };
 
-class LightTarget : public Object
+class lcLight : public lcObject
 {
 public:
-	LightTarget(Light *Parent);
-	~LightTarget();
+	lcLight(float px, float py, float pz);
+	lcLight(float px, float py, float pz, float tx, float ty, float tz);
+	virtual ~lcLight();
 
-public:
-	virtual void MinIntersectDist(lcClickLine* ClickLine);
-	virtual bool IntersectsVolume(const lcVector4 Planes[6]) const
-	{ return false; }
-	void Select (bool bSelecting, bool bFocus, bool bMultiple);
-	void Move (unsigned short nTime, bool bAddKey, float x, float y, float z)
+	bool IsPointLight() const
 	{
-		// FIXME: move the position handling to the light target
+		return (mState & (LC_LIGHT_SPOT | LC_LIGHT_DIRECTIONAL)) == 0;
 	}
 
-	const char* GetName() const;
+	bool IsSpotLight() const
+	{
+		return (mState & LC_LIGHT_SPOT) != 0;
+	}
 
-	Light* GetParent () const
-	{ return m_pParent; }
+	bool IsDirectionalLight() const
+	{
+		return (mState & LC_LIGHT_DIRECTIONAL) != 0;
+	}
 
-protected:
-	Light* m_pParent;
-};
+	virtual bool IsSelected() const
+	{
+		return (mState & LC_LIGHT_SELECTION_MASK) != 0;
+	}
 
-class Light : public Object
-{
+	virtual bool IsSelected(lcuint32 Section) const
+	{
+		switch (Section)
+		{
+		case LC_LIGHT_SECTION_POSITION:
+			return (mState & LC_LIGHT_POSITION_SELECTED) != 0;
+			break;
+
+		case LC_LIGHT_SECTION_TARGET:
+			return (mState & LC_LIGHT_TARGET_SELECTED) != 0;
+			break;
+		}
+		return false;
+	}
+
+	virtual void SetSelected(bool Selected)
+	{
+		if (Selected)
+		{
+			if (IsPointLight())
+				mState |= LC_LIGHT_POSITION_SELECTED;
+			else
+				mState |= LC_LIGHT_SELECTION_MASK;
+		}
+		else
+			mState &= ~(LC_LIGHT_SELECTION_MASK | LC_LIGHT_FOCUS_MASK);
+	}
+
+	virtual void SetSelected(lcuint32 Section, bool Selected)
+	{
+		switch (Section)
+		{
+		case LC_LIGHT_SECTION_POSITION:
+			if (Selected)
+				mState |= LC_LIGHT_POSITION_SELECTED;
+			else
+				mState &= ~(LC_LIGHT_POSITION_SELECTED | LC_LIGHT_POSITION_FOCUSED);
+			break;
+
+		case LC_LIGHT_SECTION_TARGET:
+			if (Selected)
+			{
+				if (!IsPointLight())
+					mState |= LC_LIGHT_TARGET_SELECTED;
+			}
+			else
+				mState &= ~(LC_LIGHT_TARGET_SELECTED | LC_LIGHT_TARGET_FOCUSED);
+			break;
+		}
+	}
+
+	virtual bool IsFocused() const
+	{
+		return (mState & LC_LIGHT_FOCUS_MASK) != 0;
+	}
+
+	virtual bool IsFocused(lcuint32 Section) const
+	{
+		switch (Section)
+		{
+		case LC_LIGHT_SECTION_POSITION:
+			return (mState & LC_LIGHT_POSITION_FOCUSED) != 0;
+			break;
+
+		case LC_LIGHT_SECTION_TARGET:
+			return (mState & LC_LIGHT_TARGET_FOCUSED) != 0;
+			break;
+		}
+		return false;
+	}
+
+	virtual void SetFocused(lcuint32 Section, bool Focused)
+	{
+		switch (Section)
+		{
+		case LC_LIGHT_SECTION_POSITION:
+			if (Focused)
+				mState |= LC_LIGHT_POSITION_SELECTED | LC_LIGHT_POSITION_FOCUSED;
+			else
+				mState &= ~(LC_LIGHT_POSITION_SELECTED | LC_LIGHT_POSITION_FOCUSED);
+			break;
+
+		case LC_LIGHT_SECTION_TARGET:
+			if (Focused)
+			{
+				if (!IsPointLight())
+					mState |= LC_LIGHT_TARGET_SELECTED | LC_LIGHT_TARGET_FOCUSED;
+			}
+			else
+				mState &= ~(LC_LIGHT_TARGET_SELECTED | LC_LIGHT_TARGET_FOCUSED);
+			break;
+		}
+	}
+
+	virtual lcuint32 GetFocusSection() const
+	{
+		if (mState & LC_LIGHT_POSITION_FOCUSED)
+			return LC_LIGHT_SECTION_POSITION;
+
+		if (!IsPointLight() && (mState & LC_LIGHT_TARGET_FOCUSED))
+			return LC_LIGHT_SECTION_TARGET;
+
+		return ~0;
+	}
+
+	virtual lcVector3 GetSectionPosition(lcuint32 Section) const
+	{
+		switch (Section)
+		{
+		case LC_LIGHT_SECTION_POSITION:
+			return mPosition;
+
+		case LC_LIGHT_SECTION_TARGET:
+			return mTargetPosition;
+		}
+
+		return lcVector3(0.0f, 0.0f, 0.0f);
+	}
+
+	void SaveLDraw(QTextStream& Stream) const;
+
 public:
-	Light (float px, float py, float pz);
-	Light (float px, float py, float pz, float tx, float ty, float tz);
-	virtual ~Light ();
+	virtual void RayTest(lcObjectRayTest& ObjectRayTest) const;
+	virtual void BoxTest(lcObjectBoxTest& ObjectBoxTest) const;
+	virtual void DrawInterface(lcContext* Context, const lcMatrix44& ViewMatrix) const;
 
-	void Select (bool bSelecting, bool bFocus, bool bMultiple);
-	void SelectTarget (bool bSelecting, bool bFocus, bool bMultiple);
+	void InsertTime(lcStep Start, lcStep Time);
+	void RemoveTime(lcStep Start, lcStep Time);
 
-public:
-	Light* m_pNext;
-
-	bool IsVisible()
-	{ return (m_nState & LC_LIGHT_HIDDEN) == 0; }
-	bool IsSelected()
-	{ return (m_nState & (LC_LIGHT_SELECTED|LC_LIGHT_TARGET_SELECTED)) != 0; }
-	bool IsEyeSelected()
-	{ return (m_nState & LC_LIGHT_SELECTED) != 0; }
-	bool IsTargetSelected()
-	{ return (m_nState & LC_LIGHT_TARGET_SELECTED) != 0; }
-	bool IsEyeFocused()
-	{ return (m_nState & LC_LIGHT_FOCUSED) != 0; }
-	bool IsTargetFocused()
-	{ return (m_nState & LC_LIGHT_TARGET_FOCUSED) != 0; }
-
-	void Select()
-	{ m_nState |= (LC_LIGHT_SELECTED|LC_LIGHT_TARGET_SELECTED); }
-	void UnSelect()
-	{ m_nState &= ~(LC_LIGHT_SELECTED|LC_LIGHT_FOCUSED|LC_LIGHT_TARGET_SELECTED|LC_LIGHT_TARGET_FOCUSED); }
-	void UnFocus()
-	{ m_nState &= ~(LC_LIGHT_FOCUSED|LC_LIGHT_TARGET_FOCUSED); }
-	void FocusEye()
-	{ m_nState |= (LC_LIGHT_FOCUSED|LC_LIGHT_SELECTED); }
-	void FocusTarget()
-	{ m_nState |= (LC_LIGHT_TARGET_FOCUSED|LC_LIGHT_TARGET_SELECTED); }
-	const char* GetName()
-	{ return m_strName; }
-	LightTarget* GetTarget () const
-	{ return m_pTarget; }
+	bool IsVisible() const
+	{ return (mState & LC_LIGHT_HIDDEN) == 0; }
 
 	const char* GetName() const
 	{ return m_strName; }
 
-	void Render(const lcMatrix44& ViewMatrix, float LineWidth);
-	void RenderCone(const lcMatrix44& ViewMatrix);
-	void RenderTarget();
-	void RenderSphere();
+	void RenderCone(lcContext* Context, const lcMatrix44& ViewMatrix) const;
+	void RenderTarget() const;
+	void RenderSphere() const;
 
-	virtual void MinIntersectDist(lcClickLine* ClickLine);
-	virtual bool IntersectsVolume(const lcVector4 Planes[6]) const
-	{ return false; }
-	void UpdatePosition(unsigned short nTime);
-	void Move(unsigned short nTime, bool bAddKey, float dx, float dy, float dz);
-	void Setup(int index);
-	void CreateName(const Light* pLight);
+	void CompareBoundingBox(float box[6]);
+	void UpdatePosition(lcStep Step);
+	void Move(lcStep Step, bool AddKey, const lcVector3& Distance);
+	bool Setup(int LightIndex);
+	void CreateName(const lcArray<lcLight*>& Lights);
 
 	// Temporary parameters
 	lcMatrix44 mWorldLight;
@@ -118,23 +203,25 @@ public:
 	lcVector4 mAmbientColor;
 	lcVector4 mDiffuseColor;
 	lcVector4 mSpecularColor;
-	float mConstantAttenuation;
-	float mLinearAttenuation;
-	float mQuadraticAttenuation;
+	lcVector3 mAttenuation;
 	float mSpotCutoff;
 	float mSpotExponent;
 
 protected:
-	void Initialize();
+	lcArray<lcObjectKey<lcVector3>> mPositionKeys;
+	lcArray<lcObjectKey<lcVector3>> mTargetPositionKeys;
+	lcArray<lcObjectKey<lcVector4>> mAmbientColorKeys;
+	lcArray<lcObjectKey<lcVector4>> mDiffuseColorKeys;
+	lcArray<lcObjectKey<lcVector4>> mSpecularColorKeys;
+	lcArray<lcObjectKey<lcVector3>> mAttenuationKeys;
+	lcArray<lcObjectKey<float>> mSpotCutoffKeys;
+	lcArray<lcObjectKey<float>> mSpotExponentKeys;
 
-	// Camera target
-	LightTarget* m_pTarget;
+	void Initialize(const lcVector3& Position, const lcVector3& TargetPosition);
 
-	// Attributes
 	float m_fCone;
-	unsigned char m_nState;
+	lcuint32 mState;
 	char m_strName[81];
-	bool m_bEnabled;
 };
 
 #endif // _LIGHT_H_

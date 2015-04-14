@@ -23,11 +23,11 @@ lcQPropertiesDialog::lcQPropertiesDialog(QWidget *parent, void *data) :
 
 	options = (lcPropertiesDialogOptions*)data;
 
-	setWindowTitle(QString(tr("%1 Properties")).arg(options->Title.Buffer()));
+	setWindowTitle(tr("%1 Properties").arg(options->Properties.mName));
 
-	ui->descriptionEdit->setText(QString::fromUtf8(options->Properties.mDescription.Buffer()));
-	ui->authorEdit->setText(QString::fromUtf8(options->Properties.mAuthor.Buffer()));
-	ui->commentsEdit->setText(QString::fromUtf8(options->Properties.mComments.Buffer()));
+	ui->descriptionEdit->setText(options->Properties.mDescription);
+	ui->authorEdit->setText(options->Properties.mAuthor);
+	ui->commentsEdit->setText(options->Properties.mComments);
 
 	if (options->Properties.mBackgroundType == LC_BACKGROUND_IMAGE)
 		ui->imageRadio->setChecked(true);
@@ -36,7 +36,7 @@ lcQPropertiesDialog::lcQPropertiesDialog(QWidget *parent, void *data) :
 	else
 		ui->solidRadio->setChecked(true);
 
-	ui->imageNameEdit->setText(options->Properties.mBackgroundImage.Buffer());
+	ui->imageNameEdit->setText(options->Properties.mBackgroundImage);
 	ui->imageTileCheckBox->setChecked(options->Properties.mBackgroundImageTile);
 	ui->fogCheckBox->setChecked(options->Properties.mFogEnabled);
 	ui->fogDensityEdit->setText(QString::number(options->Properties.mFogDensity));
@@ -55,7 +55,7 @@ lcQPropertiesDialog::lcQPropertiesDialog(QWidget *parent, void *data) :
 	ui->ambientColorButton->setIcon(pix);
 
 	lcPiecesLibrary *library = lcGetPiecesLibrary();
-	lcArray<lcPiecesUsedEntry>& partsUsed = options->PartsUsed;
+	lcArray<lcPartsListEntry>& partsUsed = options->PartsList;
 	QStringList horizontalLabels, partNames;
 
 	bool *colorsUsed = new bool[gNumUserColors];
@@ -127,9 +127,9 @@ lcQPropertiesDialog::~lcQPropertiesDialog()
 
 void lcQPropertiesDialog::accept()
 {
-	options->Properties.mDescription = ui->descriptionEdit->text().toUtf8().data();
-	options->Properties.mAuthor = ui->authorEdit->text().toUtf8().data();
-	options->Properties.mComments = ui->commentsEdit->toPlainText().toUtf8().data();
+	options->Properties.mDescription = ui->descriptionEdit->text();
+	options->Properties.mAuthor = ui->authorEdit->text();
+	options->Properties.mComments = ui->commentsEdit->toPlainText();
 
 	if (ui->imageRadio->isChecked())
 		 options->Properties.mBackgroundType = LC_BACKGROUND_IMAGE;
@@ -138,7 +138,7 @@ void lcQPropertiesDialog::accept()
 	else
 		 options->Properties.mBackgroundType = LC_BACKGROUND_SOLID;
 
-	options->Properties.mBackgroundImage = ui->imageNameEdit->text().toLocal8Bit().data();
+	options->Properties.mBackgroundImage = ui->imageNameEdit->text();
 	options->Properties.mBackgroundImageTile = ui->imageTileCheckBox->isChecked();
 	options->Properties.mFogEnabled = ui->fogCheckBox->isChecked();
 	options->Properties.mFogDensity = ui->fogDensityEdit->text().toFloat();

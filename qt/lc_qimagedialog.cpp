@@ -9,20 +9,21 @@ lcQImageDialog::lcQImageDialog(QWidget *parent, void *data) :
 {
 	ui->setupUi(this);
 
-	ui->width->setValidator(new QIntValidator(1, 2048));
-	ui->height->setValidator(new QIntValidator(1, 2048));
-	ui->firstStep->setValidator(new QIntValidator(1, 9999));
-	ui->lastStep->setValidator(new QIntValidator(1, 9999));
+	ui->width->setValidator(new QIntValidator(1, 2048, this));
+	ui->height->setValidator(new QIntValidator(1, 2048, this));
+	ui->firstStep->setValidator(new QIntValidator(this));
+	ui->lastStep->setValidator(new QIntValidator(this));
 
 	options = (lcImageDialogOptions*)data;
+	currentStep = options->Start;
+	lastStep = options->End;
 
 	ui->fileName->setText(options->FileName);
-	ui->format->setCurrentIndex(options->Format);
-	ui->transparent->setChecked(options->Transparent);
 	ui->width->setText(QString::number(options->Width));
 	ui->height->setText(QString::number(options->Height));
-	ui->firstStep->setText(QString::number(options->Start));
-	ui->lastStep->setText(QString::number(options->End));
+	ui->firstStep->setText(QString::number(1));
+	ui->lastStep->setText(QString::number(lastStep));
+	ui->rangeCurrent->setChecked(true);
 }
 
 lcQImageDialog::~lcQImageDialog()
@@ -36,7 +37,7 @@ void lcQImageDialog::accept()
 
 	if (fileName.isEmpty())
 	{
-		QMessageBox::information(this, "LeoCAD", tr("Output File cannot be empty."));
+		QMessageBox::information(this, tr("Error"), tr("Output File cannot be empty."));
 		return;
 	}
 
@@ -44,7 +45,7 @@ void lcQImageDialog::accept()
 
 	if (width < 1 || width > 2048)
 	{
-		QMessageBox::information(this, "LeoCAD", tr("Please enter a width between 1 and 2048."));
+		QMessageBox::information(this, tr("Error"), tr("Please enter a width between 1 and 2048."));
 		return;
 	}
 
@@ -52,35 +53,48 @@ void lcQImageDialog::accept()
 
 	if (height < 1 || height > 2048)
 	{
-		QMessageBox::information(this, "LeoCAD", tr("Please enter a height between 1 and 2048."));
+		QMessageBox::information(this, tr("Error"), tr("Please enter a height between 1 and 2048."));
 		return;
 	}
 
-	int start = ui->firstStep->text().toInt();
+	int start = currentStep, end = currentStep;
 
-	if (start < 1 || start > 9999)
+	if (ui->rangeAll->isChecked())
 	{
-		QMessageBox::information(this, "LeoCAD", tr("First step must be between 1 and 9999."));
-		return;
+		start = 1;
+		end = lastStep;
 	}
-
-	int end = ui->lastStep->text().toInt();
-
-	if (end < 1 || end > 9999)
+	else if (ui->rangeCurrent->isChecked())
 	{
-		QMessageBox::information(this, "LeoCAD", tr("Last step must be between 1 and 9999."));
-		return;
+		start = currentStep;
+		end = currentStep;
 	}
-
-	if (end < start)
+	else if (ui->rangeCustom->isChecked())
 	{
-		QMessageBox::information(this, "LeoCAD", tr("Last step must be greater than first step."));
-		return;
+		start = ui->firstStep->text().toInt();
+
+		if (start < 1 || start > lastStep)
+		{
+			QMessageBox::information(this, tr("Error"), tr("First step must be between 1 and %1.").arg(QString::number(lastStep)));
+			return;
+		}
+
+		end = ui->lastStep->text().toInt();
+
+		if (end < 1 || end > lastStep)
+		{
+			QMessageBox::information(this, tr("Error"), tr("Last step must be between 1 and %1.").arg(QString::number(lastStep)));
+			return;
+		}
+
+		if (end < start)
+		{
+			QMessageBox::information(this, tr("Error"), tr("Last step must be greater than first step."));
+			return;
+		}
 	}
 
-	strcpy(options->FileName, fileName.toLocal8Bit().data());
-	options->Format = (LC_IMAGE_FORMAT)ui->format->currentIndex();
-	options->Transparent = ui->transparent->isChecked();
+	options->FileName = fileName;
 	options->Width = width;
 	options->Height = height;
 	options->Start = start;
@@ -91,34 +105,8 @@ void lcQImageDialog::accept()
 
 void lcQImageDialog::on_fileNameBrowse_clicked()
 {
-	QString result = QFileDialog::getSaveFileName(this, tr("Save Image File"), ui->fileName->text(), tr("Supported Files (*.bmp *.png *.jpg);;BMP Files (*.bmp);;PNG Files (*.png);;JPEG Files (*.jpg);;All Files (*.*)"));
+	QString result = QFileDialog::getSaveFileName(this, tr("Save Image File"), ui->fileName->text(), tr("Supported Image Files (*.bmp *.png *.jpg);;BMP Files (*.bmp);;PNG Files (*.png);;JPEG Files (*.jpg);;All Files (*.*)"));
 
 	if (!result.isEmpty())
 		ui->fileName->setText(QDir::toNativeSeparators(result));
-}
-
-void lcQImageDialog::on_format_currentIndexChanged(int index)
-{
-	QString fileName = ui->fileName->text();
-	QString extension = QFileInfo(fileName).suffix().toLower();
-
-	QString newExtension;
-	switch (index)
-	{
-	case LC_IMAGE_BMP: newExtension = "bmp";
-		break;
-	case LC_IMAGE_JPG: newExtension = "jpg";
-		break;
-	default:
-	case LC_IMAGE_PNG: newExtension = "png";
-		break;
-	}
-
-	if (extension == newExtension)
-		return;
-
-	if (extension == "bmp" || extension == "png" || extension == "jpg" || extension == "jpeg")
-		fileName = fileName.left(fileName.length() - extension.length()) + newExtension;
-
-	ui->fileName->setText(fileName);
 }

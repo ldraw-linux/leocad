@@ -56,7 +56,6 @@ public:
 	// upper/lower/reverse conversion
 	void MakeUpper();
 	void MakeLower();
-	void MakeReverse();
 
 	// trimming whitespace (either side)
 	void TrimRight();
@@ -88,6 +87,11 @@ public:
 	}
 
 	char* Buffer()
+	{
+		return m_pData;
+	}
+
+	const char* Buffer() const
 	{
 		return m_pData;
 	}

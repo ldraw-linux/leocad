@@ -7,6 +7,8 @@
 #include "lc_application.h"
 #include "lc_library.h"
 
+lcMesh* gPlaceholderMesh;
+
 lcMesh::lcMesh()
 {
 	mSections = NULL;
@@ -46,8 +48,8 @@ void lcMesh::CreateBox()
 {
 	Create(2, 8, 0, 36 + 24);
 
-	lcVector3 Min(-0.4f, -0.4f, -0.96f);
-	lcVector3 Max(0.4f, 0.4f, 0.16f);
+	lcVector3 Min(-10.0f, -10.0f, -24.0f);
+	lcVector3 Max(10.0f, 10.0f, 4.0f);
 
 	float* Verts = (float*)mVertexBuffer.mData;
 	lcuint16* Indices = (lcuint16*)mIndexBuffer.mData;
@@ -103,109 +105,6 @@ void lcMesh::CreateBox()
 	*Indices++ = 2; *Indices++ = 6; *Indices++ = 3; *Indices++ = 7;
 
 	UpdateBuffers();
-}
-
-void lcMesh::Render(int DefaultColorIdx, bool Selected, bool Focused)
-{
-	char* ElementsOffset;
-	char* BufferOffset;
-
-	if (GL_HasVertexBufferObject())
-	{
-		glBindBuffer(GL_ARRAY_BUFFER_ARB, mVertexBuffer.mBuffer);
-		BufferOffset = NULL;
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER_ARB, mIndexBuffer.mBuffer);
-		ElementsOffset = NULL;
-	}
-	else
-	{
-		BufferOffset = (char*)mVertexBuffer.mData;
-		ElementsOffset = (char*)mIndexBuffer.mData;
-	}
-
-	glVertexPointer(3, GL_FLOAT, 0, BufferOffset);
-
-	for (int SectionIdx = 0; SectionIdx < mNumSections; SectionIdx++)
-	{
-		lcMeshSection* Section = &mSections[SectionIdx];
-		int ColorIdx = Section->ColorIndex;
-
-		if (Section->PrimitiveType == GL_TRIANGLES)
-		{
-			if (ColorIdx == gDefaultColor)
-				ColorIdx = DefaultColorIdx;
-
-			if (lcIsColorTranslucent(ColorIdx))
-			{
-				glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // TODO: cache states
-				glEnable(GL_BLEND);
-				glDepthMask(GL_FALSE);
-			}
-			else
-			{
-				glDepthMask(GL_TRUE);
-				glDisable(GL_BLEND);
-			}
-
-			lcSetColor(ColorIdx);
-		}
-		else
-		{
-			glDepthMask(GL_TRUE); // TODO: cache states
-			glDisable(GL_BLEND);
-
-			if (Focused)
-				lcSetColorFocused();
-			else if (Selected)
-				lcSetColorSelected();
-			else if (ColorIdx == gEdgeColor)
-				lcSetEdgeColor(DefaultColorIdx);
-			else
-				lcSetColor(ColorIdx);
-		}
-
-		if (mNumTexturedVertices)
-		{
-			if (Section->Texture) // TODO: cache states
-			{
-				glVertexPointer(3, GL_FLOAT, sizeof(lcVertexTextured), BufferOffset + (mNumVertices * sizeof(lcVertex)));
-				glTexCoordPointer(2, GL_FLOAT, sizeof(lcVertexTextured), BufferOffset + ((mNumVertices + 1) * sizeof(lcVertex)));
-				glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-
-				glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
-				glBindTexture(GL_TEXTURE_2D, Section->Texture->mTexture);
-				glEnable(GL_TEXTURE_2D);
-			}
-			else
-			{
-				glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-				glVertexPointer(3, GL_FLOAT, 0, BufferOffset);
-				glTexCoordPointer(2, GL_FLOAT, 0, NULL);
-
-				glDisable(GL_TEXTURE_2D);
-			}
-		}
-
-		glDrawElements(Section->PrimitiveType, Section->NumIndices, mIndexType, ElementsOffset + Section->IndexOffset);
-	}
-
-	glDepthMask(GL_TRUE); // TODO: cache states
-	glDisable(GL_BLEND);
-
-	if (GL_HasVertexBufferObject())
-	{
-		glBindBuffer(GL_ARRAY_BUFFER_ARB, 0);
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER_ARB, 0);
-	}
-	else
-		glVertexPointer(3, GL_FLOAT, 0, NULL);
-
-	if (mNumTexturedVertices)
-	{
-		glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-		glTexCoordPointer(2, GL_FLOAT, 0, NULL);
-		glDisable(GL_TEXTURE_2D);
-	}
 }
 
 template<typename IndexType>
@@ -302,9 +201,9 @@ void lcMesh::ExportPOVRay(lcFile& File, const char* MeshName, const char* ColorT
 		for (int Idx = 0; Idx < Section->NumIndices; Idx += 3)
 		{
 			sprintf(Line, "  triangle { <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f> }\n",
-				-Verts[Indices[Idx+0]*3+1], -Verts[Indices[Idx+0]*3], Verts[Indices[Idx+0]*3+2],
-				-Verts[Indices[Idx+1]*3+1], -Verts[Indices[Idx+1]*3], Verts[Indices[Idx+1]*3+2],
-				-Verts[Indices[Idx+2]*3+1], -Verts[Indices[Idx+2]*3], Verts[Indices[Idx+2]*3+2]);
+				-Verts[Indices[Idx+0]*3+1] / 25.0f, -Verts[Indices[Idx+0]*3] / 25.0f, Verts[Indices[Idx+0]*3+2] / 25.0f,
+				-Verts[Indices[Idx+1]*3+1] / 25.0f, -Verts[Indices[Idx+1]*3] / 25.0f, Verts[Indices[Idx+1]*3+2] / 25.0f,
+				-Verts[Indices[Idx+2]*3+1] / 25.0f, -Verts[Indices[Idx+2]*3] / 25.0f, Verts[Indices[Idx+2]*3+2] / 25.0f);
 			File.WriteLine(Line);
 		}
 

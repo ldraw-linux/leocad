@@ -50,8 +50,6 @@
         <file>resources/time_first.png</file>
         <file>resources/time_last.png</file>
         <file>resources/time_next.png</file>
-        <file>resources/time_pause.png</file>
-        <file>resources/time_play.png</file>
         <file>resources/time_previous.png</file>
         <file>resources/time_stop.png</file>
         <file>resources/icon64.png</file>
@@ -61,9 +59,15 @@
         <file>resources/view_split_horizontal.png</file>
         <file>resources/view_split_vertical.png</file>
         <file>resources/file_picture.png</file>
+        <file>resources/edit_transform_relative.png</file>
         <file>resources/edit_transform_absolute_rotation.png</file>
         <file>resources/edit_transform_absolute_translation.png</file>
         <file>resources/edit_transform_relative_rotation.png</file>
         <file>resources/edit_transform_relative_translation.png</file>
+        <file>resources/piece_show_earlier.png</file>
+        <file>resources/piece_show_later.png</file>
+        <file>resources/time_add_keys.png</file>
+        <file>resources/library.zip</file>
+		<file>resources/leocad_pt.qm</file>
     </qresource>
 </RCC>

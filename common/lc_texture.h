@@ -25,6 +25,8 @@ public:
 	lcTexture();
 	~lcTexture();
 
+	void CreateGridTexture();
+
 	bool Load(const char* FileName, int Flags = 0);
 	bool Load(lcMemFile& File, int Flags = 0);
 	bool Load(Image& image, int Flags);
@@ -61,5 +63,10 @@ protected:
 
 	int mRefCount;
 };
+
+lcTexture* lcLoadTexture(const QString& FileName, int Flags);
+void lcReleaseTexture(lcTexture* Texture);
+
+extern lcTexture* gGridTexture;
 
 #endif // _LC_TEXTURE_H_
