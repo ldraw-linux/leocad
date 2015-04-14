@@ -150,7 +150,7 @@ void lcApplication::ParseStringArgument(int* CurArg, int argc, char* argv[], cha
 
 bool lcApplication::Initialize(int argc, char* argv[], const char* LibraryInstallPath, const char* LibraryCachePath)
 {
-	char* LibPath = NULL;
+	char* LibPath = LIBPATH_DEFAULT;
 
 	// Image output options.
 	bool SaveImage = false;

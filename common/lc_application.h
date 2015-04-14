@@ -4,6 +4,10 @@
 #include "lc_array.h"
 #include "str.h"
 
+#ifndef LIBPATH_DEFAULT
+#define LIBPATH_DEFAULT NULL
+#endif
+
 class Project;
 class lcPiecesLibrary;
 
