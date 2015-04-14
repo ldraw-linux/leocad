@@ -1,87 +1,168 @@
 #ifndef _PIECE_H_
 #define _PIECE_H_
 
-class Piece;
-class Group;
 class PieceInfo;
 
 #include "object.h"
 #include "lc_colors.h"
 #include "lc_math.h"
 
-#define LC_PIECE_HIDDEN		0x01
-#define LC_PIECE_SELECTED	0x02
-#define LC_PIECE_FOCUSED	0x04
+#define LC_PIECE_HIDDEN             0x01
+#define LC_PIECE_POSITION_SELECTED  0x02
+#define LC_PIECE_POSITION_FOCUSED   0x04
 
-enum LC_PK_TYPES
+#define LC_PIECE_SELECTION_MASK     (LC_PIECE_POSITION_SELECTED)
+#define LC_PIECE_FOCUS_MASK         (LC_PIECE_POSITION_FOCUSED)
+
+enum lcPieceSection
 {
-	LC_PK_POSITION,
-	LC_PK_ROTATION,
-	LC_PK_COUNT
+	LC_PIECE_SECTION_POSITION
 };
 
-class Piece : public Object
+class lcPiece : public lcObject
 {
 public:
-	Piece (PieceInfo* pPieceInfo);
-	~Piece ();
+	lcPiece(PieceInfo* pPieceInfo);
+	~lcPiece();
 
-	void Select(bool bSelecting, bool bFocus, bool bMultiple);
-	virtual void InsertTime(unsigned short start, unsigned short time);
-	virtual void RemoveTime(unsigned short start, unsigned short time);
-	virtual bool IntersectsVolume(const lcVector4 Planes[6]) const;
+	virtual bool IsSelected() const
+	{
+		return (mState & LC_PIECE_SELECTION_MASK) != 0;
+	}
 
+	virtual bool IsSelected(lcuint32 Section) const
+	{
+		return (mState & LC_PIECE_SELECTION_MASK) != 0;
+	}
 
+	virtual void SetSelected(bool Selected)
+	{
+		if (Selected)
+			mState |= LC_PIECE_SELECTION_MASK;
+		else
+			mState &= ~(LC_PIECE_SELECTION_MASK | LC_PIECE_FOCUS_MASK);
+	}
 
+	virtual void SetSelected(lcuint32 Section, bool Selected)
+	{
+		if (Selected)
+			mState |= LC_PIECE_POSITION_SELECTED;
+		else
+			mState &= ~(LC_PIECE_SELECTION_MASK | LC_PIECE_FOCUS_MASK);
+	}
 
+	virtual bool IsFocused() const
+	{
+		return (mState & LC_PIECE_FOCUS_MASK) != 0;
+	}
 
-	Piece* m_pNext;
+	virtual bool IsFocused(lcuint32 Section) const
+	{
+		return (mState & LC_PIECE_FOCUS_MASK) != 0;
+	}
 
-	void Hide()
-		{ m_nState = LC_PIECE_HIDDEN; }
-	void UnHide()
-		{ m_nState &= ~LC_PIECE_HIDDEN; }
-	bool IsHidden()
-		{ return (m_nState & LC_PIECE_HIDDEN) != 0; }
-	bool IsSelected()
-		{ return (m_nState & LC_PIECE_SELECTED) != 0; }
-	bool IsFocused()
-		{ return (m_nState & LC_PIECE_FOCUSED) != 0; }
+	virtual void SetFocused(lcuint32 Section, bool Focused)
+	{
+		if (Focused)
+			mState |= LC_PIECE_POSITION_SELECTED | LC_PIECE_POSITION_FOCUSED;
+		else
+			mState &= ~LC_PIECE_FOCUS_MASK;
+	}
 
-	const char* GetName() const
-	{ return m_strName; }
+	virtual lcuint32 GetFocusSection() const
+	{
+		if (mState & LC_PIECE_POSITION_FOCUSED)
+			return LC_PIECE_SECTION_POSITION;
 
-	virtual void MinIntersectDist(lcClickLine* ClickLine);
-	bool IsVisible(unsigned short nTime);
-	void Initialize(float x, float y, float z, unsigned char nStep);
-	void CreateName(Piece* pPiece);
+		return ~0;
+	}
+
+	virtual lcVector3 GetSectionPosition(lcuint32 Section) const
+	{
+		switch (Section)
+		{
+		case LC_PIECE_SECTION_POSITION:
+			return mModelWorld.GetTranslation();
+		}
+
+		return lcVector3(0.0f, 0.0f, 0.0f);
+	}
+
+	void SaveLDraw(QTextStream& Stream) const;
+	bool ParseLDrawLine(QTextStream& Stream);
+
+	void SetFileLine(int Line)
+	{
+		mFileLine = Line;
+	}
+
+	int GetFileLine() const
+	{
+		return mFileLine;
+	}
+
+	virtual void RayTest(lcObjectRayTest& ObjectRayTest) const;
+	virtual void BoxTest(lcObjectBoxTest& ObjectBoxTest) const;
+	virtual void DrawInterface(lcContext* Context, const lcMatrix44& ViewMatrix) const;
+
+	void InsertTime(lcStep Start, lcStep Time);
+	void RemoveTime(lcStep Start, lcStep Time);
+
+	bool IsHidden() const
+	{
+		return (mState & LC_PIECE_HIDDEN) != 0;
+	}
+
+	void SetHidden(bool Hidden)
+	{
+		if (Hidden)
+			mState |= LC_PIECE_HIDDEN;
+		else
+			mState &= ~LC_PIECE_HIDDEN;
+	}
+
+	const char* GetName() const;
+	bool IsVisible(lcStep Step);
+	void Initialize(const lcMatrix44& WorldMatrix, lcStep Step);
 	void CompareBoundingBox(float box[6]);
 	void SetPieceInfo(PieceInfo* pPieceInfo);
 	bool FileLoad(lcFile& file);
-	void FileSave(lcFile& file) const;
 
-	void UpdatePosition(unsigned short nTime);
-	void Move(unsigned short nTime, bool bAddKey, float dx, float dy, float dz);
+	void UpdatePosition(lcStep Step);
+	void Move(lcStep Step, bool AddKey, const lcVector3& Distance);
 
-	void DoGroup(Group* pGroup);
-	void UnGroup(Group* pGroup);
-	Group* GetTopGroup();
-	void SetGroup(Group* pGroup)
-		{ m_pGroup = pGroup; }
-	Group* GetGroup()
-		{ return m_pGroup; }
-	void SetName(char* name)
-		{ strcpy(m_strName, name); }
-	const char* GetName()
-		{ return m_strName; }
-	void SetStepShow(unsigned char step)
-		{ m_nStepShow = step; }
-	unsigned char GetStepShow()
-		{ return m_nStepShow; }
-	void SetStepHide(unsigned char step)
-		{ m_nStepHide = step; }
-	unsigned char GetStepHide()
-		{ return (unsigned char)m_nStepHide; }
+	lcGroup* GetTopGroup();
+
+	void SetGroup(lcGroup* Group)
+	{
+		mGroup = Group;
+	}
+
+	lcGroup* GetGroup()
+	{
+		return mGroup;
+	}
+
+	lcStep GetStepShow() const
+	{
+		return mStepShow;
+	}
+
+	lcStep GetStepHide() const
+	{
+		return mStepHide;
+	}
+
+	void SetStepHide(lcStep Step)
+	{
+		mStepHide = Step;
+	}
+
+	void SetStepShow(lcStep Step)
+	{
+		mFileLine = -1;
+		mStepShow = Step;
+	}
 
 	void SetColorCode(lcuint32 ColorCode)
 	{
@@ -95,6 +176,16 @@ public:
 		mColorCode = lcGetColorCode(ColorIndex);
 	}
 
+	void SetPosition(const lcVector3& Position, lcStep Step, bool AddKey)
+	{
+		ChangeKey(mPositionKeys, Position, Step, AddKey);
+	}
+
+	void SetRotation(const lcMatrix33& Rotation, lcStep Step, bool AddKey)
+	{
+		ChangeKey(mRotationKeys, Rotation, Step, AddKey);
+	}
+
 public:
 	PieceInfo* mPieceInfo;
 
@@ -102,18 +193,20 @@ public:
 	lcuint32 mColorCode;
 
 	lcMatrix44 mModelWorld;
-	lcVector3 mPosition;
-	lcVector4 mRotation;
 
 protected:
+	lcArray<lcObjectKey<lcVector3>> mPositionKeys;
+	lcArray<lcObjectKey<lcMatrix33>> mRotationKeys;
+
+	int mFileLine;
+
 	// Atributes
-	Group* m_pGroup;
+	lcGroup* mGroup;
 
-	lcuint8 m_nStepShow;
-	lcuint8 m_nStepHide;
+	lcStep mStepShow;
+	lcStep mStepHide;
 
-	lcuint8 m_nState;
-	char m_strName[81];
+	lcuint8 mState;
 };
 
 #endif // _PIECE_H

@@ -18,6 +18,12 @@ public:
 			AllocGrow(Size);
 	}
 
+	lcArray(const lcArray<T>& Array)
+	{
+		mData = NULL;
+		*this = Array;
+	}
+
 	~lcArray()
 	{
 		delete[] mData;
@@ -52,6 +58,11 @@ public:
 	T& operator[](int Index) const
 	{
 		return mData[Index];
+	}
+
+	bool IsEmpty() const
+	{
+		return mLength == 0;
 	}
 
 	int GetSize() const
@@ -109,6 +120,20 @@ public:
 		Add(Obj);
 	}
 
+	T& InsertAt(int Index)
+	{
+		if (Index >= mLength)
+			AllocGrow(Index - mLength + 1);
+		else
+			AllocGrow(1);
+
+		mLength++;
+		for (int i = mLength - 1; i > Index; i--)
+			mData[i] = mData[i - 1];
+
+		return mData[Index];
+	}
+
 	void InsertAt(int Index, const T& NewItem)
 	{
 		if (Index >= mLength)
@@ -145,6 +170,14 @@ public:
 
 	void RemoveAll()
 	{
+		mLength = 0;
+	}
+
+	void DeleteAll()
+	{
+		for (int i = 0; i < mLength; i++)
+			delete mData[i];
+
 		mLength = 0;
 	}
 

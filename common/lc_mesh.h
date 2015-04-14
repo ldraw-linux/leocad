@@ -129,7 +129,6 @@ public:
 
 	void Create(int NumSections, int NumVertices, int NumTexturedVertices, int NumIndices);
 	void CreateBox();
-	void Render(int ColorIdx, bool Selected, bool Focused);
 
 	bool FileLoad(lcFile& File);
 	void FileSave(lcFile& File);
@@ -165,5 +164,17 @@ public:
 	int mNumTexturedVertices;
 	int mIndexType;
 };
+
+struct lcRenderMesh
+{
+	lcMatrix44 WorldMatrix;
+	lcMesh* Mesh;
+	float Distance;
+	int ColorIndex;
+	bool Focused;
+	bool Selected;
+};
+
+extern lcMesh* gPlaceholderMesh;
 
 #endif // _LC_MESH_H_

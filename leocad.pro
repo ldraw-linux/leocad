@@ -7,7 +7,7 @@ greaterThan(QT_MAJOR_VERSION, 4) {
 }
 
 INCLUDEPATH += qt common
-CONFIG += precompile_header incremental
+CONFIG += precompile_header incremental c++11
 PRECOMPILED_HEADER = common/lc_global.h
 win32 { 
 	QMAKE_CXXFLAGS_WARN_ON += -wd4100
@@ -18,9 +18,37 @@ win32 {
 	RC_FILE = qt/leocad.rc
 	LIBS += -ladvapi32 -lshell32
 } else {
-    LIBS += -lz
-    QMAKE_CXXFLAGS_WARN_ON += -Wno-unused-parameter
+	LIBS += -lz
+	QMAKE_CXXFLAGS_WARN_ON += -Wno-unused-parameter
 }
+
+lessThan(QT_MAJOR_VERSION, 5) {
+	unix {
+		GCC_VERSION = $$system(g++ -dumpversion)
+		greaterThan(GCC_VERSION, 4.6) {
+			QMAKE_CXXFLAGS += -std=c++11
+		} else {
+			QMAKE_CXXFLAGS += -std=c++0x
+		}
+	}
+}
+
+isEmpty(QMAKE_LRELEASE) {
+	win32:QMAKE_LRELEASE = $$[QT_INSTALL_BINS]\\lrelease.exe
+	else:QMAKE_LRELEASE = $$[QT_INSTALL_BINS]/lrelease
+	unix {
+		!exists($$QMAKE_LRELEASE) { QMAKE_LRELEASE = lrelease-qt4 }
+	} else {
+		!exists($$QMAKE_LRELEASE) { QMAKE_LRELEASE = lrelease }
+	}
+}
+
+TSFILES = resources/leocad_pt.ts
+lrelease.input = TSFILES
+lrelease.output = ${QMAKE_FILE_PATH}/${QMAKE_FILE_BASE}.qm
+lrelease.commands = $$QMAKE_LRELEASE -silent ${QMAKE_FILE_IN} -qm ${QMAKE_FILE_PATH}/${QMAKE_FILE_BASE}.qm
+lrelease.CONFIG += no_link target_predeps
+QMAKE_EXTRA_COMPILERS += lrelease
 
 unix:!macx {
 	TARGET = leocad
@@ -66,6 +94,14 @@ unix:!macx {
 	INSTALLS += target docs man desktop icon mime mime_icon
 
 	DEFINES += LC_INSTALL_PREFIX=\\\"$$INSTALL_PREFIX\\\"
+
+	!isEmpty(DISABLE_UPDATE_CHECK) {
+		DEFINES += LC_DISABLE_UPDATE_CHECK=$$DISABLE_UPDATE_CHECK
+	}
+
+	!isEmpty(LDRAW_LIBRARY_PATH) {
+		DEFINES += LC_LDRAW_LIBRARY_PATH=\\\"$$LDRAW_LIBRARY_PATH\\\"
+	}
 }
 
 macx {
@@ -83,7 +119,6 @@ macx {
 SOURCES += common/view.cpp \
     common/tr.cpp \
     common/texfont.cpp \
-    common/terrain.cpp \
     common/str.cpp \
     common/project.cpp \
     common/preview.cpp \
@@ -93,21 +128,24 @@ SOURCES += common/view.cpp \
     common/object.cpp \
     common/minifig.cpp \
     common/light.cpp \
-    common/lc_zipfile.cpp \
-    common/lc_texture.cpp \
-    common/lc_mesh.cpp \
-    common/lc_library.cpp \
-    common/lc_file.cpp \
-    common/lc_colors.cpp \
     common/lc_application.cpp \
+    common/lc_category.cpp \
+    common/lc_colors.cpp \
+    common/lc_commands.cpp \
+    common/lc_context.cpp \
+    common/lc_file.cpp \
+    common/lc_library.cpp \
+    common/lc_mainwindow.cpp \
+    common/lc_mesh.cpp \
+    common/lc_model.cpp \
+    common/lc_profile.cpp \
+    common/lc_shortcuts.cpp \
+    common/lc_texture.cpp \
+    common/lc_zipfile.cpp \
     common/image.cpp \
     common/group.cpp \
     common/debug.cpp \
     common/camera.cpp \
-    common/lc_profile.cpp \
-    common/lc_category.cpp \
-	common/lc_projection.cpp \
-    qt/lc_qmainwindow.cpp \
     qt/system.cpp \
     qt/qtmain.cpp \
     qt/lc_qpovraydialog.cpp \
@@ -122,25 +160,20 @@ SOURCES += common/view.cpp \
     qt/lc_qminifigdialog.cpp \
     qt/lc_qpreferencesdialog.cpp \
     qt/lc_qcategorydialog.cpp \
-    qt/lc_qprofile.cpp \
     qt/lc_qimagedialog.cpp \
-    qt/lc_qapplication.cpp \
     qt/lc_qupdatedialog.cpp \
     qt/lc_qutils.cpp \
     qt/lc_qpropertiestree.cpp \
     qt/lc_qcolorpicker.cpp \
-    common/lc_commands.cpp \
-    common/lc_shortcuts.cpp \
-    qt/lc_qimage.cpp \
     qt/lc_qglwidget.cpp \
     qt/lc_qcolorlist.cpp \
     qt/lc_qfinddialog.cpp \
-    common/lc_mainwindow.cpp
+    qt/lc_qmodellistdialog.cpp \
+    common/lc_timelinewidget.cpp
 HEADERS += \
     common/view.h \
     common/tr.h \
     common/texfont.h \
-    common/terrain.h \
     common/system.h \
     common/str.h \
     common/project.h \
@@ -151,24 +184,29 @@ HEADERS += \
     common/object.h \
     common/minifig.h \
     common/light.h \
-    common/lc_zipfile.h \
-    common/lc_texture.h \
-    common/lc_mesh.h \
-    common/lc_math.h \
-    common/lc_library.h \
-    common/lc_global.h \
-    common/lc_file.h \
-    common/lc_colors.h \
     common/lc_application.h \
+    common/lc_array.h \
+    common/lc_basewindow.h \
+    common/lc_category.h \
+    common/lc_colors.h \
+    common/lc_commands.h \
+    common/lc_context.h \
+    common/lc_file.h \
+    common/lc_global.h \
+    common/lc_glwidget.h \
+    common/lc_library.h \
+    common/lc_mainwindow.h \
+    common/lc_math.h \
+    common/lc_mesh.h \
+    common/lc_model.h \
+    common/lc_profile.h \
+    common/lc_shortcuts.h \
+    common/lc_texture.h \
+    common/lc_zipfile.h \
     common/image.h \
     common/group.h \
     common/debug.h \
     common/camera.h \
-    common/lc_profile.h \
-    common/lc_category.h \
-	common/lc_projection.h \
-    qt/lc_qmainwindow.h \
-    qt/lc_config.h \
     qt/lc_qpovraydialog.h \
     qt/lc_qarraydialog.h \
     qt/lc_qgroupdialog.h \
@@ -186,15 +224,11 @@ HEADERS += \
     qt/lc_qutils.h \
     qt/lc_qpropertiestree.h \
     qt/lc_qcolorpicker.h \
-    common/lc_commands.h \
-    common/lc_shortcuts.h \
     qt/lc_qglwidget.h \
     qt/lc_qcolorlist.h \
-    common/lc_glwidget.h \
     qt/lc_qfinddialog.h \
-    common/lc_array.h \
-    common/lc_basewindow.h \
-    common/lc_mainwindow.h
+    qt/lc_qmodellistdialog.h \
+    common/lc_timelinewidget.h
 FORMS += \ 
     qt/lc_qpovraydialog.ui \
     qt/lc_qarraydialog.ui \
@@ -209,6 +243,11 @@ FORMS += \
     qt/lc_qcategorydialog.ui \
     qt/lc_qimagedialog.ui \
     qt/lc_qupdatedialog.ui \
-    qt/lc_qfinddialog.ui
+    qt/lc_qfinddialog.ui \
+    qt/lc_qmodellistdialog.ui
 OTHER_FILES += 
 RESOURCES += leocad.qrc
+
+!win32 { 
+	TRANSLATIONS = TSFILES
+}

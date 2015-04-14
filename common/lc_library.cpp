@@ -8,12 +8,13 @@
 #include "lc_category.h"
 #include "lc_application.h"
 #include "lc_mainwindow.h"
+#include "project.h"
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <ctype.h>
 #include <locale.h>
 
-#define LC_LIBRARY_CACHE_VERSION   0x0101
+#define LC_LIBRARY_CACHE_VERSION   0x0104
 #define LC_LIBRARY_CACHE_ARCHIVE   0x0001
 #define LC_LIBRARY_CACHE_DIRECTORY 0x0002
 
@@ -24,7 +25,9 @@ lcPiecesLibrary::lcPiecesLibrary()
 	mCacheFileName[0] = 0;
 	mCacheFileModifiedTime = 0;
 	mLibraryFileName[0] = 0;
-	mZipFile = NULL;
+	mUnofficialFileName[0] = 0;
+	mZipFiles[LC_ZIPFILE_OFFICIAL] = NULL;
+	mZipFiles[LC_ZIPFILE_UNOFFICIAL] = NULL;
 	mCacheFile = NULL;
 	mCacheFileName[0] = 0;
 	mSaveCache = false;
@@ -52,30 +55,61 @@ void lcPiecesLibrary::Unload()
 	mTextures.RemoveAll();
 
 	mNumOfficialPieces = 0;
-	delete mZipFile;
-	mZipFile = NULL;
+	delete mZipFiles[LC_ZIPFILE_OFFICIAL];
+	mZipFiles[LC_ZIPFILE_OFFICIAL] = NULL;
+	delete mZipFiles[LC_ZIPFILE_UNOFFICIAL];
+	mZipFiles[LC_ZIPFILE_UNOFFICIAL] = NULL;
 }
 
-PieceInfo* lcPiecesLibrary::FindPiece(const char* PieceName, bool CreatePlaceholderIfMissing)
+void lcPiecesLibrary::RemoveTemporaryPieces()
+{
+	for (int PieceIdx = mPieces.GetSize() - 1; PieceIdx >= 0; PieceIdx--)
+	{
+		PieceInfo* Info = mPieces[PieceIdx];
+
+		if (!Info->IsTemporary())
+			break;
+
+		if (!Info->IsLoaded())
+		{
+			mPieces.RemoveIndex(PieceIdx);
+			delete Info;
+		}
+	}
+}
+
+void lcPiecesLibrary::RemovePiece(PieceInfo* Info)
+{
+	mPieces.Remove(Info);
+	delete Info;
+}
+
+PieceInfo* lcPiecesLibrary::FindPiece(const char* PieceName, Project* Project, bool CreatePlaceholder)
 {
 	for (int PieceIdx = 0; PieceIdx < mPieces.GetSize(); PieceIdx++)
-		if (!strcmp(PieceName, mPieces[PieceIdx]->m_strName))
-			return mPieces[PieceIdx];
+	{
+		PieceInfo* Info = mPieces[PieceIdx];
 
-	if (CreatePlaceholderIfMissing)
-		return CreatePlaceholder(PieceName);
+		if (strcmp(PieceName, Info->m_strName))
+			continue;
+
+		if (Project && Info->IsModel() && Project->GetModels().FindIndex(Info->GetModel()) == -1)
+			continue;
+
+		return Info;
+	}
+
+	if (CreatePlaceholder)
+	{
+		PieceInfo* Info = new PieceInfo();
+
+		Info->CreatePlaceholder(PieceName);
+		mPieces.Add(Info);
+
+		return Info;
+	}
 
 	return NULL;
-}
-
-PieceInfo* lcPiecesLibrary::CreatePlaceholder(const char* PieceName)
-{
-	PieceInfo* Info = new PieceInfo(-1);
-
-	Info->CreatePlaceholder(PieceName);
-	mPieces.Add(Info);
-
-	return Info;
 }
 
 lcTexture* lcPiecesLibrary::FindTexture(const char* TextureName)
@@ -89,17 +123,27 @@ lcTexture* lcPiecesLibrary::FindTexture(const char* TextureName)
 
 bool lcPiecesLibrary::Load(const char* LibraryPath, const char* CachePath)
 {
-	if (OpenArchive(LibraryPath, CachePath))
+	Unload();
+
+	if (OpenArchive(LibraryPath, LC_ZIPFILE_OFFICIAL))
 	{
 		lcMemFile ColorFile;
 
-		if (!mZipFile->ExtractFile("ldraw/ldconfig.ldr", ColorFile) || !lcLoadColorFile(ColorFile))
+		if (!mZipFiles[LC_ZIPFILE_OFFICIAL]->ExtractFile("ldraw/ldconfig.ldr", ColorFile) || !lcLoadColorFile(ColorFile))
 			lcLoadDefaultColors();
 
 		strcpy(mLibraryPath, LibraryPath);
 		char* Slash = lcMax(strrchr(mLibraryPath, '/'), strrchr(mLibraryPath, '\\'));
 		if (*Slash)
 			*(Slash + 1) = 0;
+
+		char UnofficialFileName[LC_MAXPATH];
+		strcpy(UnofficialFileName, mLibraryPath);
+		strcat(UnofficialFileName, "/ldrawunf.zip");
+
+		OpenArchive(UnofficialFileName, LC_ZIPFILE_UNOFFICIAL);
+
+		ReadArchiveDescriptions(LibraryPath, UnofficialFileName, CachePath);
 	}
 	else
 	{
@@ -124,30 +168,45 @@ bool lcPiecesLibrary::Load(const char* LibraryPath, const char* CachePath)
 	}
 
 	lcLoadDefaultCategories();
-	gMainWindow->UpdateCategories();
 
 	return true;
 }
 
-bool lcPiecesLibrary::OpenArchive(const char* FileName, const char* CachePath)
+bool lcPiecesLibrary::OpenArchive(const char* FileName, lcZipFileType ZipFileType)
 {
-	Unload();
+	lcDiskFile* File = new lcDiskFile();
 
-	mZipFile = new lcZipFile();
-
-	if (!mZipFile->OpenRead(FileName))
+	if (!File->Open(FileName, "rb") || !OpenArchive(File, FileName, ZipFileType))
 	{
-		delete mZipFile;
-		mZipFile = NULL;
+		delete File;
 		return false;
 	}
 
-	strcpy(mLibraryFileName, FileName);
+	return true;
+}
 
-	for (int FileIdx = 0; FileIdx < mZipFile->mFiles.GetSize(); FileIdx++)
+bool lcPiecesLibrary::OpenArchive(lcFile* File, const char* FileName, lcZipFileType ZipFileType)
+{
+	lcZipFile* ZipFile = new lcZipFile();
+
+	if (!ZipFile->OpenRead(File))
 	{
-		lcZipFileInfo& FileInfo = mZipFile->mFiles[FileIdx];
-		char Name[LC_PIECE_NAME_LEN];
+		delete ZipFile;
+		return false;
+	}
+
+	mZipFiles[ZipFileType] = ZipFile;
+
+	if (ZipFileType == LC_ZIPFILE_OFFICIAL)
+		strcpy(mLibraryFileName, FileName);
+	else
+		strcpy(mUnofficialFileName, FileName);
+
+	for (int FileIdx = 0; FileIdx < ZipFile->mFiles.GetSize(); FileIdx++)
+	{
+		lcZipFileInfo& FileInfo = ZipFile->mFiles[FileIdx];
+		char NameBuffer[LC_PIECE_NAME_LEN];
+		char* Name = NameBuffer;
 
 		const char* Src = FileInfo.file_name;
 		char* Dst = Name;
@@ -185,34 +244,63 @@ bool lcPiecesLibrary::OpenArchive(const char* FileName, const char* CachePath)
 		}
 		*Dst = 0;
 
-		if (memcmp(Name, "LDRAW/", 6))
-			continue;
-
-		if (!memcmp(Name + 6, "PARTS/", 6))
+		if (ZipFileType == LC_ZIPFILE_OFFICIAL)
 		{
-			if (memcmp(Name + 12, "S/", 2))
-			{
-				PieceInfo* Info = new PieceInfo(FileIdx);
-				mPieces.Add(Info);
+			if (memcmp(Name, "LDRAW/", 6))
+				continue;
 
-				strncpy(Info->m_strName, Name + 12, sizeof(Info->m_strName));
-				Info->m_strName[sizeof(Info->m_strName) - 1] = 0;
+			Name += 6;
+		}
+
+		if (!memcmp(Name, "PARTS/", 6))
+		{
+			Name += 6;
+
+			if (memcmp(Name, "S/", 2))
+			{
+				PieceInfo* Info = FindPiece(Name, NULL, false);
+
+				if (!Info)
+				{
+					Info = new PieceInfo();
+					mPieces.Add(Info);
+
+					strncpy(Info->m_strName, Name, sizeof(Info->m_strName));
+					Info->m_strName[sizeof(Info->m_strName) - 1] = 0;
+				}
+
+				Info->SetZipFile(ZipFileType, FileIdx);
 			}
 			else
 			{
-				lcLibraryPrimitive* Prim = new lcLibraryPrimitive(Name + 12, FileIdx, false, true);
-				mPrimitives.Add(Prim);
+				int PrimitiveIndex = FindPrimitiveIndex(Name);
+
+				if (PrimitiveIndex == -1)
+					mPrimitives.Add(new lcLibraryPrimitive(Name, ZipFileType, FileIdx, false, true));
+				else
+					mPrimitives[PrimitiveIndex]->SetZipFile(ZipFileType, FileIdx);
 			}
 		}
-		else if (!memcmp(Name + 6, "P/", 2))
+		else if (!memcmp(Name, "P/", 2))
 		{
-			lcLibraryPrimitive* Prim = new lcLibraryPrimitive(Name + 8, FileIdx, (memcmp(Name + 8, "STU", 3) == 0), false);
-			mPrimitives.Add(Prim);
+			Name += 2;
+
+			int PrimitiveIndex = FindPrimitiveIndex(Name);
+
+			if (PrimitiveIndex == -1)
+				mPrimitives.Add(new lcLibraryPrimitive(Name, ZipFileType, FileIdx, (memcmp(Name, "STU", 3) == 0), false));
+			else
+				mPrimitives[PrimitiveIndex]->SetZipFile(ZipFileType, FileIdx);
 		}
 	}
 
+	return true;
+}
+
+void lcPiecesLibrary::ReadArchiveDescriptions(const char* OfficialFileName, const char* UnofficialFileName, const char* CachePath)
+{
 	bool CacheValid = false;
-	struct stat LibraryStat;
+	struct stat OfficialStat, UnofficialStat;
 
 	strcpy(mCacheFileName, CachePath);
 	mCacheFileModifiedTime = 0;
@@ -226,8 +314,19 @@ bool lcPiecesLibrary::OpenArchive(const char* FileName, const char* CachePath)
 		strcat(mCacheFileName, "library.cache");
 	}
 
-	if (stat(FileName, &LibraryStat) == 0)
+	if (stat(OfficialFileName, &OfficialStat) == 0)
 	{
+		lcuint64 CheckSum[4] =
+		{
+			(lcuint64)OfficialStat.st_size, (lcuint64)OfficialStat.st_mtime, 0, 0
+		};
+
+		if (stat(UnofficialFileName, &UnofficialStat) == 0)
+		{
+			CheckSum[2] = (lcuint64)UnofficialStat.st_size;
+			CheckSum[3] = (lcuint64)UnofficialStat.st_mtime;
+		}
+
 		lcZipFile CacheFile;
 
 		if (CacheFile.OpenRead(mCacheFileName))
@@ -238,15 +337,14 @@ bool lcPiecesLibrary::OpenArchive(const char* FileName, const char* CachePath)
 			{
 				lcuint32 CacheVersion;
 				lcuint32 CacheFlags;
-				lcuint64 LibrarySize;
-				lcuint64 LibraryModified;
 
 				if (VersionFile.ReadU32(&CacheVersion, 1) && VersionFile.ReadU32(&CacheFlags, 1) &&
-				    VersionFile.ReadU64(&LibrarySize, 1) && VersionFile.ReadU64(&LibraryModified, 1))
+					CacheVersion == LC_LIBRARY_CACHE_VERSION && CacheFlags == LC_LIBRARY_CACHE_ARCHIVE)
 				{
-					if (CacheVersion == LC_LIBRARY_CACHE_VERSION && CacheFlags == LC_LIBRARY_CACHE_ARCHIVE &&
-					    LibrarySize == (lcuint64)LibraryStat.st_size && LibraryModified == (lcuint64)LibraryStat.st_mtime)
-						CacheValid = true;
+					lcuint64 CacheCheckSum[4];
+
+					if (VersionFile.ReadU64(CacheCheckSum, 4))
+						CacheValid = (memcmp(CacheCheckSum, CheckSum, sizeof(CheckSum)) == 0);
 				}
 			}
 		}
@@ -272,7 +370,7 @@ bool lcPiecesLibrary::OpenArchive(const char* FileName, const char* CachePath)
 		{
 			PieceInfo* Info = mPieces[PieceInfoIndex];
 
-			mZipFile->ExtractFile(Info->mZipFileIndex, PieceFile, 256);
+			mZipFiles[Info->mZipFileType]->ExtractFile(Info->mZipFileIndex, PieceFile, 256);
 			PieceFile.Seek(0, SEEK_END);
 			PieceFile.WriteU8(0);
 
@@ -292,14 +390,10 @@ bool lcPiecesLibrary::OpenArchive(const char* FileName, const char* CachePath)
 			}
 		}
 	}
-
-	return true;
 }
 
 bool lcPiecesLibrary::OpenDirectory(const char* Path)
 {
-	Unload();
-
 	char FileName[LC_MAXPATH];
 	lcArray<String> FileList;
 
@@ -354,7 +448,7 @@ bool lcPiecesLibrary::OpenDirectory(const char* Path)
 			if (!*Line || !*Description)
 				continue;
 
-			PieceInfo* Info = new PieceInfo(-1);
+			PieceInfo* Info = new PieceInfo();
 			mPieces.Add(Info);
 
 			strncpy(Info->m_strName, Line, sizeof(Info->m_strName));
@@ -410,7 +504,7 @@ bool lcPiecesLibrary::OpenDirectory(const char* Path)
 			if (!PieceFile.ReadLine(Line, sizeof(Line)))
 				continue;
 
-			PieceInfo* Info = new PieceInfo(-1);
+			PieceInfo* Info = new PieceInfo();
 			mPieces.Add(Info);
 
 			Src = (char*)Line + 2;
@@ -477,7 +571,7 @@ bool lcPiecesLibrary::OpenDirectory(const char* Path)
 			*Dst = 0;
 
 			bool SubFile = SubFileDirectories[DirectoryIdx];
-			lcLibraryPrimitive* Prim = new lcLibraryPrimitive(Name, 0, !SubFile && (memcmp(Name, "STU", 3) == 0), SubFile);
+			lcLibraryPrimitive* Prim = new lcLibraryPrimitive(Name, LC_NUM_ZIPFILES, 0, !SubFile && (memcmp(Name, "STU", 3) == 0), SubFile);
 			mPrimitives.Add(Prim);
 		}
 	}
@@ -602,9 +696,10 @@ bool lcPiecesLibrary::LoadCachePiece(PieceInfo* Info)
 		if (!mCacheFile->ExtractFile(Info->m_strName, PieceFile))
 			return false;
 
-		Info->mMesh = new lcMesh;
+		lcMesh* Mesh = new lcMesh;
+		Info->SetMesh(Mesh);
 
-		return Info->mMesh->FileLoad(PieceFile);
+		return Mesh->FileLoad(PieceFile);
 	}
 	else
 	{
@@ -623,9 +718,10 @@ bool lcPiecesLibrary::LoadCachePiece(PieceInfo* Info)
 		if (!CacheFile.ExtractFile(Info->m_strName, PieceFile))
 			return false;
 
-		Info->mMesh = new lcMesh;
+		lcMesh* Mesh = new lcMesh;
+		Info->SetMesh(Mesh);
 
-		return Info->mMesh->FileLoad(PieceFile);
+		return Mesh->FileLoad(PieceFile);
 	}
 }
 
@@ -642,17 +738,27 @@ void lcPiecesLibrary::SaveCacheFile()
 		if (!CacheFile.OpenWrite(mCacheFileName, false))
 			return;
 
-		struct stat LibraryStat;
+		struct stat OfficialStat, UnofficialStat;
 
-		if (stat(mLibraryFileName, &LibraryStat) != 0)
+		if (stat(mLibraryFileName, &OfficialStat) != 0)
 			return;
+
+		lcuint64 CheckSum[4] =
+		{
+			(lcuint64)OfficialStat.st_size, (lcuint64)OfficialStat.st_mtime, 0, 0
+		};
+
+		if (stat(mUnofficialFileName, &UnofficialStat) == 0)
+		{
+			CheckSum[2] = (lcuint64)UnofficialStat.st_size;
+			CheckSum[3] = (lcuint64)UnofficialStat.st_mtime;
+		}
 
 		lcMemFile VersionFile;
 
 		VersionFile.WriteU32(LC_LIBRARY_CACHE_VERSION);
 		VersionFile.WriteU32(LC_LIBRARY_CACHE_ARCHIVE);
-		VersionFile.WriteU64(LibraryStat.st_size);
-		VersionFile.WriteU64(LibraryStat.st_mtime);
+		VersionFile.WriteU64(CheckSum, 4);
 
 		CacheFile.AddFile("version", VersionFile);
 	}
@@ -673,12 +779,13 @@ void lcPiecesLibrary::SaveCacheFile()
 	{
 		PieceInfo* Info = mPieces[PieceIdx];
 
-		if (Info->mFlags & LC_PIECE_PLACEHOLDER)
+		if (Info->mFlags & LC_PIECE_PLACEHOLDER || Info->mFlags & LC_PIECE_MODEL)
 			continue;
 
 		bool Cached = (Info->mFlags & LC_PIECE_CACHED) != 0;
+		lcMesh* Mesh = Info->GetMesh();
 
-		if (Info->mMesh)
+		if (Mesh)
 			Info->mFlags |= LC_PIECE_CACHED;
 
 		int Length = strlen(Info->m_strDescription);
@@ -690,20 +797,19 @@ void lcPiecesLibrary::SaveCacheFile()
 
 		NumPieces++;
 
-		if (Cached || !Info->mMesh)
+		if (Cached || !Mesh)
 			continue;
 
 		lcMemFile PieceFile;
 
-		Info->mMesh->FileSave(PieceFile);
+		Mesh->FileSave(PieceFile);
 		CacheFile.AddFile(Info->m_strName, PieceFile);
 
 		Info->mFlags |= LC_PIECE_CACHED;
-		Info->Release();
 	}
 
 	IndexFile.Seek(0, SEEK_SET);
-	IndexFile.WriteU32(mPieces.GetSize());
+	IndexFile.WriteU32(NumPieces);
 
 	CacheFile.AddFile("index", IndexFile);
 
@@ -748,14 +854,14 @@ bool lcPiecesLibrary::LoadPiece(PieceInfo* Info)
 	lcLibraryMeshData MeshData;
 	lcArray<lcLibraryTextureMap> TextureStack;
 
-	if (mZipFile)
+	if (Info->mZipFileType != LC_NUM_ZIPFILES && mZipFiles[Info->mZipFileType])
 	{
 		if (LoadCachePiece(Info))
 			return true;
 
 		lcMemFile PieceFile;
 
-		if (!mZipFile->ExtractFile(Info->mZipFileIndex, PieceFile))
+		if (!mZipFiles[Info->mZipFileType]->ExtractFile(Info->mZipFileIndex, PieceFile))
 			return false;
 
 		const char* OldLocale = setlocale(LC_NUMERIC, "C");
@@ -787,6 +893,16 @@ bool lcPiecesLibrary::LoadPiece(PieceInfo* Info)
 			return false;
 	}
 
+	CreateMesh(Info, MeshData);
+
+	if (mZipFiles[LC_ZIPFILE_OFFICIAL])
+		mSaveCache = true;
+
+	return true;
+}
+
+void lcPiecesLibrary::CreateMesh(PieceInfo* Info, lcLibraryMeshData& MeshData)
+{
 	lcMesh* Mesh = new lcMesh();
 
 	int NumIndices = 0;
@@ -813,7 +929,7 @@ bool lcPiecesLibrary::LoadPiece(PieceInfo* Info)
 		const lcVector3& SrcPosition = MeshData.mVertices[VertexIdx].Position;
 		lcVector3& DstPosition = DstVertex.Position;
 
-		DstPosition = lcVector3(SrcPosition.x / 25.0f, SrcPosition.z / 25.0f, -SrcPosition.y / 25.0f);
+		DstPosition = lcVector3(SrcPosition.x, SrcPosition.z, -SrcPosition.y);
 
 		Min.x = lcMin(Min.x, DstPosition.x);
 		Min.y = lcMin(Min.y, DstPosition.y);
@@ -833,7 +949,7 @@ bool lcPiecesLibrary::LoadPiece(PieceInfo* Info)
 		const lcVector3& SrcPosition = SrcVertex.Position;
 		lcVector3& DstPosition = DstVertex.Position;
 
-		DstPosition = lcVector3(SrcPosition.x / 25.0f, SrcPosition.z / 25.0f, -SrcPosition.y / 25.0f);
+		DstPosition = lcVector3(SrcPosition.x, SrcPosition.z, -SrcPosition.y);
 		DstVertex.TexCoord = SrcVertex.TexCoord;
 
 		Min.x = lcMin(Min.x, DstPosition.x);
@@ -904,13 +1020,7 @@ bool lcPiecesLibrary::LoadPiece(PieceInfo* Info)
 	}
 
 	Mesh->UpdateBuffers();
-	Info->mMesh = Mesh;
-	Info->AddRef();
-
-	if (mZipFile)
-		mSaveCache = true;
-
-	return true;
+	Info->SetMesh(Mesh);
 }
 
 bool lcPiecesLibrary::LoadTexture(lcTexture* Texture)
@@ -920,14 +1030,15 @@ bool lcPiecesLibrary::LoadTexture(lcTexture* Texture)
 	strcpy(Name, Texture->mName);
 	strlwr(Name);
 
-	if (mZipFile)
+	if (mZipFiles[LC_ZIPFILE_OFFICIAL])
 	{
 		lcMemFile TextureFile;
 
 		sprintf(FileName, "ldraw/parts/textures/%s.png", Name);
 
-		if (!mZipFile->ExtractFile(FileName, TextureFile))
-			return false;
+		if (!mZipFiles[LC_ZIPFILE_UNOFFICIAL] || !mZipFiles[LC_ZIPFILE_UNOFFICIAL]->ExtractFile(FileName, TextureFile))
+			if (!mZipFiles[LC_ZIPFILE_OFFICIAL]->ExtractFile(FileName, TextureFile))
+				return false;
 
 		if (!Texture->Load(TextureFile))
 			return false;
@@ -943,7 +1054,7 @@ bool lcPiecesLibrary::LoadTexture(lcTexture* Texture)
 	return true;
 }
 
-int lcPiecesLibrary::FindPrimitiveIndex(const char* Name)
+int lcPiecesLibrary::FindPrimitiveIndex(const char* Name) const
 {
 	for (int PrimitiveIndex = 0; PrimitiveIndex < mPrimitives.GetSize(); PrimitiveIndex++)
 		if (!strcmp(mPrimitives[PrimitiveIndex]->mName, Name))
@@ -957,11 +1068,11 @@ bool lcPiecesLibrary::LoadPrimitive(int PrimitiveIndex)
 	lcLibraryPrimitive* Primitive = mPrimitives[PrimitiveIndex];
 	lcArray<lcLibraryTextureMap> TextureStack;
 
-	if (mZipFile)
+	if (mZipFiles[LC_ZIPFILE_OFFICIAL])
 	{
 		lcMemFile PrimFile;
 
-		if (!mZipFile->ExtractFile(Primitive->mZipFileIndex, PrimFile))
+		if (!mZipFiles[Primitive->mZipFileType]->ExtractFile(Primitive->mZipFileIndex, PrimFile))
 			return false;
 
 		if (!ReadMeshData(PrimFile, lcMatrix44Identity(), 16, TextureStack, Primitive->mMeshData))
@@ -1202,11 +1313,11 @@ bool lcPiecesLibrary::ReadMeshData(lcFile& File, const lcMatrix44& CurrentTransf
 						MeshData.AddMeshData(Primitive->mMeshData, IncludeTransform, ColorCode, TextureMap);
 					else
 					{
-						if (mZipFile)
+						if (mZipFiles[LC_ZIPFILE_OFFICIAL])
 						{
 							lcMemFile IncludeFile;
 
-							if (!mZipFile->ExtractFile(Primitive->mZipFileIndex, IncludeFile))
+							if (!mZipFiles[Primitive->mZipFileType]->ExtractFile(Primitive->mZipFileIndex, IncludeFile))
 								continue;
 
 							if (!ReadMeshData(IncludeFile, IncludeTransform, ColorCode, TextureStack, MeshData))
@@ -1242,11 +1353,11 @@ bool lcPiecesLibrary::ReadMeshData(lcFile& File, const lcMatrix44& CurrentTransf
 						if (strcmp(Info->m_strName, FileName))
 							continue;
 
-						if (mZipFile)
+						if (mZipFiles[LC_ZIPFILE_OFFICIAL])
 						{
 							lcMemFile IncludeFile;
 
-							if (!mZipFile->ExtractFile(Info->mZipFileIndex, IncludeFile))
+							if (!mZipFiles[Info->mZipFileType]->ExtractFile(Info->mZipFileIndex, IncludeFile))
 								break;
 
 							if (!ReadMeshData(IncludeFile, IncludeTransform, ColorCode, TextureStack, MeshData))
@@ -1338,19 +1449,15 @@ bool lcPiecesLibrary::ReadMeshData(lcFile& File, const lcMatrix44& CurrentTransf
 	return true;
 }
 
-void lcLibraryMeshData::ResequenceQuad(lcVector3* Vertices, int a, int b, int c, int d)
+void lcLibraryMeshData::ResequenceQuad(int* Indices, int a, int b, int c, int d)
 {
-	lcVector3 TempVertices[4];
-
-	memcpy(TempVertices, Vertices, sizeof(TempVertices));
-
-	Vertices[0] = TempVertices[a];
-	Vertices[1] = TempVertices[b];
-	Vertices[2] = TempVertices[c];
-	Vertices[3] = TempVertices[d];
+	Indices[0] = a;
+	Indices[1] = b;
+	Indices[2] = c;
+	Indices[3] = d;
 }
 
-void lcLibraryMeshData::TestQuad(lcVector3* Vertices)
+void lcLibraryMeshData::TestQuad(int* QuadIndices, const lcVector3* Vertices)
 {
 	lcVector3 v01 = Vertices[1] - Vertices[0];
 	lcVector3 v02 = Vertices[2] - Vertices[0];
@@ -1368,20 +1475,20 @@ void lcLibraryMeshData::TestQuad(lcVector3* Vertices)
 	if (lcDot(lcCross(v12, v01), lcCross(v01, v13)) > 0.0f)
 	{
 		if (-lcDot(lcCross(v02, v12), lcCross(v12, v23)) > 0.0f)
-			ResequenceQuad(Vertices, 1, 2, 3, 0);
+			ResequenceQuad(QuadIndices, 1, 2, 3, 0);
 		else
-			ResequenceQuad(Vertices, 0, 3, 1, 2);
+			ResequenceQuad(QuadIndices, 0, 3, 1, 2);
 	}
 	else
 	{
 		if (-lcDot(lcCross(v02, v12), lcCross(v12, v23)) > 0.0f)
-			ResequenceQuad(Vertices, 0, 1, 3, 2);
+			ResequenceQuad(QuadIndices, 0, 1, 3, 2);
 		else
-			ResequenceQuad(Vertices, 1, 2, 3, 0);
+			ResequenceQuad(QuadIndices, 1, 2, 3, 0);
 	}
 }
 
-void lcLibraryMeshData::AddLine(int LineType, lcuint32 ColorCode, lcVector3* Vertices)
+void lcLibraryMeshData::AddLine(int LineType, lcuint32 ColorCode, const lcVector3* Vertices)
 {
 	lcLibraryMeshSection* Section = NULL;
 	int SectionIdx;
@@ -1402,14 +1509,16 @@ void lcLibraryMeshData::AddLine(int LineType, lcuint32 ColorCode, lcVector3* Ver
 		mSections.Add(Section);
 	}
 
+	int QuadIndices[4] = { 0, 1, 2, 3 };
+
 	if (LineType == 4)
-		TestQuad(Vertices);
+		TestQuad(QuadIndices, Vertices);
 
 	int Indices[4] = { -1, -1, -1, -1 };
 
 	for (int IndexIdx = 0; IndexIdx < LineType; IndexIdx++)
 	{
-		const lcVector3& Position = Vertices[IndexIdx];
+		const lcVector3& Position = Vertices[QuadIndices[IndexIdx]];
 
 		for (int VertexIdx = mVertices.GetSize() - 1; VertexIdx >= 0; VertexIdx--)
 		{
@@ -1458,7 +1567,7 @@ void lcLibraryMeshData::AddLine(int LineType, lcuint32 ColorCode, lcVector3* Ver
 	}
 }
 
-void lcLibraryMeshData::AddTexturedLine(int LineType, lcuint32 ColorCode, const lcLibraryTextureMap& Map, lcVector3* Vertices)
+void lcLibraryMeshData::AddTexturedLine(int LineType, lcuint32 ColorCode, const lcLibraryTextureMap& Map, const lcVector3* Vertices)
 {
 	lcLibraryMeshSection* Section = NULL;
 	int SectionIdx;
@@ -1479,14 +1588,16 @@ void lcLibraryMeshData::AddTexturedLine(int LineType, lcuint32 ColorCode, const 
 		mSections.Add(Section);
 	}
 
+	int QuadIndices[4] = { 0, 1, 2, 3 };
+
 	if (LineType == 4)
-		TestQuad(Vertices);
+		TestQuad(QuadIndices, Vertices);
 
 	int Indices[4] = { -1, -1, -1, -1 };
 
 	for (int IndexIdx = 0; IndexIdx < LineType; IndexIdx++)
 	{
-		const lcVector3& Position = Vertices[IndexIdx];
+		const lcVector3& Position = Vertices[QuadIndices[IndexIdx]];
 		lcVector2 TexCoord(lcDot3(lcVector3(Position.x, Position.y, Position.z), Map.Params[0]) + Map.Params[0].w,
 						   lcDot3(lcVector3(Position.x, Position.y, Position.z), Map.Params[1]) + Map.Params[1].w);
 
@@ -1541,6 +1652,7 @@ void lcLibraryMeshData::AddMeshData(const lcLibraryMeshData& Data, const lcMatri
 {
 	int VertexCount = Data.mVertices.GetSize();
 	lcArray<lcuint32> IndexRemap(VertexCount);
+	const float DistanceEpsilon = 0.05f;
 
 	if (!TextureMap)
 	{
@@ -1556,7 +1668,7 @@ void lcLibraryMeshData::AddMeshData(const lcLibraryMeshData& Data, const lcMatri
 				lcVertex& DstVertex = mVertices[DstVertexIdx];
 
 //				if (Vertex == mVertices[DstVertexIdx])
-				if (fabsf(Position.x - DstVertex.Position.x) < 0.1f && fabsf(Position.y - DstVertex.Position.y) < 0.1f && fabsf(Position.z - DstVertex.Position.z) < 0.1f)
+				if (fabsf(Position.x - DstVertex.Position.x) < DistanceEpsilon && fabsf(Position.y - DstVertex.Position.y) < DistanceEpsilon && fabsf(Position.z - DstVertex.Position.z) < DistanceEpsilon)
 				{
 					Index = DstVertexIdx;
 					break;
@@ -1590,7 +1702,7 @@ void lcLibraryMeshData::AddMeshData(const lcLibraryMeshData& Data, const lcMatri
 				lcVertexTextured& DstVertex = mTexturedVertices[DstVertexIdx];
 
 //				if (Vertex == mTexturedVertices[DstVertexIdx])
-				if (fabsf(Position.x - DstVertex.Position.x) < 0.1f && fabsf(Position.y - DstVertex.Position.y) < 0.1f && fabsf(Position.z - DstVertex.Position.z) < 0.1f &&
+				if (fabsf(Position.x - DstVertex.Position.x) < DistanceEpsilon && fabsf(Position.y - DstVertex.Position.y) < DistanceEpsilon && fabsf(Position.z - DstVertex.Position.z) < DistanceEpsilon &&
 					fabsf(TexCoord.x - DstVertex.TexCoord.x) < 0.01f && fabsf(TexCoord.y - DstVertex.TexCoord.y) < 0.01f)
 				{
 					Index = DstVertexIdx;
@@ -1796,6 +1908,9 @@ void lcLibraryMeshData::AddMeshDataNoDuplicateCheck(const lcLibraryMeshData& Dat
 
 bool lcPiecesLibrary::PieceInCategory(PieceInfo* Info, const String& CategoryKeywords) const
 {
+	if (Info->IsTemporary())
+		return false;
+
 	String PieceName;
 	if (Info->m_strDescription[0] == '~' || Info->m_strDescription[0] == '_')
 		PieceName = Info->m_strDescription + 1;
@@ -1811,13 +1926,10 @@ bool lcPiecesLibrary::PieceInCategory(PieceInfo* Info, const String& CategoryKey
 
 void lcPiecesLibrary::GetCategoryEntries(int CategoryIndex, bool GroupPieces, lcArray<PieceInfo*>& SinglePieces, lcArray<PieceInfo*>& GroupedPieces)
 {
-	if (gCategories[CategoryIndex].Name == "Search Results")
-		GroupPieces = false;
-
-	SearchPieces(gCategories[CategoryIndex].Keywords, GroupPieces, SinglePieces, GroupedPieces);
+	GetCategoryEntries(gCategories[CategoryIndex].Keywords, GroupPieces, SinglePieces, GroupedPieces);
 }
 
-void lcPiecesLibrary::SearchPieces(const String& CategoryKeywords, bool GroupPieces, lcArray<PieceInfo*>& SinglePieces, lcArray<PieceInfo*>& GroupedPieces)
+void lcPiecesLibrary::GetCategoryEntries(const String& CategoryKeywords, bool GroupPieces, lcArray<PieceInfo*>& SinglePieces, lcArray<PieceInfo*>& GroupedPieces)
 {
 	SinglePieces.RemoveAll();
 	GroupedPieces.RemoveAll();
@@ -1845,7 +1957,7 @@ void lcPiecesLibrary::SearchPieces(const String& CategoryKeywords, bool GroupPie
 			strcpy(ParentName, Info->m_strName);
 			*strchr(ParentName, 'P') = '\0';
 
-			Parent = FindPiece(ParentName, false);
+			Parent = FindPiece(ParentName, NULL, false);
 
 			if (Parent)
 			{
@@ -1874,6 +1986,36 @@ void lcPiecesLibrary::SearchPieces(const String& CategoryKeywords, bool GroupPie
 			if (Index == -1)
 				SinglePieces.Add(Info);
 		}
+	}
+}
+
+void lcPiecesLibrary::SearchPieces(const char* Keyword, lcArray<PieceInfo*>& Pieces) const
+{
+	Pieces.RemoveAll();
+
+	String LowerKeyword = Keyword;
+	LowerKeyword.MakeLower();
+
+	for (int PieceIdx = 0; PieceIdx < mPieces.GetSize(); PieceIdx++)
+	{
+		PieceInfo* Info = mPieces[PieceIdx];
+
+		char LowerName[sizeof(Info->m_strName)];
+		strcpy(LowerName, Info->m_strName);
+		strlwr(LowerName);
+
+		if (strstr(LowerName, LowerKeyword))
+		{
+			Pieces.Add(Info);
+			continue;
+		}
+
+		char LowerDescription[sizeof(Info->m_strDescription)];
+		strcpy(LowerDescription, Info->m_strDescription);
+		strlwr(LowerDescription);
+
+		if (strstr(LowerDescription, LowerKeyword))
+			Pieces.Add(Info);
 	}
 }
 
@@ -1911,279 +2053,52 @@ void lcPiecesLibrary::GetPatternedPieces(PieceInfo* Parent, lcArray<PieceInfo*>&
 	}
 }
 
-void lcPiecesLibrary::CreateBuiltinPieces()
+bool lcPiecesLibrary::LoadBuiltinPieces()
 {
-	const char* Pieces[][2] =
+	QResource Resource(":/resources/library.zip");
+
+	if (!Resource.isValid())
+		return false;
+
+	lcMemFile* File = new lcMemFile();
+	File->WriteBuffer(Resource.data(), Resource.size());
+
+	if (!OpenArchive(File, "builtin", LC_ZIPFILE_OFFICIAL))
 	{
-		{ "3005",  "Brick  1 x  1" },
-		{ "3004",  "Brick  1 x  2" },
-		{ "3622",  "Brick  1 x  3" },
-		{ "3010",  "Brick  1 x  4" },
-		{ "3009",  "Brick  1 x  6" },
-		{ "3008",  "Brick  1 x  8" },
-		{ "6111",  "Brick  1 x 10" },
-		{ "6112",  "Brick  1 x 12" },
-		{ "2465",  "Brick  1 x 16" },
-		{ "3003",  "Brick  2 x  2" },
-		{ "3002",  "Brick  2 x  3" },
-		{ "3001",  "Brick  2 x  4" },
-		{ "2456",  "Brick  2 x  6" },
-		{ "3007",  "Brick  2 x  8" },
-		{ "3006",  "Brick  2 x 10" },
-		{ "2356",  "Brick  4 x  6" },
-		{ "6212",  "Brick  4 x 10" },
-		{ "4202",  "Brick  4 x 12" },
-		{ "30400", "Brick  4 x 18" },
-		{ "4201",  "Brick  8 x  8" },
-		{ "4204",  "Brick  8 x 16" },
-		{ "733",   "Brick 10 x 10" },
-		{ "3024",  "Plate  1 x  1" },
-		{ "3023",  "Plate  1 x  2" },
-		{ "3623",  "Plate  1 x  3" },
-		{ "3710",  "Plate  1 x  4" },
-		{ "3666",  "Plate  1 x  6" },
-		{ "3460",  "Plate  1 x  8" },
-		{ "4477",  "Plate  1 x 10" },
-		{ "60479", "Plate  1 x 12" },
-		{ "3022",  "Plate  2 x  2" },
-		{ "3021",  "Plate  2 x  3" },
-		{ "3020",  "Plate  2 x  4" },
-		{ "3795",  "Plate  2 x  6" },
-		{ "3034",  "Plate  2 x  8" },
-		{ "3832",  "Plate  2 x 10" },
-		{ "2445",  "Plate  2 x 12" },
-		{ "91988", "Plate  2 x 14" },
-		{ "4282",  "Plate  2 x 16" },
-		{ "3031",  "Plate  4 x  4" },
-		{ "3032",  "Plate  4 x  6" },
-		{ "3035",  "Plate  4 x  8" },
-		{ "3030",  "Plate  4 x 10" },
-		{ "3029",  "Plate  4 x 12" },
-		{ "3958",  "Plate  6 x  6" },
-		{ "3036",  "Plate  6 x  8" },
-		{ "3033",  "Plate  6 x 10" },
-		{ "3028",  "Plate  6 x 12" },
-		{ "3456",  "Plate  6 x 14" },
-		{ "3027",  "Plate  6 x 16" },
-		{ "3026",  "Plate  6 x 24" },
-		{ "41539", "Plate  8 x  8" },
-		{ "728",   "Plate  8 x 11" },
-		{ "92438", "Plate  8 x 16" },
-	};
+		delete File;
+		return false;
+	}
 
-	for (unsigned int PieceIdx = 0; PieceIdx < sizeof(Pieces) / sizeof(Pieces[0]); PieceIdx++)
+	lcMemFile PieceFile;
+
+	mSaveCache = false;
+
+	for (int PieceInfoIndex = 0; PieceInfoIndex < mPieces.GetSize(); PieceInfoIndex++)
 	{
-		PieceInfo* Info = new PieceInfo(-1);
-		mPieces.Add(Info);
+		PieceInfo* Info = mPieces[PieceInfoIndex];
 
-		strncpy(Info->m_strName, Pieces[PieceIdx][0], sizeof(Info->m_strName));
-		Info->m_strName[sizeof(Info->m_strName) - 1] = 0;
+		mZipFiles[Info->mZipFileType]->ExtractFile(Info->mZipFileIndex, PieceFile, 256);
+		PieceFile.Seek(0, SEEK_END);
+		PieceFile.WriteU8(0);
 
-		strncpy(Info->m_strDescription, Pieces[PieceIdx][1], sizeof(Info->m_strDescription));
-		Info->m_strDescription[sizeof(Info->m_strDescription) - 1] = 0;
+		char* Src = (char*)PieceFile.mBuffer + 2;
+		char* Dst = Info->m_strDescription;
 
-		Info->mFlags = LC_PIECE_GENERATED;
+		for (;;)
+		{
+			if (*Src != '\r' && *Src != '\n' && *Src && Dst - Info->m_strDescription < (int)sizeof(Info->m_strDescription) - 1)
+			{
+				*Dst++ = *Src++;
+				continue;
+			}
+
+			*Dst = 0;
+			break;
+		}
 	}
 
 	lcLoadDefaultColors();
-
 	lcLoadDefaultCategories(true);
-	gMainWindow->UpdateCategories();
-}
 
-bool lcPiecesLibrary::GeneratePiece(PieceInfo* Info)
-{
-	const int StudSides = 16;
-
-	bool Brick = !strncmp(Info->m_strDescription, "Brick ", 6);
-	bool Plate = !strncmp(Info->m_strDescription, "Plate ", 6);
-
-	if (Brick || Plate)
-	{
-		int StudsX, StudsY;
-		float MinZ = Brick ? -0.96f : -0.32f;
-
-		sscanf(Info->m_strDescription + 6, "%d x %d", &StudsY, &StudsX);
-
-		int NumVertices = (StudSides * 2 + 1) * StudsX * StudsY + 16;
-		int NumIndices = ((StudSides * 3) * StudsX * StudsY + 28) * 3 + ((StudSides * 2) * StudsX * StudsY + 24) * 2;
-
-		Info->mFlags |= LC_PIECE_HAS_DEFAULT | LC_PIECE_HAS_LINES;
-
-		Info->m_fDimensions[0] = 0.4f * StudsX;
-		Info->m_fDimensions[1] = 0.4f * StudsY;
-		Info->m_fDimensions[2] = 0.16f;
-		Info->m_fDimensions[3] = -0.4f * StudsX;
-		Info->m_fDimensions[4] = -0.4f * StudsY;
-		Info->m_fDimensions[5] = MinZ;
-
-		lcMesh* Mesh = new lcMesh();
-		Mesh->Create(2, NumVertices, 0, NumIndices);
-
-		float* Verts = (float*)Mesh->mVertexBuffer.mData;
-		lcuint16* Indices = (lcuint16*)Mesh->mIndexBuffer.mData;
-
-		const lcVector3 OutBoxMin(-0.4f * StudsX, -0.4f * StudsY, MinZ);
-		const lcVector3 OutBoxMax(0.4f * StudsX, 0.4f * StudsY, 0.0f);
-
-		*Verts++ = OutBoxMin[0]; *Verts++ = OutBoxMin[1]; *Verts++ = OutBoxMin[2];
-		*Verts++ = OutBoxMin[0]; *Verts++ = OutBoxMax[1]; *Verts++ = OutBoxMin[2];
-		*Verts++ = OutBoxMax[0]; *Verts++ = OutBoxMax[1]; *Verts++ = OutBoxMin[2];
-		*Verts++ = OutBoxMax[0]; *Verts++ = OutBoxMin[1]; *Verts++ = OutBoxMin[2];
-		*Verts++ = OutBoxMin[0]; *Verts++ = OutBoxMin[1]; *Verts++ = OutBoxMax[2];
-		*Verts++ = OutBoxMin[0]; *Verts++ = OutBoxMax[1]; *Verts++ = OutBoxMax[2];
-		*Verts++ = OutBoxMax[0]; *Verts++ = OutBoxMax[1]; *Verts++ = OutBoxMax[2];
-		*Verts++ = OutBoxMax[0]; *Verts++ = OutBoxMin[1]; *Verts++ = OutBoxMax[2];
-
-		const lcVector3 InBoxMin(-0.4f * StudsX + 0.16f, -0.4f * StudsY + 0.16f, MinZ);
-		const lcVector3 InBoxMax(0.4f * StudsX - 0.16f, 0.4f * StudsY - 0.16f, -0.16f);
-
-		*Verts++ = InBoxMin[0]; *Verts++ = InBoxMin[1]; *Verts++ = InBoxMin[2];
-		*Verts++ = InBoxMin[0]; *Verts++ = InBoxMax[1]; *Verts++ = InBoxMin[2];
-		*Verts++ = InBoxMax[0]; *Verts++ = InBoxMax[1]; *Verts++ = InBoxMin[2];
-		*Verts++ = InBoxMax[0]; *Verts++ = InBoxMin[1]; *Verts++ = InBoxMin[2];
-		*Verts++ = InBoxMin[0]; *Verts++ = InBoxMin[1]; *Verts++ = InBoxMax[2];
-		*Verts++ = InBoxMin[0]; *Verts++ = InBoxMax[1]; *Verts++ = InBoxMax[2];
-		*Verts++ = InBoxMax[0]; *Verts++ = InBoxMax[1]; *Verts++ = InBoxMax[2];
-		*Verts++ = InBoxMax[0]; *Verts++ = InBoxMin[1]; *Verts++ = InBoxMax[2];
-
-		for (int x = 0; x < StudsX; x++)
-		{
-			for (int y = 0; y < StudsY; y++)
-			{
-				const lcVector3 Center(((float)StudsX / 2.0f - x) * 0.8f - 0.4f, ((float)StudsY / 2.0f - y) * 0.8f - 0.4f, 0.0f);
-
-				*Verts++ = Center[0]; *Verts++ = Center[1]; *Verts++ = 0.16f;
-
-				for (int Step = 0; Step < StudSides; Step++)
-	{
-					float s = Center[0] + sinf((float)Step / (float)StudSides * LC_2PI) * 0.24f;
-					float c = Center[1] + cosf((float)Step / (float)StudSides * LC_2PI) * 0.24f;
-
-					*Verts++ = s; *Verts++ = c; *Verts++ = 0.16f;
-					*Verts++ = s; *Verts++ = c; *Verts++ = 0.0f;
-				}
-			}
-	}
-
-		lcMeshSection* Section = &Mesh->mSections[0];
-		Section->ColorIndex = gDefaultColor;
-		Section->IndexOffset = 0;
-		Section->NumIndices = ((StudSides * 3) * StudsX * StudsY + 28) * 3;
-		Section->PrimitiveType = GL_TRIANGLES;
-		Section->Texture = NULL;
-
-		*Indices++ = 0; *Indices++ = 1; *Indices++ = 8;
-		*Indices++ = 1; *Indices++ = 8; *Indices++ = 9;
-
-		*Indices++ = 2; *Indices++ = 3; *Indices++ = 10;
-		*Indices++ = 3; *Indices++ = 10; *Indices++ = 11;
-
-		*Indices++ = 0; *Indices++ = 8; *Indices++ = 11;
-		*Indices++ = 0; *Indices++ = 11; *Indices++ = 3;
-
-		*Indices++ = 1; *Indices++ = 9; *Indices++ = 10;
-		*Indices++ = 1; *Indices++ = 10; *Indices++ = 2;
-
-		*Indices++ = 7; *Indices++ = 6; *Indices++ = 5;
-		*Indices++ = 7; *Indices++ = 5; *Indices++ = 4;
-
-		*Indices++ = 0; *Indices++ = 1; *Indices++ = 5;
-		*Indices++ = 0; *Indices++ = 5; *Indices++ = 4;
-
-		*Indices++ = 2; *Indices++ = 3; *Indices++ = 7;
-		*Indices++ = 2; *Indices++ = 7; *Indices++ = 6;
-
-		*Indices++ = 0; *Indices++ = 3; *Indices++ = 7;
-		*Indices++ = 0; *Indices++ = 7; *Indices++ = 4;
-
-		*Indices++ = 1; *Indices++ = 2; *Indices++ = 6;
-		*Indices++ = 1; *Indices++ = 6; *Indices++ = 5;
-
-		*Indices++ = 15; *Indices++ = 14; *Indices++ = 13;
-		*Indices++ = 15; *Indices++ = 13; *Indices++ = 12;
-
-		*Indices++ = 8; *Indices++ = 9; *Indices++ = 13;
-		*Indices++ = 8; *Indices++ = 13; *Indices++ = 12;
-
-		*Indices++ = 10; *Indices++ = 11; *Indices++ = 15;
-		*Indices++ = 10; *Indices++ = 15; *Indices++ = 14;
-
-		*Indices++ = 8; *Indices++ = 11; *Indices++ = 15;
-		*Indices++ = 8; *Indices++ = 15; *Indices++ = 12;
-
-		*Indices++ = 9; *Indices++ = 10; *Indices++ = 14;
-		*Indices++ = 9; *Indices++ = 14; *Indices++ = 13;
-
-		for (int x = 0; x < StudsX; x++)
-	{
-			for (int y = 0; y < StudsY; y++)
-		{
-				int CenterIndex = 16 + (StudSides * 2 + 1) * (x + StudsX * y);
-				int BaseIndex = CenterIndex + 1;
-
-				for (int Step = 0; Step < StudSides; Step++)
-	{
-					*Indices++ = CenterIndex;
-					*Indices++ = BaseIndex + Step * 2;
-					*Indices++ = BaseIndex + ((Step + 1) % StudSides) * 2;
-
-					*Indices++ = BaseIndex + Step * 2;
-					*Indices++ = BaseIndex + Step * 2 + 1;
-					*Indices++ = BaseIndex + ((Step + 1) % StudSides) * 2;
-
-					*Indices++ = BaseIndex + ((Step + 1) % StudSides) * 2;
-					*Indices++ = BaseIndex + Step * 2 + 1;
-					*Indices++ = BaseIndex + ((Step + 1) % StudSides) * 2 + 1;
-				}
-			}
-	}
-
-		Section = &Mesh->mSections[1];
-		Section->ColorIndex = gEdgeColor;
-		Section->IndexOffset = (char*)Indices - (char*)Mesh->mIndexBuffer.mData;
-		Section->NumIndices = ((StudSides * 2) * StudsX * StudsY + 24) * 2;
-		Section->PrimitiveType = GL_LINES;
-		Section->Texture = NULL;
-
-		*Indices++ = 0; *Indices++ = 1; *Indices++ = 1; *Indices++ = 2;
-		*Indices++ = 2; *Indices++ = 3; *Indices++ = 3; *Indices++ = 0;
-
-		*Indices++ = 4; *Indices++ = 5; *Indices++ = 5; *Indices++ = 6;
-		*Indices++ = 6; *Indices++ = 7; *Indices++ = 7; *Indices++ = 4;
-
-		*Indices++ = 0; *Indices++ = 4; *Indices++ = 1; *Indices++ = 5;
-		*Indices++ = 2; *Indices++ = 6; *Indices++ = 3; *Indices++ = 7;
-
-		*Indices++ = 8; *Indices++ = 9; *Indices++ = 9; *Indices++ = 10;
-		*Indices++ = 10; *Indices++ = 11; *Indices++ = 11; *Indices++ = 8;
-
-		*Indices++ = 12; *Indices++ = 13; *Indices++ = 13; *Indices++ = 14;
-		*Indices++ = 14; *Indices++ = 15; *Indices++ = 15; *Indices++ = 12;
-
-		*Indices++ = 8; *Indices++ = 12; *Indices++ = 9; *Indices++ = 13;
-		*Indices++ = 10; *Indices++ = 14; *Indices++ = 11; *Indices++ = 15;
-
-		for (int x = 0; x < StudsX; x++)
-		{
-			for (int y = 0; y < StudsY; y++)
-			{
-				int BaseIndex = 16 + (StudSides * 2 + 1) * (x + StudsX * y) + 1;
-
-				for (int Step = 0; Step < StudSides; Step++)
-				{
-					*Indices++ = BaseIndex + Step * 2;
-					*Indices++ = BaseIndex + ((Step + 1) % StudSides) * 2;
-
-					*Indices++ = BaseIndex + Step * 2 + 1;
-					*Indices++ = BaseIndex + ((Step + 1) % StudSides) * 2 + 1;
-				}
-			}
-		}
-
-		Mesh->UpdateBuffers();
-		Info->mMesh = Mesh;
-	}
-
-	return false;
+	return true;
 }

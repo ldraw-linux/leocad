@@ -2,7 +2,9 @@
 #include "lc_profile.h"
 #include "lc_application.h"
 #include "image.h"
+#include "lc_model.h"
 #include "project.h"
+#include "system.h"
 
 lcProfileEntry::lcProfileEntry(const char* Section, const char* Key, int DefaultValue)
 {
@@ -46,8 +48,7 @@ lcProfileEntry::lcProfileEntry(const char* Section, const char* Key)
 
 lcProfileEntry gProfileEntries[LC_NUM_PROFILE_KEYS] =
 {
-	lcProfileEntry("Settings", "Snap", LC_DRAW_SNAP_A | LC_DRAW_SNAP_XYZ),           // LC_PROFILE_SNAP
-	lcProfileEntry("Settings", "AngleSnap", 30),                                     // LC_PROFILE_ANGLE_SNAP
+	lcProfileEntry("Settings", "FixedAxes", false),                                  // LC_PROFILE_FIXED_AXES
 	lcProfileEntry("Settings", "LineWidth", 1.0f),                                   // LC_PROFILE_LINE_WIDTH
 	lcProfileEntry("Settings", "LightingMode", LC_LIGHTING_FLAT),                    // LC_PROFILE_LIGHTING_MODE
 	lcProfileEntry("Settings", "DrawAxes", 0),                                       // LC_PROFILE_DRAW_AXES
@@ -72,7 +73,7 @@ lcProfileEntry gProfileEntries[LC_NUM_PROFILE_KEYS] =
 	lcProfileEntry("Settings", "MouseSensitivity", 11),                              // LC_PROFILE_MOUSE_SENSITIVITY
 	lcProfileEntry("Settings", "ImageWidth", 1280),                                  // LC_PROFILE_IMAGE_WIDTH
 	lcProfileEntry("Settings", "ImageHeight", 720),                                  // LC_PROFILE_IMAGE_HEIGHT
-	lcProfileEntry("Settings", "ImageOptions", LC_IMAGE_PNG | LC_IMAGE_TRANSPARENT), // LC_PROFILE_IMAGE_OPTIONS
+	lcProfileEntry("Settings", "ImageExtension", ".png"),                            // LC_PROFILE_IMAGE_EXTENSION
 	lcProfileEntry("Settings", "PrintRows", 1),                                      // LC_PROFILE_PRINT_ROWS
 	lcProfileEntry("Settings", "PrintColumns", 1),                                   // LC_PROFILE_PRINT_COLUMNS
 
@@ -102,3 +103,113 @@ lcProfileEntry gProfileEntries[LC_NUM_PROFILE_KEYS] =
 	lcProfileEntry("POVRay", "LGEOPath", ""),                                        // LC_PROFILE_POVRAY_LGEO_PATH
 	lcProfileEntry("POVRay", "Render", 1),                                           // LC_PROFILE_POVRAY_RENDER
 };
+
+void lcRemoveProfileKey(LC_PROFILE_KEY Key)
+{
+	lcProfileEntry& Entry = gProfileEntries[Key];
+	QSettings Settings;
+
+	Settings.remove(QString("%1/%2").arg(Entry.mSection, Entry.mKey));
+}
+
+int lcGetDefaultProfileInt(LC_PROFILE_KEY Key)
+{
+	return gProfileEntries[Key].mDefault.IntValue;
+}
+
+float lcGetDefaultProfileFloat(LC_PROFILE_KEY Key)
+{
+	return gProfileEntries[Key].mDefault.FloatValue;
+}
+
+QString lcGetDefaultProfileString(LC_PROFILE_KEY Key)
+{
+	return QString::fromLatin1(gProfileEntries[Key].mDefault.StringValue);
+}
+
+int lcGetProfileInt(LC_PROFILE_KEY Key)
+{
+	lcProfileEntry& Entry = gProfileEntries[Key];
+	QSettings Settings;
+
+	LC_ASSERT(Entry.mType == LC_PROFILE_ENTRY_INT);
+
+	return Settings.value(QString("%1/%2").arg(Entry.mSection, Entry.mKey), Entry.mDefault.IntValue).toInt();
+}
+
+float lcGetProfileFloat(LC_PROFILE_KEY Key)
+{
+	lcProfileEntry& Entry = gProfileEntries[Key];
+	QSettings Settings;
+
+	LC_ASSERT(Entry.mType == LC_PROFILE_ENTRY_FLOAT);
+
+	return Settings.value(QString("%1/%2").arg(Entry.mSection, Entry.mKey), Entry.mDefault.FloatValue).toFloat();
+}
+
+QString lcGetProfileString(LC_PROFILE_KEY Key)
+{
+	lcProfileEntry& Entry = gProfileEntries[Key];
+	QSettings Settings;
+
+	LC_ASSERT(Entry.mType == LC_PROFILE_ENTRY_STRING);
+
+	return Settings.value(QString("%1/%2").arg(Entry.mSection, Entry.mKey), Entry.mDefault.StringValue).toString();
+}
+
+void lcGetProfileBuffer(LC_PROFILE_KEY Key, lcMemFile& Buffer)
+{
+	lcProfileEntry& Entry = gProfileEntries[Key];
+	QSettings Settings;
+	QByteArray Value;
+
+	LC_ASSERT(Entry.mType == LC_PROFILE_ENTRY_BUFFER);
+
+	Value = Settings.value(QString("%1/%2").arg(Entry.mSection, Entry.mKey)).toByteArray();
+
+	Buffer.Seek(0, SEEK_SET);
+	Buffer.SetLength(Value.size());
+	Buffer.WriteBuffer(Value.constData(), Value.size());
+	Buffer.Seek(0, SEEK_SET);
+}
+
+void lcSetProfileInt(LC_PROFILE_KEY Key, int Value)
+{
+	lcProfileEntry& Entry = gProfileEntries[Key];
+	QSettings Settings;
+
+	LC_ASSERT(Entry.mType == LC_PROFILE_ENTRY_INT);
+
+	Settings.setValue(QString("%1/%2").arg(Entry.mSection, Entry.mKey), Value);
+}
+
+void lcSetProfileFloat(LC_PROFILE_KEY Key, float Value)
+{
+	lcProfileEntry& Entry = gProfileEntries[Key];
+	QSettings Settings;
+
+	LC_ASSERT(Entry.mType == LC_PROFILE_ENTRY_FLOAT);
+
+	Settings.setValue(QString("%1/%2").arg(Entry.mSection, Entry.mKey), Value);
+}
+
+void lcSetProfileString(LC_PROFILE_KEY Key, const QString& Value)
+{
+	lcProfileEntry& Entry = gProfileEntries[Key];
+	QSettings Settings;
+
+	LC_ASSERT(Entry.mType == LC_PROFILE_ENTRY_STRING);
+
+	Settings.setValue(QString("%1/%2").arg(Entry.mSection, Entry.mKey), Value);
+}
+
+void lcSetProfileBuffer(LC_PROFILE_KEY Key, const lcMemFile& Buffer)
+{
+	lcProfileEntry& Entry = gProfileEntries[Key];
+	QSettings Settings;
+	QByteArray Value = QByteArray::fromRawData((const char*)Buffer.mBuffer, Buffer.GetLength());
+
+	LC_ASSERT(Entry.mType == LC_PROFILE_ENTRY_BUFFER);
+
+	Settings.setValue(QString("%1/%2").arg(Entry.mSection, Entry.mKey), Value);
+}

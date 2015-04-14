@@ -6,142 +6,79 @@
 #include <stdio.h>
 #include <math.h>
 #include "light.h"
+#include "camera.h"
+#include "view.h"
+#include "lc_application.h"
+#include "lc_context.h"
 
-static LC_OBJECT_KEY_INFO light_key_info[LC_LK_COUNT] =
-{
-	{ "Light Position", 3, LC_LK_POSITION },
-	{ "Light Target", 3, LC_LK_TARGET },
-	{ "Ambient Color", 3, LC_LK_AMBIENT_COLOR },
-	{ "Diffuse Color", 3, LC_LK_DIFFUSE_COLOR },
-	{ "Specular Color", 3, LC_LK_SPECULAR_COLOR },
-	{ "Constant Attenuation", 1, LC_LK_CONSTANT_ATTENUATION },
-	{ "Linear Attenuation", 1, LC_LK_LINEAR_ATTENUATION },
-	{ "Quadratic Attenuation", 1, LC_LK_QUADRATIC_ATTENUATION },
-	{ "Spot Cutoff", 1, LC_LK_SPOT_CUTOFF },
-	{ "Spot Exponent", 1, LC_LK_SPOT_EXPONENT }
-};
-
-// =============================================================================
-// LightTarget class
-
-LightTarget::LightTarget(Light *pParent)
-	: Object(LC_OBJECT_LIGHT_TARGET)
-{
-	m_pParent = pParent;
-	/*
-	strcpy(m_strName, pParent->GetName());
-	m_strName[LC_OBJECT_NAME_LEN-8] = '\0';
-	strcat(m_strName, ".Target");
-	*/
-}
-
-LightTarget::~LightTarget()
-{
-}
-
-void LightTarget::MinIntersectDist(lcClickLine* ClickLine)
-{
-	lcVector3 Min = lcVector3(-0.2f, -0.2f, -0.2f);
-	lcVector3 Max = lcVector3(0.2f, 0.2f, 0.2f);
-
-	lcMatrix44 WorldLight = ((Light*)m_pParent)->mWorldLight;
-	WorldLight.SetTranslation(lcMul30(-((Light*)m_pParent)->mTargetPosition, WorldLight));
-
-	lcVector3 Start = lcMul31(ClickLine->Start, WorldLight);
-	lcVector3 End = lcMul31(ClickLine->End, WorldLight);
-
-	float Dist;
-	if (lcBoundingBoxRayMinIntersectDistance(Min, Max, Start, End, &Dist, NULL) && (Dist < ClickLine->MinDist))
-	{
-		ClickLine->Closest = this;
-		ClickLine->MinDist = Dist;
-	}
-}
-
-void LightTarget::Select(bool bSelecting, bool bFocus, bool bMultiple)
-{
-	m_pParent->SelectTarget(bSelecting, bFocus, bMultiple);
-}
-
-const char* LightTarget::GetName() const
-{
-	return m_pParent->GetName();
-}
-
-// =============================================================================
-// Light class
+#define LC_LIGHT_POSITION_EDGE 7.5f
+#define LC_LIGHT_TARGET_EDGE 5.0f
+#define LC_LIGHT_SPHERE_RADIUS 5.0f
 
 // New omni light.
-Light::Light(float px, float py, float pz)
-	: Object(LC_OBJECT_LIGHT)
+lcLight::lcLight(float px, float py, float pz)
+	: lcObject(LC_OBJECT_LIGHT)
 {
-	Initialize();
-
-	float pos[] = { px, py, pz }, target[] = { 0, 0, 0 };
-
-	ChangeKey(1, true, pos, LC_LK_POSITION);
-	ChangeKey(1, true, target, LC_LK_TARGET);
-
+	Initialize(lcVector3(px, py, pz), lcVector3(0.0f, 0.0f, 0.0f));
 	UpdatePosition(1);
 }
 
 // New directional or spot light.
-Light::Light(float px, float py, float pz, float tx, float ty, float tz)
-	: Object(LC_OBJECT_LIGHT)
+lcLight::lcLight(float px, float py, float pz, float tx, float ty, float tz)
+	: lcObject(LC_OBJECT_LIGHT)
 {
-	Initialize();
-
-	float pos[] = { px, py, pz }, target[] = { tx, ty, tz };
-
-	ChangeKey(1, true, pos, LC_LK_POSITION);
-	ChangeKey(1, true, target, LC_LK_TARGET);
-
-	m_pTarget = new LightTarget(this);
-
+	Initialize(lcVector3(px, py, pz), lcVector3(tx, ty, tz));
+	mState |= LC_LIGHT_SPOT;
 	UpdatePosition(1);
 }
 
-void Light::Initialize()
+void lcLight::Initialize(const lcVector3& Position, const lcVector3& TargetPosition)
 {
-	m_bEnabled = true;
-	m_pNext = NULL;
-	m_nState = 0;
-	m_pTarget = NULL;
+	mState = 0;
 	memset(m_strName, 0, sizeof(m_strName));
 
-	mAmbientColor[3] = 1.0f;
-	mDiffuseColor[3] = 1.0f;
-	mSpecularColor[3] = 1.0f;
-
-	float *values[] = { mPosition, mTargetPosition, mAmbientColor, mDiffuseColor, mSpecularColor,
-	                    &mConstantAttenuation, &mLinearAttenuation, &mQuadraticAttenuation, &mSpotCutoff, &mSpotExponent };
-	RegisterKeys(values, light_key_info, LC_LK_COUNT);
-
-	// set the default values
-	float ambient[] = { 0, 0, 0 }, diffuse[] = { 0.8f, 0.8f, 0.8f }, specular[] = { 1, 1, 1 };
-	float constant = 1, linear = 0, quadratic = 0, cutoff = 30, exponent = 0;
-
-	ChangeKey(1, true, ambient, LC_LK_AMBIENT_COLOR);
-	ChangeKey(1, true, diffuse, LC_LK_DIFFUSE_COLOR);
-	ChangeKey(1, true, specular, LC_LK_SPECULAR_COLOR);
-	ChangeKey(1, true, &constant, LC_LK_CONSTANT_ATTENUATION);
-	ChangeKey(1, true, &linear, LC_LK_LINEAR_ATTENUATION);
-	ChangeKey(1, true, &quadratic, LC_LK_QUADRATIC_ATTENUATION);
-	ChangeKey(1, true, &cutoff, LC_LK_SPOT_CUTOFF);
-	ChangeKey(1, true, &exponent, LC_LK_SPOT_EXPONENT);
+	ChangeKey(mPositionKeys, Position, 1, true);
+	ChangeKey(mTargetPositionKeys, TargetPosition, 1, true);
+	ChangeKey(mAmbientColorKeys, lcVector4(0.0f, 0.0f, 0.0f, 1.0f), 1, true);
+	ChangeKey(mDiffuseColorKeys, lcVector4(0.8f, 0.8f, 0.8f, 1.0f), 1, true);
+	ChangeKey(mSpecularColorKeys, lcVector4(1.0f, 1.0f, 1.0f, 1.0f), 1, true);
+	ChangeKey(mAttenuationKeys, lcVector3(1.0f, 0.0f, 0.0f), 1, true);
+	ChangeKey(mSpotCutoffKeys, 30.0f, 1, true);
+	ChangeKey(mSpotExponentKeys, 0.0f, 1, true);
 }
 
-Light::~Light()
+lcLight::~lcLight()
 {
-	delete m_pTarget;
 }
 
-void Light::CreateName(const Light* pLight)
+void lcLight::SaveLDraw(QTextStream& Stream) const
 {
+}
+
+void lcLight::CreateName(const lcArray<lcLight*>& Lights)
+{
+	if (m_strName[0])
+	{
+		bool Found = false;
+		for (int LightIdx = 0; LightIdx < Lights.GetSize(); LightIdx++)
+		{
+			if (!strcmp(Lights[LightIdx]->m_strName, m_strName))
+			{
+				Found = true;
+				break;
+			}
+		}
+
+		if (!Found)
+			return;
+	}
+
 	int i, max = 0;
 
-	for (; pLight; pLight = pLight->m_pNext)
+	for (int LightIdx = 0; LightIdx < Lights.GetSize(); LightIdx++)
 	{
+		lcLight* pLight = Lights[LightIdx];
+
 		if (strncmp(pLight->m_strName, "Light ", 6) == 0)
 		{
 			if (sscanf(pLight->m_strName + 6, " #%d", &i) == 1)
@@ -155,180 +92,257 @@ void Light::CreateName(const Light* pLight)
 	sprintf(m_strName, "Light #%.2d", max+1);
 }
 
-void Light::Select(bool bSelecting, bool bFocus, bool bMultiple)
+void lcLight::CompareBoundingBox(float box[6])
 {
-	if (bSelecting == true)
+	const lcVector3 Points[2] =
 	{
-		if (bFocus == true)
-		{
-			m_nState |= (LC_LIGHT_FOCUSED|LC_LIGHT_SELECTED);
+		mPosition, mTargetPosition
+	};
 
-			if (m_pTarget != NULL)
-				m_pTarget->Select(false, true, bMultiple);
-		}
-		else
-			m_nState |= LC_LIGHT_SELECTED;
-
-		if (bMultiple == false)
-			if (m_pTarget != NULL)
-				m_pTarget->Select(false, false, bMultiple);
-	}
-	else
+	for (int i = 0; i < (IsPointLight() ? 1 : 2); i++)
 	{
-		if (bFocus == true)
-			m_nState &= ~(LC_LIGHT_FOCUSED);
-		else
-			m_nState &= ~(LC_LIGHT_SELECTED|LC_LIGHT_FOCUSED);
-	} 
-}
+		const lcVector3& Point = Points[i];
 
-void Light::SelectTarget(bool bSelecting, bool bFocus, bool bMultiple)
-{
-	// TODO: the target should handle this
-
-	if (bSelecting == true)
-	{
-		if (bFocus == true)
-		{
-			m_nState |= (LC_LIGHT_TARGET_FOCUSED|LC_LIGHT_TARGET_SELECTED);
-
-			Select(false, true, bMultiple);
-		}
-		else
-			m_nState |= LC_LIGHT_TARGET_SELECTED;
-
-		if (bMultiple == false)
-			Select(false, false, bMultiple);
-	}
-	else
-	{
-		if (bFocus == true)
-			m_nState &= ~(LC_LIGHT_TARGET_FOCUSED);
-		else
-			m_nState &= ~(LC_LIGHT_TARGET_SELECTED|LC_LIGHT_TARGET_FOCUSED);
-	} 
-}
-
-void Light::MinIntersectDist(lcClickLine* ClickLine)
-{
-	if (m_pTarget)
-	{
-		lcVector3 Min = lcVector3(-0.2f, -0.2f, -0.2f);
-		lcVector3 Max = lcVector3(0.2f, 0.2f, 0.2f);
-
-		lcVector3 Start = lcMul31(ClickLine->Start, mWorldLight);
-		lcVector3 End = lcMul31(ClickLine->End, mWorldLight);
-
-		float Dist;
-		if (lcBoundingBoxRayMinIntersectDistance(Min, Max, Start, End, &Dist, NULL) && (Dist < ClickLine->MinDist))
-		{
-			ClickLine->Closest = this;
-			ClickLine->MinDist = Dist;
-		}
-
-		m_pTarget->MinIntersectDist(ClickLine);
-	}
-	else
-	{
-		float Dist;
-		if (lcSphereRayMinIntersectDistance(mPosition, 0.2f, ClickLine->Start, ClickLine->End, &Dist))
-		{
-			ClickLine->Closest = this;
-			ClickLine->MinDist = Dist;
-		}
+		if (Point[0] < box[0]) box[0] = Point[0];
+		if (Point[1] < box[1]) box[1] = Point[1];
+		if (Point[2] < box[2]) box[2] = Point[2];
+		if (Point[0] > box[3]) box[3] = Point[0];
+		if (Point[1] > box[4]) box[4] = Point[1];
+		if (Point[2] > box[5]) box[5] = Point[2];
 	}
 }
 
-void Light::Move(unsigned short nTime, bool bAddKey, float dx, float dy, float dz)
+void lcLight::RayTest(lcObjectRayTest& ObjectRayTest) const
 {
-	lcVector3 MoveVec(dx, dy, dz);
-
-	if (IsEyeSelected())
+	if (IsPointLight())
 	{
-		mPosition += MoveVec;
+		float Distance;
 
-		ChangeKey(nTime, bAddKey, mPosition, LC_LK_POSITION);
+		if (lcSphereRayMinIntersectDistance(mPosition, LC_LIGHT_SPHERE_RADIUS, ObjectRayTest.Start, ObjectRayTest.End, &Distance))
+		{
+			ObjectRayTest.ObjectSection.Object = const_cast<lcLight*>(this);
+			ObjectRayTest.ObjectSection.Section = LC_LIGHT_SECTION_POSITION;
+			ObjectRayTest.Distance = Distance;
+		}
+
+		return;
 	}
 
-	if (IsTargetSelected())
-	{
-		mTargetPosition += MoveVec;
+	lcVector3 Min = lcVector3(-LC_LIGHT_POSITION_EDGE, -LC_LIGHT_POSITION_EDGE, -LC_LIGHT_POSITION_EDGE);
+	lcVector3 Max = lcVector3(LC_LIGHT_POSITION_EDGE, LC_LIGHT_POSITION_EDGE, LC_LIGHT_POSITION_EDGE);
 
-		ChangeKey(nTime, bAddKey, mTargetPosition, LC_LK_TARGET);
+	lcVector3 Start = lcMul31(ObjectRayTest.Start, mWorldLight);
+	lcVector3 End = lcMul31(ObjectRayTest.End, mWorldLight);
+
+	float Distance;
+	if (lcBoundingBoxRayIntersectDistance(Min, Max, Start, End, &Distance, NULL) && (Distance < ObjectRayTest.Distance))
+	{
+		ObjectRayTest.ObjectSection.Object = const_cast<lcLight*>(this);
+		ObjectRayTest.ObjectSection.Section = LC_LIGHT_SECTION_POSITION;
+		ObjectRayTest.Distance = Distance;
+	}
+
+	Min = lcVector3(-LC_LIGHT_TARGET_EDGE, -LC_LIGHT_TARGET_EDGE, -LC_LIGHT_TARGET_EDGE);
+	Max = lcVector3(LC_LIGHT_TARGET_EDGE, LC_LIGHT_TARGET_EDGE, LC_LIGHT_TARGET_EDGE);
+
+	lcMatrix44 WorldTarget = mWorldLight;
+	WorldTarget.SetTranslation(lcMul30(-mTargetPosition, WorldTarget));
+
+	Start = lcMul31(ObjectRayTest.Start, WorldTarget);
+	End = lcMul31(ObjectRayTest.End, WorldTarget);
+
+	if (lcBoundingBoxRayIntersectDistance(Min, Max, Start, End, &Distance, NULL) && (Distance < ObjectRayTest.Distance))
+	{
+		ObjectRayTest.ObjectSection.Object = const_cast<lcLight*>(this);
+		ObjectRayTest.ObjectSection.Section = LC_LIGHT_SECTION_TARGET;
+		ObjectRayTest.Distance = Distance;
 	}
 }
 
-void Light::UpdatePosition(unsigned short nTime)
+void lcLight::BoxTest(lcObjectBoxTest& ObjectBoxTest) const
 {
-	CalculateKeys(nTime);
-
-	if (m_pTarget != NULL)
+	if (IsPointLight())
 	{
-		lcVector3 frontvec = mTargetPosition - mPosition;
-		lcVector3 up(1, 1, 1);
+		for (int PlaneIdx = 0; PlaneIdx < 6; PlaneIdx++)
+			if (lcDot3(mPosition, ObjectBoxTest.Planes[PlaneIdx]) + ObjectBoxTest.Planes[PlaneIdx][3] > LC_LIGHT_SPHERE_RADIUS)
+				return;
 
-		if (fabs(frontvec[0]) < fabs(frontvec[1]))
-		{
-			if (fabs(frontvec[0]) < fabs(frontvec[2]))
-				up[0] = -(up[1]*frontvec[1] + up[2]*frontvec[2]);
-			else
-				up[2] = -(up[0]*frontvec[0] + up[1]*frontvec[1]);
-		}
-		else
-		{
-			if (fabs(frontvec[1]) < fabs(frontvec[2]))
-				up[1] = -(up[0]*frontvec[0] + up[2]*frontvec[2]);
-			else
-				up[2] = -(up[0]*frontvec[0] + up[1]*frontvec[1]);
-		}
-
-		mWorldLight = lcMatrix44LookAt(mPosition, mTargetPosition, up);
+		ObjectBoxTest.Objects.Add(const_cast<lcLight*>(this));
+		return;
 	}
-	else
+
+	lcVector3 Min(-LC_LIGHT_POSITION_EDGE, -LC_LIGHT_POSITION_EDGE, -LC_LIGHT_POSITION_EDGE);
+	lcVector3 Max(LC_LIGHT_POSITION_EDGE, LC_LIGHT_POSITION_EDGE, LC_LIGHT_POSITION_EDGE);
+
+	lcVector4 LocalPlanes[6];
+
+	for (int PlaneIdx = 0; PlaneIdx < 6; PlaneIdx++)
+	{
+		lcVector3 Normal = lcMul30(ObjectBoxTest.Planes[PlaneIdx], mWorldLight);
+		LocalPlanes[PlaneIdx] = lcVector4(Normal, ObjectBoxTest.Planes[PlaneIdx][3] - lcDot3(mWorldLight[3], Normal));
+	}
+
+	if (lcBoundingBoxIntersectsVolume(Min, Max, LocalPlanes))
+	{
+		ObjectBoxTest.Objects.Add(const_cast<lcLight*>(this));
+		return;
+	}
+
+	Min = lcVector3(-LC_LIGHT_TARGET_EDGE, -LC_LIGHT_TARGET_EDGE, -LC_LIGHT_TARGET_EDGE);
+	Max = lcVector3(LC_LIGHT_TARGET_EDGE, LC_LIGHT_TARGET_EDGE, LC_LIGHT_TARGET_EDGE);
+
+	lcMatrix44 WorldTarget = mWorldLight;
+	WorldTarget.SetTranslation(lcMul30(-mTargetPosition, WorldTarget));
+
+	for (int PlaneIdx = 0; PlaneIdx < 6; PlaneIdx++)
+	{
+		lcVector3 Normal = lcMul30(ObjectBoxTest.Planes[PlaneIdx], WorldTarget);
+		LocalPlanes[PlaneIdx] = lcVector4(Normal, ObjectBoxTest.Planes[PlaneIdx][3] - lcDot3(WorldTarget[3], Normal));
+	}
+
+	if (lcBoundingBoxIntersectsVolume(Min, Max, LocalPlanes))
+	{
+		ObjectBoxTest.Objects.Add(const_cast<lcLight*>(this));
+		return;
+	}
+}
+
+void lcLight::Move(lcStep Step, bool AddKey, const lcVector3& Distance)
+{
+	if (IsSelected(LC_LIGHT_SECTION_POSITION))
+	{
+		mPosition += Distance;
+		ChangeKey(mPositionKeys, mPosition, Step, AddKey);
+	}
+
+	if (IsSelected(LC_LIGHT_SECTION_TARGET))
+	{
+		mTargetPosition += Distance;
+		ChangeKey(mTargetPositionKeys, mTargetPosition, Step, AddKey);
+	}
+}
+
+void lcLight::InsertTime(lcStep Start, lcStep Time)
+{
+	lcObject::InsertTime(mPositionKeys, Start, Time);
+	lcObject::InsertTime(mTargetPositionKeys, Start, Time);
+	lcObject::InsertTime(mAmbientColorKeys, Start, Time);
+	lcObject::InsertTime(mDiffuseColorKeys, Start, Time);
+	lcObject::InsertTime(mSpecularColorKeys, Start, Time);
+	lcObject::InsertTime(mAttenuationKeys, Start, Time);
+	lcObject::InsertTime(mSpotCutoffKeys, Start, Time);
+	lcObject::InsertTime(mSpotExponentKeys, Start, Time);
+}
+
+void lcLight::RemoveTime(lcStep Start, lcStep Time)
+{
+	lcObject::RemoveTime(mPositionKeys, Start, Time);
+	lcObject::RemoveTime(mTargetPositionKeys, Start, Time);
+	lcObject::RemoveTime(mAmbientColorKeys, Start, Time);
+	lcObject::RemoveTime(mDiffuseColorKeys, Start, Time);
+	lcObject::RemoveTime(mSpecularColorKeys, Start, Time);
+	lcObject::RemoveTime(mAttenuationKeys, Start, Time);
+	lcObject::RemoveTime(mSpotCutoffKeys, Start, Time);
+	lcObject::RemoveTime(mSpotExponentKeys, Start, Time);
+}
+
+void lcLight::UpdatePosition(lcStep Step)
+{
+	mPosition = CalculateKey(mPositionKeys, Step);
+	mTargetPosition = CalculateKey(mTargetPositionKeys, Step);
+	mAmbientColor = CalculateKey(mAmbientColorKeys, Step);
+	mDiffuseColor = CalculateKey(mDiffuseColorKeys, Step);
+	mSpecularColor = CalculateKey(mSpecularColorKeys, Step);
+	mAttenuation = CalculateKey(mAttenuationKeys, Step);
+	mSpotCutoff = CalculateKey(mSpotCutoffKeys, Step);
+	mSpotExponent = CalculateKey(mSpotExponentKeys, Step);
+
+	if (IsPointLight())
 	{
 		mWorldLight = lcMatrix44Identity();
 		mWorldLight.SetTranslation(-mPosition);
 	}
+	else
+	{
+		lcVector3 FrontVector(mTargetPosition - mPosition);
+		lcVector3 UpVector(1, 1, 1);
+
+		if (fabs(FrontVector[0]) < fabs(FrontVector[1]))
+		{
+			if (fabs(FrontVector[0]) < fabs(FrontVector[2]))
+				UpVector[0] = -(UpVector[1] * FrontVector[1] + UpVector[2] * FrontVector[2]);
+			else
+				UpVector[2] = -(UpVector[0] * FrontVector[0] + UpVector[1] * FrontVector[1]);
+		}
+		else
+		{
+			if (fabs(FrontVector[1]) < fabs(FrontVector[2]))
+				UpVector[1] = -(UpVector[0] * FrontVector[0] + UpVector[2] * FrontVector[2]);
+			else
+				UpVector[2] = -(UpVector[0] * FrontVector[0] + UpVector[1] * FrontVector[1]);
+		}
+
+		mWorldLight = lcMatrix44LookAt(mPosition, mTargetPosition, UpVector);
+	}
 }
 
-void Light::Render(const lcMatrix44& ViewMatrix, float LineWidth)
+void lcLight::DrawInterface(lcContext* Context, const lcMatrix44& ViewMatrix) const
 {
-	if (m_pTarget != NULL)
+	float LineWidth = lcGetPreferences().mLineWidth;
+
+	if (IsPointLight())
 	{
-		if (IsEyeSelected())
+		Context->SetWorldViewMatrix(lcMul(lcMatrix44Translation(mPosition), ViewMatrix));
+
+		if (IsSelected(LC_LIGHT_SECTION_POSITION))
 		{
-			glLineWidth(LineWidth*2);
-			if (m_nState & LC_LIGHT_FOCUSED)
+			if (IsFocused(LC_LIGHT_SECTION_POSITION))
 				lcSetColorFocused();
 			else
 				lcSetColorSelected();
-			RenderCone(ViewMatrix);
-			glLineWidth(LineWidth);
 		}
 		else
-		{
 			lcSetColorLight();
-			RenderCone(ViewMatrix);
-		}
 
-		if (IsTargetSelected())
+		RenderSphere();
+	}
+	else
+	{
+		if (IsSelected(LC_LIGHT_SECTION_POSITION))
 		{
-			glLineWidth(LineWidth*2);
-			if (m_nState & LC_LIGHT_TARGET_FOCUSED)
+			Context->SetLineWidth(2.0f * LineWidth);
+			if (IsFocused(LC_LIGHT_SECTION_POSITION))
 				lcSetColorFocused();
 			else
 				lcSetColorSelected();
-			RenderTarget();
-			glLineWidth(LineWidth);
 		}
 		else
 		{
+			Context->SetLineWidth(LineWidth);
 			lcSetColorLight();
-			RenderTarget();
 		}
 
-		glLoadMatrixf(ViewMatrix);
+		RenderCone(Context, ViewMatrix);
 
+		if (IsSelected(LC_LIGHT_SECTION_TARGET))
+		{
+			Context->SetLineWidth(2.0f * LineWidth);
+			if (IsFocused(LC_LIGHT_SECTION_TARGET))
+				lcSetColorFocused();
+			else
+				lcSetColorSelected();
+		}
+		else
+		{
+			Context->SetLineWidth(LineWidth);
+			lcSetColorLight();
+		}
+
+		RenderTarget();
+
+		Context->SetWorldViewMatrix(ViewMatrix);
+
+		Context->SetLineWidth(LineWidth);
 		lcSetColorLight();
 
 		lcVector3 Line[2] = { mPosition, mTargetPosition };
@@ -362,7 +376,7 @@ void Light::Render(const lcMatrix44& ViewMatrix, float LineWidth)
 			LightMatrix = lcMatrix44AffineInverse(LightMatrix);
 			ProjectionMatrix = lcMatrix44Perspective(2 * mSpotCutoff, 1.0f, 0.01f, Length);
 			ProjectionMatrix = lcMatrix44Inverse(ProjectionMatrix);
-			glLoadMatrixf(lcMul(ProjectionMatrix, lcMul(LightMatrix, ViewMatrix)));
+			Context->SetWorldViewMatrix(lcMul(ProjectionMatrix, lcMul(LightMatrix, ViewMatrix)));
 
 			// Draw the light cone.
 			float Verts[16][3] =
@@ -390,25 +404,9 @@ void Light::Render(const lcMatrix44& ViewMatrix, float LineWidth)
 			glDrawArrays(GL_LINES, 8, 8);
 		}
 	}
-	else
-	{
-		glLoadMatrixf(lcMul(lcMatrix44Translation(mPosition), ViewMatrix));
-
-		if (IsEyeSelected())
-		{
-			if (m_nState & LC_LIGHT_FOCUSED)
-				lcSetColorFocused();
-			else
-				lcSetColorSelected();
-		}
-		else
-			lcSetColorLight();
-
-		RenderSphere();
-	}
 }
 
-void Light::RenderCone(const lcMatrix44& ViewMatrix)
+void lcLight::RenderCone(lcContext* Context, const lcMatrix44& ViewMatrix) const
 {
 	lcVector3 FrontVector(mTargetPosition - mPosition);
 	lcVector3 UpVector(1, 1, 1);
@@ -434,16 +432,16 @@ void Light::RenderCone(const lcMatrix44& ViewMatrix)
 	LightMatrix.SetTranslation(lcVector3(0, 0, 0));
 
 	lcMatrix44 LightViewMatrix = lcMul(LightMatrix, lcMul(lcMatrix44Translation(mPosition), ViewMatrix));
+	Context->SetWorldViewMatrix(LightViewMatrix);
 
-	glLoadMatrixf(LightViewMatrix);
-
+	float Edge = LC_LIGHT_POSITION_EDGE;
 	float verts[16*3];
 	for (int i = 0; i < 8; i++)
 	{
-		verts[i*6] = verts[i*6+3] = (float)cos((float)i/4 * LC_PI) * 0.3f;
-		verts[i*6+1] = verts[i*6+4] = (float)sin((float)i/4 * LC_PI) * 0.3f;
-		verts[i*6+2] = 0.3f;
-		verts[i*6+5] = -0.3f;
+		verts[i*6] = verts[i*6+3] = (float)cos((float)i/4 * LC_PI) * Edge;
+		verts[i*6+1] = verts[i*6+4] = (float)sin((float)i/4 * LC_PI) * Edge;
+		verts[i*6+2] = Edge;
+		verts[i*6+5] = -Edge;
 	}
 
 	glVertexPointer(3, GL_FLOAT, 0, verts);
@@ -455,46 +453,48 @@ void Light::RenderCone(const lcMatrix44& ViewMatrix)
 
 	float Lines[4][3] =
 	{
-		{ -0.5f, -0.5f, -0.3f },
-		{  0.5f, -0.5f, -0.3f },
-		{  0.5f,  0.5f, -0.3f },
-		{ -0.5f,  0.5f, -0.3f }
+		{ -12.5f, -12.5f, -Edge },
+		{  12.5f, -12.5f, -Edge },
+		{  12.5f,  12.5f, -Edge },
+		{ -12.5f,  12.5f, -Edge }
 	};
 
 	glVertexPointer(3, GL_FLOAT, 0, Lines);
 	glDrawArrays(GL_LINE_LOOP, 0, 4);
 
-	glLoadMatrixf(lcMul(lcMatrix44Translation(lcVector3(0, 0, -Length)), LightViewMatrix));
+	Context->SetWorldViewMatrix(lcMul(lcMatrix44Translation(lcVector3(0, 0, -Length)), LightViewMatrix));
 }
 
-void Light::RenderTarget()
+void lcLight::RenderTarget() const
 {
-	float box[24][3] =
+	float Edge = LC_LIGHT_TARGET_EDGE;
+
+	float Box[24][3] =
 	{
-		{  0.2f,  0.2f,  0.2f }, { -0.2f,  0.2f,  0.2f },
-		{ -0.2f,  0.2f,  0.2f }, { -0.2f, -0.2f,  0.2f },
-		{ -0.2f, -0.2f,  0.2f }, {  0.2f, -0.2f,  0.2f },
-		{  0.2f, -0.2f,  0.2f }, {  0.2f,  0.2f,  0.2f },
-		{  0.2f,  0.2f, -0.2f }, { -0.2f,  0.2f, -0.2f },
-		{ -0.2f,  0.2f, -0.2f }, { -0.2f, -0.2f, -0.2f },
-		{ -0.2f, -0.2f, -0.2f }, {  0.2f, -0.2f, -0.2f },
-		{  0.2f, -0.2f, -0.2f }, {  0.2f,  0.2f, -0.2f },
-		{  0.2f,  0.2f,  0.2f }, {  0.2f,  0.2f, -0.2f },
-		{ -0.2f,  0.2f,  0.2f }, { -0.2f,  0.2f, -0.2f },
-		{ -0.2f, -0.2f,  0.2f }, { -0.2f, -0.2f, -0.2f },
-		{  0.2f, -0.2f,  0.2f }, {  0.2f, -0.2f, -0.2f }
+		{  Edge,  Edge,  Edge }, { -Edge,  Edge,  Edge },
+		{ -Edge,  Edge,  Edge }, { -Edge, -Edge,  Edge },
+		{ -Edge, -Edge,  Edge }, {  Edge, -Edge,  Edge },
+		{  Edge, -Edge,  Edge }, {  Edge,  Edge,  Edge },
+		{  Edge,  Edge, -Edge }, { -Edge,  Edge, -Edge },
+		{ -Edge,  Edge, -Edge }, { -Edge, -Edge, -Edge },
+		{ -Edge, -Edge, -Edge }, {  Edge, -Edge, -Edge },
+		{  Edge, -Edge, -Edge }, {  Edge,  Edge, -Edge },
+		{  Edge,  Edge,  Edge }, {  Edge,  Edge, -Edge },
+		{ -Edge,  Edge,  Edge }, { -Edge,  Edge, -Edge },
+		{ -Edge, -Edge,  Edge }, { -Edge, -Edge, -Edge },
+		{  Edge, -Edge,  Edge }, {  Edge, -Edge, -Edge }
 	};
 
-	glVertexPointer(3, GL_FLOAT, 0, box);
+	glVertexPointer(3, GL_FLOAT, 0, Box);
 	glDrawArrays(GL_LINES, 0, 24);
 }
 
-void Light::RenderSphere()
+void lcLight::RenderSphere() const
 {
 	const int Slices = 6;
 	const int NumIndices = 3 * Slices + 6 * Slices * (Slices - 2) + 3 * Slices;
 	const int NumVertices = (Slices - 1) * Slices + 2;
-	const float Radius = 0.2f;
+	const float Radius = LC_LIGHT_SPHERE_RADIUS;
 	lcVector3 Vertices[NumVertices];
 	lcuint16 Indices[NumIndices];
 
@@ -570,59 +570,47 @@ void Light::RenderSphere()
 	glDrawElements(GL_TRIANGLES, NumIndices, GL_UNSIGNED_SHORT, Indices);
 }
 
-void Light::Setup(int index)
+bool lcLight::Setup(int LightIndex)
 {
-	GLenum light = (GLenum)(GL_LIGHT0+index);
+	GLenum LightName = (GLenum)(GL_LIGHT0 + LightIndex);
 
-	if (!m_bEnabled)
+	if (mState & LC_LIGHT_DISABLED)
+		return false;
+
+	glEnable(LightName);
+
+	glLightfv(LightName, GL_AMBIENT, mAmbientColor);
+	glLightfv(LightName, GL_DIFFUSE, mDiffuseColor);
+	glLightfv(LightName, GL_SPECULAR, mSpecularColor);
+
+	if (!IsDirectionalLight())
 	{
-		glDisable(light);
-		return;
-	}
-
-	bool Omni = (m_pTarget == NULL);
-	bool Spot = (m_pTarget != NULL) && (mSpotCutoff != 180.0f);
-
-	glEnable(light);
-
-	glLightfv(light, GL_AMBIENT, mAmbientColor);
-	glLightfv(light, GL_DIFFUSE, mDiffuseColor);
-	glLightfv(light, GL_SPECULAR, mSpecularColor);
-
-	if (Omni || Spot)
-	{
-		glLightf(light, GL_CONSTANT_ATTENUATION, mConstantAttenuation);
-		glLightf(light, GL_LINEAR_ATTENUATION, mLinearAttenuation);
-		glLightf(light, GL_QUADRATIC_ATTENUATION, mQuadraticAttenuation);
+		glLightf(LightName, GL_CONSTANT_ATTENUATION, mAttenuation[0]);
+		glLightf(LightName, GL_LINEAR_ATTENUATION, mAttenuation[1]);
+		glLightf(LightName, GL_QUADRATIC_ATTENUATION, mAttenuation[2]);
 
 		lcVector4 Position(mPosition, 1.0f);
-		glLightfv(light, GL_POSITION, Position);
+		glLightfv(LightName, GL_POSITION, Position);
 	}
 	else
 	{
-		glLightf(light, GL_CONSTANT_ATTENUATION, 1.0f);
-		glLightf(light, GL_LINEAR_ATTENUATION, 0.0f);
-		glLightf(light, GL_QUADRATIC_ATTENUATION, 0.0f);
-
 		lcVector4 Position(mPosition, 0.0f);
-		glLightfv(light, GL_POSITION, Position);
+		glLightfv(LightName, GL_POSITION, Position);
 	}
 
-	if (Omni)
+	if (IsPointLight())
 	{
-		lcVector3 Dir(0.0f, 0.0f, 0.0f);
-
-		glLightf(light, GL_SPOT_CUTOFF, 180.0f);
-		glLightf(light, GL_SPOT_EXPONENT, mSpotExponent);
-		glLightfv(light, GL_SPOT_DIRECTION, Dir);
+		glLightf(LightName, GL_SPOT_CUTOFF, 180.0f);
 	}
-	else
+	else if (IsSpotLight())
 	{
 		lcVector3 Dir(mTargetPosition - mPosition);
 		Dir.Normalize();
 
-		glLightf(light, GL_SPOT_CUTOFF, mSpotCutoff);
-		glLightf(light, GL_SPOT_EXPONENT, mSpotExponent);
-		glLightfv(light, GL_SPOT_DIRECTION, Dir);
+		glLightf(LightName, GL_SPOT_CUTOFF, mSpotCutoff);
+		glLightf(LightName, GL_SPOT_EXPONENT, mSpotExponent);
+		glLightfv(LightName, GL_SPOT_DIRECTION, Dir);
 	}
+
+	return true;
 }

@@ -4,8 +4,7 @@
 enum LC_PROFILE_KEY
 {
 	// Settings.
-	LC_PROFILE_SNAP,
-	LC_PROFILE_ANGLE_SNAP,
+	LC_PROFILE_FIXED_AXES,
 	LC_PROFILE_LINE_WIDTH,
 	LC_PROFILE_LIGHTING_MODE,
 	LC_PROFILE_DRAW_AXES,
@@ -30,7 +29,7 @@ enum LC_PROFILE_KEY
 	LC_PROFILE_MOUSE_SENSITIVITY,
 	LC_PROFILE_IMAGE_WIDTH,
 	LC_PROFILE_IMAGE_HEIGHT,
-	LC_PROFILE_IMAGE_OPTIONS,
+	LC_PROFILE_IMAGE_EXTENSION,
 	LC_PROFILE_PRINT_ROWS,
 	LC_PROFILE_PRINT_COLUMNS,
 
@@ -98,14 +97,18 @@ extern lcProfileEntry gProfileEntries[LC_NUM_PROFILE_KEYS];
 
 void lcRemoveProfileKey(LC_PROFILE_KEY Key);
 
+int lcGetDefaultProfileInt(LC_PROFILE_KEY Key);
+float lcGetDefaultProfileFloat(LC_PROFILE_KEY Key);
+QString lcGetDefaultProfileString(LC_PROFILE_KEY Key);
+
 int lcGetProfileInt(LC_PROFILE_KEY Key);
 float lcGetProfileFloat(LC_PROFILE_KEY Key);
-const char* lcGetProfileString(LC_PROFILE_KEY Key);
+QString lcGetProfileString(LC_PROFILE_KEY Key);
 void lcGetProfileBuffer(LC_PROFILE_KEY Key, lcMemFile& Buffer);
 
 void lcSetProfileInt(LC_PROFILE_KEY Key, int Value);
 void lcSetProfileFloat(LC_PROFILE_KEY Key, float Value);
-void lcSetProfileString(LC_PROFILE_KEY Key, const char* Value);
+void lcSetProfileString(LC_PROFILE_KEY Key, const QString& Value);
 void lcSetProfileBuffer(LC_PROFILE_KEY Key, const lcMemFile& Buffer);
 
 #endif // LC_PROFILE_H

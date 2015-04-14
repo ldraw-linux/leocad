@@ -88,24 +88,29 @@ static const unsigned char GlyphData[] =
 
 // ============================================================================
 
+TexFont gTexFont;
+
 TexFont::TexFont()
 {
+	mRefCount = 0;
 	mTexture = 0;
 	memset(&mGlyphs, 0, sizeof(mGlyphs));
 }
 
 TexFont::~TexFont()
 {
-	glDeleteTextures(1, &mTexture);
 }
 
-bool TexFont::Initialize()
+bool TexFont::Load()
 {
+	mRefCount++;
+
+	if (mRefCount != 1)
+		return true;
+
 	mFontHeight = 16;
 
-	if (mTexture == 0)
-		glGenTextures(1, &mTexture);
-
+	glGenTextures(1, &mTexture);
 	glBindTexture(GL_TEXTURE_2D, mTexture);
 	glDisable(GL_TEXTURE_GEN_S);
 	glDisable(GL_TEXTURE_GEN_T);
@@ -146,6 +151,16 @@ bool TexFont::Initialize()
 	}
 
 	return true;
+}
+
+void TexFont::Release()
+{
+	mRefCount--;
+	if (mRefCount == 0)
+	{
+		glDeleteTextures(1, &mTexture);
+		mTexture = 0;
+	}
 }
 
 void TexFont::GetStringDimensions(int* cx, int* cy, const char* Text) const
@@ -211,4 +226,34 @@ void TexFont::PrintText(float Left, float Top, float Z, const char* Text) const
 	glDisableClientState(GL_TEXTURE_COORD_ARRAY);
 
 	delete[] Verts;
+}
+
+void TexFont::GetGlyphQuad(float Left, float Top, float Z, int Glyph, float* Buffer) const
+{
+	Left -= mGlyphs[Glyph].width / 2.0f;
+	Top += mFontHeight / 2.0f;
+
+	*Buffer++ = Left;
+	*Buffer++ = Top;
+	*Buffer++ = Z;
+	*Buffer++ = mGlyphs[Glyph].left;
+	*Buffer++ = mGlyphs[Glyph].top;
+
+	*Buffer++ = Left;
+	*Buffer++ = Top - mFontHeight;
+	*Buffer++ = Z;
+	*Buffer++ = mGlyphs[Glyph].left;
+	*Buffer++ = mGlyphs[Glyph].bottom;
+
+	*Buffer++ = Left + mGlyphs[Glyph].width;
+	*Buffer++ = Top - mFontHeight;
+	*Buffer++ = Z;
+	*Buffer++ = mGlyphs[Glyph].right;
+	*Buffer++ = mGlyphs[Glyph].bottom;
+
+	*Buffer++ = Left + mGlyphs[Glyph].width;
+	*Buffer++ = Top;
+	*Buffer++ = Z;
+	*Buffer++ = mGlyphs[Glyph].right;
+	*Buffer++ = mGlyphs[Glyph].top;
 }

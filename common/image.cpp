@@ -1,6 +1,29 @@
 #include "lc_global.h"
 #include "image.h"
-#include "opengl.h"
+#include "lc_file.h"
+
+static void CopyFromQImage(const QImage& Src, Image& Dest)
+{
+	bool Alpha = Src.hasAlphaChannel();
+	Dest.Allocate(Src.width(), Src.height(), Alpha ? LC_PIXEL_FORMAT_R8G8B8A8 : LC_PIXEL_FORMAT_R8G8B8);
+
+	lcuint8* Bytes = (lcuint8*)Dest.mData;
+
+	for (int y = 0; y < Dest.mHeight; y++)
+	{
+		for (int x = 0; x < Dest.mWidth; x++)
+		{
+			QRgb Pixel = Src.pixel(x, y);
+
+			*Bytes++ = qRed(Pixel);
+			*Bytes++ = qGreen(Pixel);
+			*Bytes++ = qBlue(Pixel);
+
+			if (Alpha)
+				*Bytes++ = qAlpha(Pixel);
+		}
+	}
+}
 
 Image::Image()
 {
@@ -115,23 +138,35 @@ void Image::Resize(int width, int height)
 		}
 	}
 
-	free (mData);
+	free(mData);
 	mData = bits;
 	mWidth = width;
 	mHeight = height;
 }
 
-void Image::FromOpenGL(int Width, int Height)
+bool Image::FileLoad(lcMemFile& File)
 {
-	Allocate(Width, Height, LC_PIXEL_FORMAT_R8G8B8A8);
+	QImage Image;
 
-	lcuint8* Buffer = (lcuint8*)malloc(Width * Height * 4);
+	unsigned char* Buffer = File.mBuffer + File.mPosition;
+	int BufferLength = File.mFileSize - File.mPosition;
 
-	glPixelStorei (GL_PACK_ALIGNMENT, 1);
-	glReadPixels(0, 0, Width, Height, GL_RGBA, GL_UNSIGNED_BYTE, Buffer);
+	if (!Image.loadFromData(Buffer, BufferLength))
+		return false;
 
-	for (int Row = 0; Row < Height; Row++)
-		memcpy(mData + (Row * Width * 4), Buffer + ((Height - Row - 1) * Width * 4), Width * 4);
+	CopyFromQImage(Image, *this);
 
-	free(Buffer);
+	return true;
+}
+
+bool Image::FileLoad(const char* FileName)
+{
+	QImage Image;
+
+	if (!Image.load(FileName))
+		return false;
+
+	CopyFromQImage(Image, *this);
+
+	return true;
 }

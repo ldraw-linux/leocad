@@ -34,30 +34,32 @@ public:
 	bool mDrawGridLines;
 	int mGridLineSpacing;
 	lcuint32 mGridLineColor;
+	bool mFixedAxes;
 };
 
 class lcApplication
 {
+	Q_DECLARE_TR_FUNCTIONS(lcApplication);
+
 public:
 	lcApplication();
 	~lcApplication();
 
-	bool Initialize(int argc, char *argv[], const char* LibraryInstallPath, const char* LibraryCachePath);
+	void SetProject(Project* Project);
+	bool Initialize(int argc, char *argv[], const char* LibraryInstallPath, const char* LDrawPath, const char* LibraryCachePath);
 	void Shutdown();
 	void ShowPreferencesDialog();
 
-	bool LoadPiecesLibrary(const char* LibPath, const char* LibraryInstallPath, const char* LibraryCachePath);
+	bool LoadPiecesLibrary(const char* LibPath, const char* LibraryInstallPath, const char* LDrawPath, const char* LibraryCachePath);
 
-	void OpenURL(const char* URL);
-	void RunProcess(const char* ExecutablePath, const lcArray<String>& Arguments);
 	void GetFileList(const char* Path, lcArray<String>& FileList);
-	void SetClipboard(lcFile* Clipboard);
-	void ExportClipboard(lcMemFile* Clipboard);
+	void SetClipboard(const QByteArray& Clipboard);
+	void ExportClipboard(const QByteArray& Clipboard);
 
 	Project* mProject;
 	lcPiecesLibrary* mLibrary;
 	lcPreferences mPreferences;
-	lcFile* mClipboard;
+	QByteArray mClipboard;
 
 protected:
 	void ParseIntegerArgument(int* CurArg, int argc, char* argv[], int* Value);
@@ -76,7 +78,7 @@ inline Project* lcGetActiveProject()
 	return g_App->mProject;
 }
 
-inline const lcPreferences& lcGetPreferences()
+inline lcPreferences& lcGetPreferences()
 {
 	return g_App->mPreferences;
 }

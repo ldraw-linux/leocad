@@ -2,10 +2,9 @@
 #define _PIECEINF_H_
 
 #include <stdio.h>
-#ifndef GLuint
-#include "opengl.h"
-#endif
 #include "lc_math.h"
+#include "lc_array.h"
+#include "lc_mesh.h"
 
 #define LC_PIECE_HAS_DEFAULT        0x01 // Piece has triangles using the default color
 #define LC_PIECE_HAS_SOLID          0x02 // Piece has triangles using a solid color
@@ -13,34 +12,68 @@
 #define LC_PIECE_HAS_LINES          0x08 // Piece has lines
 #define LC_PIECE_PLACEHOLDER        0x10 // Placeholder for a piece not in the library
 #define LC_PIECE_CACHED             0x20 // Piece is saved in the library cache
-#define LC_PIECE_GENERATED          0x40 // Mesh is generated in code
+#define LC_PIECE_MODEL              0x40 // Piece if a model
 
 #define LC_PIECE_NAME_LEN 256
 
 class PieceInfo
 {
 public:
-	PieceInfo(int ZipFileIndex);
+	PieceInfo();
 	~PieceInfo();
 
-	int AddRef()
+	QString GetSaveID() const;
+
+	lcMesh* GetMesh() const
+	{
+		return mMesh;
+	}
+
+	lcModel* GetModel() const
+	{
+		return mModel;
+	}
+
+	void SetMesh(lcMesh* Mesh)
+	{
+		mMesh = Mesh;
+	}
+
+	void AddRef()
 	{
 		mRefCount++;
 
 		if (mRefCount == 1)
 			Load();
-
-		return mRefCount;
 	}
 
-	int Release()
+	void Release()
 	{
 		mRefCount--;
 
 		if (!mRefCount)
 			Unload();
+	}
 
-		return mRefCount;
+	bool IsLoaded() const
+	{
+		return mRefCount != 0;
+	}
+
+	bool IsModel() const
+	{
+		return (mFlags & LC_PIECE_MODEL) != 0;
+	}
+
+	bool IsTemporary() const
+	{
+		return (mFlags & (LC_PIECE_PLACEHOLDER | LC_PIECE_MODEL)) != 0;
+	}
+
+	void SetZipFile(int ZipFileType, int ZipFileIndex)
+	{
+		mZipFileType = ZipFileType;
+		mZipFileIndex = ZipFileIndex;
 	}
 
 	bool IsPatterned() const
@@ -73,24 +106,34 @@ public:
 		                 (m_fDimensions[2] + m_fDimensions[5]) * 0.5f);
 	}
 
-	// Operations
-	void ZoomExtents(float Fov, float Aspect, float* EyePos = NULL) const;
-	void RenderPiece(int nColor);
+	void ZoomExtents(const lcMatrix44& ProjectionMatrix, lcMatrix44& ViewMatrix, float* EyePos = NULL) const;
+	void AddRenderMesh(lcScene& Scene);
+	void AddRenderMeshes(lcScene& Scene, const lcMatrix44& WorldMatrix, int ColorIndex, bool Focused, bool Selected);
 
 	void CreatePlaceholder(const char* Name);
 
-public:
-	lcMesh* mMesh;
+	void SetPlaceholder();
+	void SetModel(lcModel* Model, bool UpdateMesh);
+	bool IncludesModel(const lcModel* Model) const;
+	bool MinIntersectDist(const lcMatrix44& WorldMatrix, const lcVector3& WorldStart, const lcVector3& WorldEnd, float& MinDistance) const;
+	bool BoxTest(const lcMatrix44& WorldMatrix, const lcVector4 Planes[6]) const;
+	void GetPartsList(int DefaultColorIndex, lcArray<lcPartsListEntry>& PartsList) const;
+	void GetModelParts(const lcMatrix44& WorldMatrix, int DefaultColorIndex, lcArray<lcModelPartsEntry>& ModelParts) const;
+	void UpdateBoundingBox(lcArray<lcModel*>& UpdatedModels);
 
+public:
 	// Attributes
 	char m_strName[LC_PIECE_NAME_LEN];
 	char m_strDescription[128];
 	float m_fDimensions[6];
-	lcuint32 mZipFileIndex;
+	int mZipFileType;
+	int mZipFileIndex;
 	lcuint32 mFlags;
 
 protected:
 	int mRefCount;
+	lcModel* mModel;
+	lcMesh* mMesh;
 
 	void Load();
 	void Unload();

@@ -32,14 +32,9 @@ void lcQPOVRayDialog::accept()
 		return;
 	}
 
-	strcpy(options->FileName, fileName.toLocal8Bit().data());
-
-	QString povrayPath = ui->povrayEdit->text();
-	strcpy(options->POVRayPath, povrayPath.toLocal8Bit().data());
-
-	QString lgeoPath = ui->lgeoEdit->text();
-	strcpy(options->LGEOPath, lgeoPath.toLocal8Bit().data());
-
+	options->FileName = fileName;
+	options->POVRayPath = ui->povrayEdit->text();
+	options->LGEOPath = ui->lgeoEdit->text();
 	options->Render = ui->render->isChecked();
 
 	QDialog::accept();
@@ -47,7 +42,7 @@ void lcQPOVRayDialog::accept()
 
 void lcQPOVRayDialog::on_outputBrowse_clicked()
 {
-	QString result = QFileDialog::getOpenFileName(this, tr("Save POV-Ray File"), ui->outputEdit->text(), tr("POV-Ray Files (*.pov);;All Files (*.*)"));
+	QString result = QFileDialog::getSaveFileName(this, tr("Save POV-Ray File"), ui->outputEdit->text(), tr("POV-Ray Files (*.pov);;All Files (*.*)"));
 
 	if (!result.isEmpty())
 		ui->outputEdit->setText(QDir::toNativeSeparators(result));

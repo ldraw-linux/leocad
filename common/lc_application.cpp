@@ -10,11 +10,13 @@
 #include "image.h"
 #include "lc_mainwindow.h"
 #include "lc_shortcuts.h"
+#include "view.h"
 
 lcApplication* g_App;
 
 void lcPreferences::LoadDefaults()
 {
+	mFixedAxes = lcGetProfileInt(LC_PROFILE_FIXED_AXES);
 	mMouseSensitivity = lcGetProfileInt(LC_PROFILE_MOUSE_SENSITIVITY);
 	mLightingMode = (lcLightingMode)lcGetProfileInt(LC_PROFILE_LIGHTING_MODE);
 	mDrawAxes = lcGetProfileInt(LC_PROFILE_DRAW_AXES);
@@ -29,6 +31,7 @@ void lcPreferences::LoadDefaults()
 
 void lcPreferences::SaveDefaults()
 {
+	lcSetProfileInt(LC_PROFILE_FIXED_AXES, mFixedAxes);
 	lcSetProfileInt(LC_PROFILE_MOUSE_SENSITIVITY, mMouseSensitivity);
 	lcSetProfileInt(LC_PROFILE_LIGHTING_MODE, mLightingMode);
 	lcSetProfileInt(LC_PROFILE_DRAW_AXES, mDrawAxes);
@@ -52,66 +55,110 @@ lcApplication::lcApplication()
 
 lcApplication::~lcApplication()
 {
-	delete mClipboard;
+    delete mProject;
+    delete mLibrary;
 }
 
-void lcApplication::SetClipboard(lcFile* Clipboard)
+void lcApplication::SetProject(Project* Project)
 {
-	delete mClipboard;
-	mClipboard = Clipboard;
+	delete mProject;
+	mProject = Project;
 
-	gMainWindow->UpdatePaste(mClipboard != NULL);
+	const lcArray<View*>& Views = gMainWindow->GetViews();
+	for (int ViewIdx = 0; ViewIdx < Views.GetSize(); ViewIdx++)
+	{
+		View* View = Views[ViewIdx];
+		View->ClearCameras();
+		View->SetModel(lcGetActiveModel());
+	}
+
+	Project->SetActiveModel(0);
+	lcGetPiecesLibrary()->RemoveTemporaryPieces();
 }
 
-bool lcApplication::LoadPiecesLibrary(const char* LibPath, const char* LibraryInstallPath, const char* LibraryCachePath)
+void lcApplication::SetClipboard(const QByteArray& Clipboard)
+{
+	mClipboard = Clipboard;
+	gMainWindow->UpdatePaste(!mClipboard.isEmpty());
+}
+
+void lcApplication::ExportClipboard(const QByteArray& Clipboard)
+{
+	QMimeData* MimeData = new QMimeData();
+
+	MimeData->setData("application/vnd.leocad-clipboard", Clipboard);
+	QApplication::clipboard()->setMimeData(MimeData);
+
+	SetClipboard(Clipboard);
+}
+
+void lcApplication::GetFileList(const char* Path, lcArray<String>& FileList)
+{
+	QDir Dir(Path);
+	Dir.setFilter(QDir::Files | QDir::Hidden | QDir::Readable);
+
+	FileList.RemoveAll();
+	QStringList Files = Dir.entryList();
+
+	for (int FileIdx = 0; FileIdx < Files.size(); FileIdx++)
+	{
+		QString AbsolutePath = Dir.absoluteFilePath(Files[FileIdx]);
+
+		FileList.Add(AbsolutePath.toLocal8Bit().data());
+	}
+}
+
+bool lcApplication::LoadPiecesLibrary(const char* LibPath, const char* LibraryInstallPath, const char* LDrawPath, const char* LibraryCachePath)
 {
 	if (mLibrary == NULL)
 		mLibrary = new lcPiecesLibrary();
 
 	if (LibPath && LibPath[0])
+		return mLibrary->Load(LibPath, LibraryCachePath);
+
+	char* EnvPath = getenv("LEOCAD_LIB");
+
+	if (EnvPath && EnvPath[0])
 	{
-		if (mLibrary->Load(LibPath, LibraryCachePath))
-			return true;
+		return mLibrary->Load(EnvPath, LibraryCachePath);
 	}
-	else
+
+	QString CustomPath = lcGetProfileString(LC_PROFILE_PARTS_LIBRARY);
+
+	if (!CustomPath.isEmpty())
+		return mLibrary->Load(CustomPath.toLatin1().constData(), LibraryCachePath); // todo: qstring
+
+	if (LibraryInstallPath && LibraryInstallPath[0])
 	{
-		char* EnvPath = getenv("LEOCAD_LIB");
+		char LibraryPath[LC_MAXPATH];
 
-		if (EnvPath && EnvPath[0])
+		strcpy(LibraryPath, LibraryInstallPath);
+
+		int i = strlen(LibraryPath) - 1;
+		if ((LibraryPath[i] != '\\') && (LibraryPath[i] != '/'))
+			strcat(LibraryPath, "/");
+
+		strcat(LibraryPath, "library.bin");
+
+		if (mLibrary->Load(LibraryPath, LibraryCachePath))
 		{
-			if (mLibrary->Load(EnvPath, LibraryCachePath))
-				return true;
+			mLibrary->SetOfficialPieces();
+			return true;
 		}
-		else
-		{
-			char CustomPath[LC_MAXPATH];
+	}
 
-			strcpy(CustomPath, lcGetProfileString(LC_PROFILE_PARTS_LIBRARY));
+	if (LDrawPath && LDrawPath[0])
+	{
+		char LibraryPath[LC_MAXPATH];
 
-			if (CustomPath[0])
-			{
-				if (mLibrary->Load(CustomPath, LibraryCachePath))
-					return true;
-			}
-			else if (LibraryInstallPath && LibraryInstallPath[0])
-			{
-				char LibraryPath[LC_MAXPATH];
+		strcpy(LibraryPath, LDrawPath);
 
-				strcpy(LibraryPath, LibraryInstallPath);
+		int i = strlen(LibraryPath) - 1;
+		if ((LibraryPath[i] != '\\') && (LibraryPath[i] != '/'))
+			strcat(LibraryPath, "/");
 
-				int i = strlen(LibraryPath) - 1;
-				if ((LibraryPath[i] != '\\') && (LibraryPath[i] != '/'))
-					strcat(LibraryPath, "/");
-
-				strcat(LibraryPath, "library.bin");
-
-				if (mLibrary->Load(LibraryPath, LibraryCachePath))
-				{
-					mLibrary->SetOfficialPieces();
-					return true;
-				}
-			}
-		}
+		if (mLibrary->Load(LibraryPath, LibraryCachePath))
+			return true;
 	}
 
 	return false;
@@ -131,6 +178,7 @@ void lcApplication::ParseIntegerArgument(int* CurArg, int argc, char* argv[], in
 	}
 	else
 	{
+		*Value = 0;
 		printf("Not enough parameters for the %s argument.", argv[(*CurArg) - 1]);
 	}
 }
@@ -148,21 +196,23 @@ void lcApplication::ParseStringArgument(int* CurArg, int argc, char* argv[], cha
 	}
 }
 
-bool lcApplication::Initialize(int argc, char* argv[], const char* LibraryInstallPath, const char* LibraryCachePath)
+bool lcApplication::Initialize(int argc, char* argv[], const char* LibraryInstallPath, const char* LDrawPath, const char* LibraryCachePath)
 {
 	char* LibPath = LIBPATH_DEFAULT;
 
 	// Image output options.
 	bool SaveImage = false;
-	bool ImageHighlight = false;
+	bool SaveWavefront = false;
+	bool Save3DS = false;
+//	bool ImageHighlight = false;
 	int ImageWidth = lcGetProfileInt(LC_PROFILE_IMAGE_WIDTH);
 	int ImageHeight = lcGetProfileInt(LC_PROFILE_IMAGE_HEIGHT);
-	int ImageStart = 0;
-	int ImageEnd = 0;
+	lcStep ImageStart = 0;
+	lcStep ImageEnd = 0;
 	char* ImageName = NULL;
-
-	// File to open.
 	char* ProjectName = NULL;
+	char* SaveWavefrontName = NULL;
+	char* Save3DSName = NULL;
 
 	// Parse the command line arguments.
 	for (int i = 1; i < argc; i++)
@@ -195,18 +245,42 @@ bool lcApplication::Initialize(int argc, char* argv[], const char* LibraryInstal
 			}
 			else if ((strcmp(Param, "-f") == 0) || (strcmp(Param, "--from") == 0))
 			{
-				ParseIntegerArgument(&i, argc, argv, &ImageStart);
+				int Step;
+				ParseIntegerArgument(&i, argc, argv, &Step);
+				ImageStart = Step;
 			}
 			else if ((strcmp(Param, "-t") == 0) || (strcmp(Param, "--to") == 0))
 			{
-				ParseIntegerArgument(&i, argc, argv, &ImageEnd);
+				int Step;
+				ParseIntegerArgument(&i, argc, argv, &Step);
+				ImageEnd = Step;
 			}
-			else if (strcmp(Param, "--highlight") == 0)
-				ImageHighlight = true;
+//			else if (strcmp(Param, "--highlight") == 0)
+//				ImageHighlight = true;
+			else if ((strcmp(Param, "-wf") == 0) || (strcmp(Param, "--export-wavefront") == 0))
+			{
+				SaveWavefront = true;
+
+				if ((argc > (i+1)) && (argv[i+1][0] != '-'))
+				{
+					i++;
+					SaveWavefrontName = argv[i];
+				}
+			}
+			else if ((strcmp(Param, "-3ds") == 0) || (strcmp(Param, "--export-3ds") == 0))
+			{
+				Save3DS = true;
+
+				if ((argc > (i+1)) && (argv[i+1][0] != '-'))
+				{
+					i++;
+					Save3DSName = argv[i];
+				}
+			}
 			else if ((strcmp(Param, "-v") == 0) || (strcmp(Param, "--version") == 0))
 			{
 				printf("LeoCAD Version " LC_VERSION_TEXT "\n");
-				printf("Compiled "__DATE__"\n");
+				printf("Compiled " __DATE__ "\n");
 
 				return false;
 			}
@@ -220,7 +294,9 @@ bool lcApplication::Initialize(int argc, char* argv[], const char* LibraryInstal
 				printf("  -h, --height <height>: Sets the picture height.\n");
 				printf("  -f, --from <time>: Sets the first frame or step to save pictures.\n");
 				printf("  -t, --to <time>: Sets the last frame or step to save pictures.\n");
-				printf("  --highlight: Highlight pieces in the steps they appear.\n");
+//				printf("  --highlight: Highlight pieces in the steps they appear.\n");
+				printf("  -wf, --export-wavefront <outfile.obj>: Exports the model to Wavefront format.\n");
+				printf("  -3ds, --export-3ds <outfile.3ds>: Exports the model to 3DS format.\n");
 				printf("  \n");
 
 				return false;
@@ -234,145 +310,143 @@ bool lcApplication::Initialize(int argc, char* argv[], const char* LibraryInstal
 		}
 	}
 
-	if (!LoadPiecesLibrary(LibPath, LibraryInstallPath, LibraryCachePath))
+	gMainWindow = new lcMainWindow();
+	lcLoadDefaultKeyboardShortcuts();
+
+	if (!LoadPiecesLibrary(LibPath, LibraryInstallPath, LDrawPath, LibraryCachePath))
 	{
-		if (SaveImage)
+		if (SaveImage || SaveWavefront || Save3DS)
 		{
 			fprintf(stderr, "ERROR: Cannot load pieces library.");
 			return false;
 		}
 
-		mLibrary->CreateBuiltinPieces();
-
-		gMainWindow->DoMessageBox("LeoCAD could not find a compatible Pieces Library so only a small number of pieces will be available.\n\n"
-		                          "Please visit http://www.leocad.org for information on how to download and install a library.", LC_MB_OK | LC_MB_ICONERROR);
+		if (mLibrary->LoadBuiltinPieces())
+			QMessageBox::information(gMainWindow, tr("LeoCAD"), tr("LeoCAD could not find a compatible Parts Library so only a small number of parts will be available.\n\n"
+			                         "Please visit http://www.leocad.org for information on how to download and install a library."));
+		else
+			QMessageBox::information(gMainWindow, tr("LeoCAD"), tr("LeoCAD could not load Parts Library.\n\n"
+			                         "Please visit http://www.leocad.org for information on how to download and install a library."));
 	}
 
-	// Create a new project.
-	mProject = new Project();
+	gMainWindow->CreateWidgets();
 
-	GL_DisableVertexBufferObject();
+	// Create a new project.
+	Project* NewProject = new Project();
+	SetProject(NewProject);
 
 	// Load project.
-	if (ProjectName && mProject->OpenProject(ProjectName))
+	if (ProjectName && gMainWindow->OpenProject(ProjectName))
 	{
-		if (!SaveImage)
-			return true;
-
-		// Check if there's a file name and it has an extension.
-		bool NeedExt = true;
-		String FileName;
-
-		if (!ImageName)
+		if (SaveImage)
 		{
-			FileName = ProjectName;
+			QString FileName;
 
-			int i = FileName.ReverseFind('.');
-			if (i != -1)
-				FileName[i] = 0;
-		}
-		else
-		{
-			FileName = ImageName;
+			if (ImageName)
+				FileName = ImageName;
+			else
+				FileName = ProjectName;
 
-			int i = FileName.ReverseFind('.');
-			String Ext;
+			QString Extension = QFileInfo(FileName).suffix().toLower();
 
-			if (i != -1)
+			if (Extension.isEmpty())
 			{
-				Ext = FileName.Right(FileName.GetLength() - i);
-				Ext.MakeLower();
+				FileName += lcGetProfileString(LC_PROFILE_IMAGE_EXTENSION);
+			}
+			else if (Extension != "bmp" && Extension != "jpg" && Extension != "jpeg" && Extension != "png")
+			{
+				FileName = FileName.left(FileName.length() - Extension.length() - 1);
+				FileName += lcGetProfileString(LC_PROFILE_IMAGE_EXTENSION);
 			}
 
-			if (Ext == "bmp")
-				NeedExt = false;
-			else if ((Ext == "jpg") || (Ext == "jpeg"))
-				NeedExt = false;
-			else if (Ext == "png")
-				NeedExt = false;
-		}
+			if (ImageEnd < ImageStart)
+				ImageEnd = ImageStart;
+			else if (ImageStart > ImageEnd)
+				ImageStart = ImageEnd;
 
-		// Setup default options.
-		int ImageOptions = lcGetProfileInt(LC_PROFILE_IMAGE_OPTIONS);
-		bool ImageTransparent = (ImageOptions & LC_IMAGE_TRANSPARENT) != 0;
-		LC_IMAGE_FORMAT ImageFormat = (LC_IMAGE_FORMAT)(ImageOptions & ~(LC_IMAGE_MASK));
-
-		// Append file extension if needed.
-		if (NeedExt)
-		{
-			switch (ImageFormat)
+			if ((ImageStart == 0) && (ImageEnd == 0))
 			{
-			case LC_IMAGE_BMP:
-				FileName += ".bmp";
-				break;
-			case LC_IMAGE_JPG:
-				FileName += ".jpg";
-				break;
-			default:
-			case LC_IMAGE_PNG:
-				FileName += ".png";
-				break;
+				ImageStart = ImageEnd = mProject->GetActiveModel()->GetCurrentStep();
 			}
-		}
+			else if ((ImageStart == 0) && (ImageEnd != 0))
+			{
+				ImageStart = ImageEnd;
+			}
+			else if ((ImageStart != 0) && (ImageEnd == 0))
+			{
+				ImageEnd = ImageStart;
+			}
 
-		if (ImageEnd < ImageStart)
-			ImageEnd = ImageStart;
-		else if (ImageStart > ImageEnd)
-			ImageStart = ImageEnd;
+			if (ImageStart > 255)
+				ImageStart = 255;
 
-		if ((ImageStart == 0) && (ImageEnd == 0))
-		{
-			ImageStart = ImageEnd = mProject->GetCurrentTime();
-		}
-		else if ((ImageStart == 0) && (ImageEnd != 0))
-		{
-			ImageStart = ImageEnd;
-		}
-		else if ((ImageStart != 0) && (ImageEnd == 0))
-		{
-			ImageEnd = ImageStart;
-		}
+			if (ImageEnd > 255)
+				ImageEnd = 255;
 
-		if (ImageStart > 255)
-			ImageStart = 255;
-
-		if (ImageEnd > 255)
-			ImageEnd = 255;
-
-		Image* images = new Image[ImageEnd - ImageStart + 1];
-		mProject->CreateImages(images, ImageWidth, ImageHeight, ImageStart, ImageEnd, ImageHighlight);
-
-		for (int i = 0; i <= ImageEnd - ImageStart; i++)
-		{
-			char idx[256];
-			String Frame;
+			QString Frame;
 
 			if (ImageStart != ImageEnd)
 			{
-				sprintf(idx, "%02d", i+1);
-				int Ext = FileName.ReverseFind('.');
-
-				Frame = FileName.Left(Ext) + idx + FileName.Right(FileName.GetLength() - Ext);
+				QString Extension = QFileInfo(FileName).suffix();
+				Frame = FileName.left(FileName.length() - Extension.length() - 1) + QLatin1String("%1.") + Extension;
 			}
 			else
 				Frame = FileName;
 
-			images[i].FileSave(Frame, ImageFormat, ImageTransparent);
+			lcGetActiveModel()->SaveStepImages(Frame, ImageWidth, ImageHeight, ImageStart, ImageEnd);
 		}
 
-		delete []images;
+		if (SaveWavefront)
+		{
+			QString FileName;
 
+			if (SaveWavefrontName)
+				FileName = SaveWavefrontName;
+			else
+				FileName = ProjectName;
+
+			QString Extension = QFileInfo(FileName).suffix().toLower();
+
+			if (Extension.isEmpty())
+			{
+				FileName += ".obj";
+			}
+			else if (Extension != "obj")
+			{
+				FileName = FileName.left(FileName.length() - Extension.length() - 1);
+				FileName += ".obj";
+			}
+
+			mProject->ExportWavefront(FileName);
+		}
+
+		if (Save3DS)
+		{
+			QString FileName;
+
+			if (Save3DSName)
+				FileName = Save3DSName;
+			else
+				FileName = ProjectName;
+
+			QString Extension = QFileInfo(FileName).suffix().toLower();
+
+			if (Extension.isEmpty())
+			{
+				FileName += ".3ds";
+			}
+			else if (Extension != "3ds")
+			{
+				FileName = FileName.left(FileName.length() - Extension.length() - 1);
+				FileName += ".3ds";
+			}
+
+			mProject->Export3DStudio(FileName);
+		}
+	}
+
+	if (SaveImage || SaveWavefront || Save3DS)
 		return false;
-	}
-	else
-	{
-		if (SaveImage)
-			return false;
-		else
-			mProject->OnNewDocument();
-	}
-
-	lcLoadDefaultKeyboardShortcuts();
 
 	return true;
 }
@@ -390,14 +464,13 @@ void lcApplication::ShowPreferencesDialog()
 
 	Options.Preferences = mPreferences;
 
-	strcpy(Options.DefaultAuthor, lcGetProfileString(LC_PROFILE_DEFAULT_AUTHOR_NAME));
-	strcpy(Options.ProjectsPath, lcGetProfileString(LC_PROFILE_PROJECTS_PATH));
-	strcpy(Options.LibraryPath, lcGetProfileString(LC_PROFILE_PARTS_LIBRARY));
-	strcpy(Options.POVRayPath, lcGetProfileString(LC_PROFILE_POVRAY_PATH));
-	strcpy(Options.LGEOPath, lcGetProfileString(LC_PROFILE_POVRAY_LGEO_PATH));
+	Options.DefaultAuthor = lcGetProfileString(LC_PROFILE_DEFAULT_AUTHOR_NAME);
+	Options.ProjectsPath = lcGetProfileString(LC_PROFILE_PROJECTS_PATH);
+	Options.LibraryPath = lcGetProfileString(LC_PROFILE_PARTS_LIBRARY);
+	Options.POVRayPath = lcGetProfileString(LC_PROFILE_POVRAY_PATH);
+	Options.LGEOPath = lcGetProfileString(LC_PROFILE_POVRAY_LGEO_PATH);
 	Options.CheckForUpdates = lcGetProfileInt(LC_PROFILE_CHECK_UPDATES);
 
-	Options.Snap = lcGetActiveProject()->m_nSnap;
 	Options.AASamples = CurrentAASamples;
 
 	Options.Categories = gCategories;
@@ -411,11 +484,10 @@ void lcApplication::ShowPreferencesDialog()
 	if (!gMainWindow->DoDialog(LC_DIALOG_PREFERENCES, &Options))
 		return;
 
-	bool LibraryChanged = strcmp(Options.LibraryPath, lcGetProfileString(LC_PROFILE_PARTS_LIBRARY));
+	bool LibraryChanged = Options.LibraryPath != lcGetProfileString(LC_PROFILE_PARTS_LIBRARY);
 	bool AAChanged = CurrentAASamples != Options.AASamples;
 
 	mPreferences = Options.Preferences;
-	lcGetActiveProject()->m_nSnap = Options.Snap;
 
 	mPreferences.SaveDefaults();
 
@@ -425,15 +497,14 @@ void lcApplication::ShowPreferencesDialog()
 	lcSetProfileString(LC_PROFILE_POVRAY_PATH, Options.POVRayPath);
 	lcSetProfileString(LC_PROFILE_POVRAY_LGEO_PATH, Options.LGEOPath);
 	lcSetProfileInt(LC_PROFILE_CHECK_UPDATES, Options.CheckForUpdates);
-	lcSetProfileInt(LC_PROFILE_SNAP, Options.Snap);
 	lcSetProfileInt(LC_PROFILE_ANTIALIASING_SAMPLES, Options.AASamples);
 
 	if (LibraryChanged && AAChanged)
-		gMainWindow->DoMessageBox("Parts library and Anti-aliasing changes will only take effect the next time you start LeoCAD.", LC_MB_OK);
+		QMessageBox::information(gMainWindow, tr("LeoCAD"), tr("Parts library and Anti-aliasing changes will only take effect the next time you start LeoCAD."));
 	else if (LibraryChanged)
-		gMainWindow->DoMessageBox("Parts library changes will only take effect the next time you start LeoCAD.", LC_MB_OK);
+		QMessageBox::information(gMainWindow, tr("LeoCAD"), tr("Parts library changes will only take effect the next time you start LeoCAD."));
 	else if (AAChanged)
-		gMainWindow->DoMessageBox("Anti-aliasing changes will only take effect the next time you start LeoCAD.", LC_MB_OK);
+		QMessageBox::information(gMainWindow, tr("LeoCAD"), tr("Anti-aliasing changes will only take effect the next time you start LeoCAD."));
 
 	if (Options.CategoriesModified)
 	{
@@ -467,5 +538,5 @@ void lcApplication::ShowPreferencesDialog()
 	strcpy(opts.strHeader, m_strHeader);
 	*/
 
-	lcGetActiveProject()->UpdateAllViews();
+	gMainWindow->UpdateAllViews();
 }

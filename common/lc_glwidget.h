@@ -1,6 +1,8 @@
 #ifndef _LC_GLWIDGET_H_
 #define _LC_GLWIDGET_H_
 
+#include "lc_context.h"
+
 enum LC_CURSOR_TYPE
 {
 	LC_CURSOR_DEFAULT,
@@ -45,19 +47,30 @@ public:
 		mInputState.Control = false;
 		mInputState.Shift = false;
 		mInputState.Alt = false;
+		mContext = new lcContext();
+		mDeleteContext = true;
 	}
 
 	virtual ~lcGLWidget()
 	{
+		if (mDeleteContext)
+			delete mContext;
 	}
 
 	void* GetExtensionAddress(const char* FunctionName);
 	void ShowPopupMenu();
 
+	void SetContext(lcContext* Context)
+	{
+		if (mDeleteContext)
+			delete mContext;
+
+		mContext = Context;
+		mDeleteContext = false;
+	}
+
 	void MakeCurrent();
 	void Redraw();
-	void CaptureMouse();
-	void ReleaseMouse();
 	void SetCursor(LC_CURSOR_TYPE Cursor);
 
 	virtual void OnDraw() { }
@@ -78,6 +91,8 @@ public:
 	int mHeight;
 	int mCursorType;
 	void* mWidget;
+	lcContext* mContext;
+	bool mDeleteContext;
 };
 
 #endif // _LC_GLWIDGET_H_

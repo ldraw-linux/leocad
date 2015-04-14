@@ -1,6 +1,3 @@
-// A piece object in the LeoCAD world.
-//
-
 #include "lc_global.h"
 #include "lc_mesh.h"
 #include "lc_colors.h"
@@ -13,72 +10,140 @@
 #include "piece.h"
 #include "group.h"
 #include "project.h"
+#include "lc_model.h"
+#include "lc_file.h"
 #include "lc_application.h"
 #include "lc_library.h"
+#include "lc_context.h"
+#include "lc_qutils.h"
 
-#define LC_PIECE_SAVE_VERSION 11 // LeoCAD 0.77
-
-static LC_OBJECT_KEY_INFO piece_key_info[LC_PK_COUNT] =
-{
-  { "Position", 3, LC_PK_POSITION },
-  { "Rotation", 4, LC_PK_ROTATION }
-};
+#define LC_PIECE_SAVE_VERSION 12 // LeoCAD 0.80
 
 /////////////////////////////////////////////////////////////////////////////
 // Piece construction/destruction
 
-Piece::Piece(PieceInfo* pPieceInfo)
-	: Object (LC_OBJECT_PIECE)
+lcPiece::lcPiece(PieceInfo* pPieceInfo)
+	: lcObject (LC_OBJECT_PIECE)
 {
-	m_pNext = NULL;
 	mPieceInfo = pPieceInfo;
-	m_nState = 0;
-	mColorIndex = 0;
-	mColorCode = 0;
-	m_nStepShow = 1;
-	m_nStepHide = 255;
-	memset(m_strName, 0, sizeof(m_strName));
-	m_pGroup = NULL;
+	mState = 0;
+	mColorIndex = gDefaultColor;
+	mColorCode = 16;
+	mStepShow = 1;
+	mStepHide = LC_STEP_MAX;
+	mGroup = NULL;
+	mFileLine = -1;
 
 	if (mPieceInfo != NULL)
 		mPieceInfo->AddRef();
 
-	float *values[] = { mPosition, mRotation };
-	RegisterKeys (values, piece_key_info, LC_PK_COUNT);
-
-	float pos[3] = { 0, 0, 0 }, rot[4] = { 0, 0, 1, 0 };
-	ChangeKey(1, true, pos, LC_PK_POSITION);
-	ChangeKey(1, true, rot, LC_PK_ROTATION);
+	ChangeKey(mPositionKeys, lcVector3(0.0f, 0.0f, 0.0f), 1, true);
+	ChangeKey(mRotationKeys, lcMatrix33Identity(), 1, true);
 }
 
-Piece::~Piece()
+lcPiece::~lcPiece()
 {
 	if (mPieceInfo != NULL)
 		mPieceInfo->Release();
+}
+
+void lcPiece::SaveLDraw(QTextStream& Stream) const
+{
+	QLatin1String LineEnding("\r\n");
+
+	if (mStepHide != LC_STEP_MAX)
+		Stream << QLatin1String("0 !LEOCAD PIECE STEP_HIDE ") << mStepHide << LineEnding;
+
+	if (IsHidden())
+		Stream << QLatin1String("0 !LEOCAD PIECE HIDDEN") << LineEnding;
+
+	if (mPositionKeys.GetSize() > 1)
+		SaveKeysLDraw(Stream, mPositionKeys, "PIECE POSITION_KEY ");
+
+	if (mRotationKeys.GetSize() > 1)
+		SaveKeysLDraw(Stream, mRotationKeys, "PIECE ROTATION_KEY ");
+
+	Stream << "1 " << mColorCode << ' ';
+
+	const float* Matrix = mModelWorld;
+	float Numbers[12] = { Matrix[12], -Matrix[14], Matrix[13], Matrix[0], -Matrix[8], Matrix[4], -Matrix[2], Matrix[10], -Matrix[6], Matrix[1], -Matrix[9], Matrix[5] };
+
+	for (int NumberIdx = 0; NumberIdx < 12; NumberIdx++)
+		Stream << lcFormatValue(Numbers[NumberIdx]) << ' ';
+
+	Stream << mPieceInfo->GetSaveID() << LineEnding;
+}
+
+bool lcPiece::ParseLDrawLine(QTextStream& Stream)
+{
+	while (!Stream.atEnd())
+	{
+		QString Token;
+		Stream >> Token;
+
+		if (Token == QLatin1String("STEP_HIDE"))
+			Stream >> mStepHide;
+		else if (Token == QLatin1String("HIDDEN"))
+			SetHidden(true);
+		else if (Token == QLatin1String("POSITION_KEY"))
+			LoadKeysLDraw(Stream, mPositionKeys);
+		else if (Token == QLatin1String("ROTATION_KEY"))
+			LoadKeysLDraw(Stream, mRotationKeys);
+	}
+
+	return false;
 }
 
 /////////////////////////////////////////////////////////////////////////////
 // Piece save/load
 
 // Use only when loading from a file
-void Piece::SetPieceInfo(PieceInfo* pPieceInfo)
+void lcPiece::SetPieceInfo(PieceInfo* pPieceInfo)
 {
 	mPieceInfo = pPieceInfo;
 	mPieceInfo->AddRef();
 }
 
-bool Piece::FileLoad(lcFile& file)
+bool lcPiece::FileLoad(lcFile& file)
 {
-  lcuint8 version, ch;
+	lcuint8 version, ch;
 
-  version = file.ReadU8();
+	version = file.ReadU8();
 
-  if (version > LC_PIECE_SAVE_VERSION)
-    return false;
+	if (version > LC_PIECE_SAVE_VERSION)
+		return false;
 
-  if (version > 8)
-    if (!Object::FileLoad (file))
-      return false;
+	if (version > 8)
+	{
+		if (file.ReadU8() != 1)
+			return false;
+
+		lcuint16 time;
+		float param[4];
+		lcuint8 type;
+		lcuint32 n;
+
+		file.ReadU32(&n, 1);
+		while (n--)
+		{
+			file.ReadU16(&time, 1);
+			file.ReadFloats(param, 4);
+			file.ReadU8(&type, 1);
+
+			if (type == 0)
+				ChangeKey(mPositionKeys, lcVector3(param[0], param[1], param[2]), time, true);
+			else if (type == 1)
+				ChangeKey(mRotationKeys, lcMatrix33FromAxisAngle(lcVector3(param[0], param[1], param[2]), param[3] * LC_DTOR), time, true);
+		}
+
+		file.ReadU32(&n, 1);
+		while (n--)
+		{
+			file.ReadU16(&time, 1);
+			file.ReadFloats(param, 4);
+			file.ReadU8(&type, 1);
+		}
+	}
 
   if (version < 9)
   {
@@ -97,7 +162,10 @@ bool Piece::FileLoad(lcFile& file)
         file.ReadU16(&time, 1);
         file.ReadU8(&type, 1);
 
-		ChangeKey(time, true, param, type);
+		if (type == 0)
+			ChangeKey(mPositionKeys, lcVector3(param[0], param[1], param[2]), time, true);
+		else if (type == 1)
+			ChangeKey(mRotationKeys, lcMatrix33FromAxisAngle(lcVector3(param[0], param[1], param[2]), param[3] * LC_DTOR), time, true);
       }
 
       file.ReadU32(&keys, 1);
@@ -136,12 +204,8 @@ bool Piece::FileLoad(lcFile& file)
 			file.ReadU8(&b, 1);
 			time = b;
 
-			ChangeKey(1, true, ModelWorld.r[3], LC_PK_POSITION);
-
-			lcVector4 AxisAngle = lcMatrix44ToAxisAngle(ModelWorld);
-			AxisAngle[3] *= LC_RTOD;
-
-			ChangeKey(time, true, AxisAngle, LC_PK_ROTATION);
+			ChangeKey(mPositionKeys, ModelWorld.GetTranslation(), 1, true);
+			ChangeKey(mRotationKeys, lcMatrix33(ModelWorld), time, true);
 
 			lcint32 bl;
 			file.ReadS32(&bl, 1);
@@ -156,11 +220,8 @@ bool Piece::FileLoad(lcFile& file)
 			lcMatrix44 ModelWorld = lcMatrix44Translation(Translation);
 			ModelWorld = lcMul(lcMatrix44RotationZ(Rotation[2] * LC_DTOR), lcMul(lcMatrix44RotationY(Rotation[1] * LC_DTOR), lcMul(lcMatrix44RotationX(Rotation[0] * LC_DTOR), ModelWorld)));
 
-			ChangeKey(1, true, ModelWorld.r[3], LC_PK_POSITION);
-
-			lcVector4 AxisAngle = lcMatrix44ToAxisAngle(ModelWorld);
-			AxisAngle[3] *= LC_RTOD;
-			ChangeKey(1, true, AxisAngle, LC_PK_ROTATION);
+			ChangeKey(mPositionKeys, lcVector3(ModelWorld.r[3][0], ModelWorld.r[3][1], ModelWorld.r[3][2]), 1, true);
+			ChangeKey(mRotationKeys, lcMatrix33(ModelWorld), 1, true);
 	  }
     }
   }
@@ -175,7 +236,7 @@ bool Piece::FileLoad(lcFile& file)
   else
 	  file.ReadBuffer(name, LC_PIECE_NAME_LEN);
 
-	PieceInfo* pInfo = lcGetPiecesLibrary()->FindPiece(name, true);
+	PieceInfo* pInfo = lcGetPiecesLibrary()->FindPiece(name, NULL, true);
 	SetPieceInfo(pInfo);
 
 	// 11 (0.77)
@@ -194,11 +255,16 @@ bool Piece::FileLoad(lcFile& file)
 		file.ReadU32(&mColorCode, 1);
 	mColorIndex = lcGetColorIndex(mColorCode);
 
-  file.ReadU8(&m_nStepShow, 1);
+  lcuint8 Step;
+  file.ReadU8(&Step, 1);
+  mStepShow = Step;
   if (version > 1)
-    file.ReadU8(&m_nStepHide, 1);
+  {
+    file.ReadU8(&Step, 1);
+	mStepHide = Step == 255 ? LC_STEP_MAX : Step;
+  }
   else
-    m_nStepHide = 255;
+    mStepHide = LC_STEP_MAX;
 
   if (version > 5)
   {
@@ -207,261 +273,219 @@ bool Piece::FileLoad(lcFile& file)
 
     if (version > 7)
     {
-      file.ReadU8(&m_nState, 1);
-      Select (false, false, false);
+      lcuint8 Hidden;
+      file.ReadU8(&Hidden, 1);
+	  if (Hidden & 1)
+		  mState |= LC_PIECE_HIDDEN;
       file.ReadU8(&ch, 1);
-      file.ReadBuffer(m_strName, ch);
+	  file.Seek(ch, SEEK_CUR);
     }
     else
     {
       lcint32 hide;
       file.ReadS32(&hide, 1);
       if (hide != 0)
-        m_nState |= LC_PIECE_HIDDEN;
-      file.ReadBuffer(m_strName, 81);
+        mState |= LC_PIECE_HIDDEN;
+	  file.Seek(81, SEEK_CUR);
     }
 
     // 7 (0.64)
     lcint32 i = -1;
     if (version > 6)
       file.ReadS32(&i, 1);
-    m_pGroup = (Group*)(long)i;
+    mGroup = (lcGroup*)(long)i;
   }
   else
   {
     file.ReadU8(&ch, 1);
     if (ch == 0)
-      m_pGroup = (Group*)-1;
+      mGroup = (lcGroup*)-1;
     else
-      m_pGroup = (Group*)(long)ch;
+      mGroup = (lcGroup*)(long)ch;
 
     file.ReadU8(&ch, 1);
     if (ch & 0x01)
-      m_nState |= LC_PIECE_HIDDEN;
+      mState |= LC_PIECE_HIDDEN;
   }
 
-  return true;
+	if (version < 12)
+	{
+		for (int KeyIdx = 0; KeyIdx < mPositionKeys.GetSize(); KeyIdx++)
+			mPositionKeys[KeyIdx].Value *= 25.0f;
+	}
+
+	return true;
 }
 
-void Piece::FileSave(lcFile& file) const
+void lcPiece::Initialize(const lcMatrix44& WorldMatrix, lcStep Step)
 {
-	file.WriteU8(LC_PIECE_SAVE_VERSION);
+	mStepShow = Step;
 
-	Object::FileSave (file);
+	ChangeKey(mPositionKeys, WorldMatrix.GetTranslation(), 1, true);
+	ChangeKey(mRotationKeys, lcMatrix33(WorldMatrix), 1, true);
 
-	file.WriteBuffer(mPieceInfo->m_strName, LC_PIECE_NAME_LEN);
-	file.WriteU32(mColorCode);
-	file.WriteU8(m_nStepShow);
-	file.WriteU8(m_nStepHide);
-	file.WriteU16(1); // m_nFrameShow
-	file.WriteU16(100); // m_nFrameHide
+	UpdatePosition(Step);
+}
 
-	// version 8
-	file.WriteU8(m_nState);
-
-	lcuint8 Length = strlen(m_strName);
-	file.WriteU8(Length);
-	file.WriteBuffer(m_strName, Length);
-
-	// version 7
-	lcint32 i;
-
-	if (m_pGroup != NULL)
+void lcPiece::InsertTime(lcStep Start, lcStep Time)
+{
+	if (mStepShow >= Start)
 	{
-		Group* pGroups = lcGetActiveProject()->m_pGroups;
-		for (i = 0; pGroups; pGroups = pGroups->m_pNext)
+		if (mStepShow < LC_STEP_MAX - Time)
+			mStepShow += Time;
+		else
+			mStepShow = LC_STEP_MAX;
+	}
+
+	if (mStepHide >= Start)
+	{
+		if (mStepHide < LC_STEP_MAX - Time)
+			mStepHide += Time;
+		else
+			mStepHide = LC_STEP_MAX;
+	}
+
+	if (mStepShow >= mStepHide)
+	{
+		if (mStepShow != LC_STEP_MAX)
+			mStepHide = mStepShow + 1;
+		else
 		{
-			if (m_pGroup == pGroups)
-				break;
-			i++;
+			mStepShow = LC_STEP_MAX - 1;
+			mStepHide = LC_STEP_MAX;
 		}
 	}
-	else
-		i = -1;
 
-	file.WriteS32(i);
+	lcObject::InsertTime(mPositionKeys, Start, Time);
+	lcObject::InsertTime(mRotationKeys, Start, Time);
 }
 
-void Piece::Initialize(float x, float y, float z, unsigned char nStep)
+void lcPiece::RemoveTime(lcStep Start, lcStep Time)
 {
-	m_nStepShow = nStep;
+	if (mStepShow >= Start)
+	{
+		if (mStepShow > Time)
+			mStepShow -= Time;
+		else
+			mStepShow = 1;
+	}
 
-	float pos[3] = { x, y, z }, rot[4] = { 0, 0, 1, 0 };
-	ChangeKey(1, true, pos, LC_PK_POSITION);
-	ChangeKey(1, true, rot, LC_PK_ROTATION);
+	if (mStepHide != LC_STEP_MAX)
+	{
+		if (mStepHide > Time)
+			mStepHide -= Time;
+		else
+			mStepHide = 1;
+	}
 
-	UpdatePosition(1);
+	if (mStepShow >= mStepHide)
+	{
+		if (mStepShow != LC_STEP_MAX)
+			mStepHide = mStepShow + 1;
+		else
+		{
+			mStepShow = LC_STEP_MAX - 1;
+			mStepHide = LC_STEP_MAX;
+		}
+	}
+
+	lcObject::RemoveTime(mPositionKeys, Start, Time);
+	lcObject::RemoveTime(mRotationKeys, Start, Time);
 }
 
-void Piece::CreateName(Piece* pPiece)
+void lcPiece::RayTest(lcObjectRayTest& ObjectRayTest) const
 {
-	int i, max = 0;
-
-	for (; pPiece; pPiece = pPiece->m_pNext)
-		if (strncmp (pPiece->m_strName, mPieceInfo->m_strDescription, strlen(mPieceInfo->m_strDescription)) == 0)
-			if (sscanf(pPiece->m_strName + strlen(mPieceInfo->m_strDescription), " #%d", &i) == 1)
-				if (i > max)
-					max = i;
-
-	sprintf (m_strName, "%s #%.2d", mPieceInfo->m_strDescription, max+1);
+	if (mPieceInfo->MinIntersectDist(mModelWorld, ObjectRayTest.Start, ObjectRayTest.End, ObjectRayTest.Distance))
+	{
+		ObjectRayTest.ObjectSection.Object = const_cast<lcPiece*>(this);
+		ObjectRayTest.ObjectSection.Section = 0;
+	}
 }
 
-void Piece::Select (bool bSelecting, bool bFocus, bool bMultiple)
+void lcPiece::BoxTest(lcObjectBoxTest& ObjectBoxTest) const
 {
-  if (bSelecting == true)
-  {
-    if (bFocus == true)
-      m_nState |= (LC_PIECE_FOCUSED|LC_PIECE_SELECTED);
-    else
-      m_nState |= LC_PIECE_SELECTED;
-  }
-  else
-  {
-    if (bFocus == true)
-      m_nState &= ~(LC_PIECE_FOCUSED);
-    else
-      m_nState &= ~(LC_PIECE_SELECTED|LC_PIECE_FOCUSED);
-  }
+	if (mPieceInfo->BoxTest(mModelWorld, ObjectBoxTest.Planes))
+		ObjectBoxTest.Objects.Add(const_cast<lcPiece*>(this));
 }
 
-void Piece::InsertTime(unsigned short start, unsigned short time)
+void lcPiece::DrawInterface(lcContext* Context, const lcMatrix44& ViewMatrix) const
 {
-	if (m_nStepShow >= start)
-		m_nStepShow = lcMin(m_nStepShow + time, 255);
-
-	if (m_nStepHide >= start)
-		m_nStepHide = lcMin(m_nStepHide + time, 255);
-
-	if (m_nStepShow > lcGetActiveProject()->GetCurrentTime())
-		Select (false, false, false);
-
-	Object::InsertTime(start, time);
-}
-
-void Piece::RemoveTime (unsigned short start, unsigned short time)
-{
-	if (m_nStepShow >= start)
-		m_nStepShow = lcMax(m_nStepShow - time, 1);
-
-	if (m_nStepHide != 255)
-		m_nStepHide = lcMax(m_nStepHide - time, 1);
-
-	if (m_nStepHide < lcGetActiveProject()->GetCurrentTime())
-		Select (false, false, false);
-
-	Object::RemoveTime(start, time);
-}
-
-void Piece::MinIntersectDist(lcClickLine* ClickLine)
-{
-	lcMatrix44 WorldModel = lcMatrix44AffineInverse(mModelWorld);
-
-	lcVector3 Start = lcMul31(ClickLine->Start, WorldModel);
-	lcVector3 End = lcMul31(ClickLine->End, WorldModel);
+	float LineWidth = lcGetPreferences().mLineWidth;
+	Context->SetLineWidth(2.0f * LineWidth);
 
 	lcVector3 Min(mPieceInfo->m_fDimensions[3], mPieceInfo->m_fDimensions[4], mPieceInfo->m_fDimensions[5]);
 	lcVector3 Max(mPieceInfo->m_fDimensions[0], mPieceInfo->m_fDimensions[1], mPieceInfo->m_fDimensions[2]);
-	float Dist;
+	lcVector3 Edge((Max - Min) * 0.33f);
 
-	if (!lcBoundingBoxRayMinIntersectDistance(Min, Max, Start, End, &Dist, NULL) || (Dist >= ClickLine->MinDist))
-		return;
-
-	lcVector3 Intersection;
-
-	if (mPieceInfo->mMesh->MinIntersectDist(Start, End, ClickLine->MinDist, Intersection))
-		ClickLine->Closest = this;
-}
-
-bool Piece::IntersectsVolume(const lcVector4 Planes[6]) const
-{
-	// First check the bounding box for quick rejection.
-	lcVector3 Box[8] =
+	float Verts[48][3] =
 	{
-		lcVector3(mPieceInfo->m_fDimensions[0], mPieceInfo->m_fDimensions[1], mPieceInfo->m_fDimensions[5]),
-		lcVector3(mPieceInfo->m_fDimensions[3], mPieceInfo->m_fDimensions[1], mPieceInfo->m_fDimensions[5]),
-		lcVector3(mPieceInfo->m_fDimensions[0], mPieceInfo->m_fDimensions[1], mPieceInfo->m_fDimensions[2]),
-		lcVector3(mPieceInfo->m_fDimensions[3], mPieceInfo->m_fDimensions[4], mPieceInfo->m_fDimensions[5]),
-		lcVector3(mPieceInfo->m_fDimensions[3], mPieceInfo->m_fDimensions[4], mPieceInfo->m_fDimensions[2]),
-		lcVector3(mPieceInfo->m_fDimensions[0], mPieceInfo->m_fDimensions[4], mPieceInfo->m_fDimensions[2]),
-		lcVector3(mPieceInfo->m_fDimensions[0], mPieceInfo->m_fDimensions[4], mPieceInfo->m_fDimensions[5]),
-		lcVector3(mPieceInfo->m_fDimensions[3], mPieceInfo->m_fDimensions[1], mPieceInfo->m_fDimensions[2])
+		{ Max[0], Max[1], Max[2] }, { Max[0] - Edge[0], Max[1], Max[2] },
+		{ Max[0], Max[1], Max[2] }, { Max[0], Max[1] - Edge[1], Max[2] },
+		{ Max[0], Max[1], Max[2] }, { Max[0], Max[1], Max[2] - Edge[2] },
+
+		{ Min[0], Max[1], Max[2] }, { Min[0] + Edge[0], Max[1], Max[2] },
+		{ Min[0], Max[1], Max[2] }, { Min[0], Max[1] - Edge[1], Max[2] },
+		{ Min[0], Max[1], Max[2] }, { Min[0], Max[1], Max[2] - Edge[2] },
+
+		{ Max[0], Min[1], Max[2] }, { Max[0] - Edge[0], Min[1], Max[2] },
+		{ Max[0], Min[1], Max[2] }, { Max[0], Min[1] + Edge[1], Max[2] },
+		{ Max[0], Min[1], Max[2] }, { Max[0], Min[1], Max[2] - Edge[2] },
+
+		{ Min[0], Min[1], Max[2] }, { Min[0] + Edge[0], Min[1], Max[2] },
+		{ Min[0], Min[1], Max[2] }, { Min[0], Min[1] + Edge[1], Max[2] },
+		{ Min[0], Min[1], Max[2] }, { Min[0], Min[1], Max[2] - Edge[2] },
+
+		{ Max[0], Max[1], Min[2] }, { Max[0] - Edge[0], Max[1], Min[2] },
+		{ Max[0], Max[1], Min[2] }, { Max[0], Max[1] - Edge[1], Min[2] },
+		{ Max[0], Max[1], Min[2] }, { Max[0], Max[1], Min[2] + Edge[2] },
+
+		{ Min[0], Max[1], Min[2] }, { Min[0] + Edge[0], Max[1], Min[2] },
+		{ Min[0], Max[1], Min[2] }, { Min[0], Max[1] - Edge[1], Min[2] },
+		{ Min[0], Max[1], Min[2] }, { Min[0], Max[1], Min[2] + Edge[2] },
+
+		{ Max[0], Min[1], Min[2] }, { Max[0] - Edge[0], Min[1], Min[2] },
+		{ Max[0], Min[1], Min[2] }, { Max[0], Min[1] + Edge[1], Min[2] },
+		{ Max[0], Min[1], Min[2] }, { Max[0], Min[1], Min[2] + Edge[2] },
+
+		{ Min[0], Min[1], Min[2] }, { Min[0] + Edge[0], Min[1], Min[2] },
+		{ Min[0], Min[1], Min[2] }, { Min[0], Min[1] + Edge[1], Min[2] },
+		{ Min[0], Min[1], Min[2] }, { Min[0], Min[1], Min[2] + Edge[2] },
 	};
 
-	// Transform the planes to local space.
-	lcMatrix44 WorldToLocal = lcMatrix44FromAxisAngle(lcVector3(mRotation[0], mRotation[1], mRotation[2]), -mRotation[3] * LC_DTOR);
-	WorldToLocal.SetTranslation(lcMul31(lcVector3(-mPosition[0], -mPosition[1], -mPosition[2]), WorldToLocal));
+	Context->SetWorldViewMatrix(lcMul(mModelWorld, ViewMatrix));
 
-	const int NumPlanes = 6;
-	lcVector4 LocalPlanes[NumPlanes];
-	int i;
+	if (IsFocused())
+		lcSetColorFocused();
+	else
+		lcSetColorSelected();
 
-	for (i = 0; i < NumPlanes; i++)
-	{
-		lcVector3 PlaneNormal = lcMul30(Planes[i], WorldToLocal);
-		LocalPlanes[i] = lcVector4(PlaneNormal, Planes[i][3] - lcDot3(WorldToLocal[3], PlaneNormal));
-	}
-
-	// Start by testing trivial reject/accept cases.
-	int Outcodes[8];
-
-	for (i = 0; i < 8; i++)
-	{
-		Outcodes[i] = 0;
-
-		for (int j = 0; j < NumPlanes; j++)
-		{
-			if (lcDot3(Box[i], LocalPlanes[j]) + LocalPlanes[j][3] > 0)
-				Outcodes[i] |= 1 << j;
-		}
-	}
-
-	int OutcodesOR = 0, OutcodesAND = 0x3f;
-
-	for (i = 0; i < 8; i++)
-	{
-		OutcodesAND &= Outcodes[i];
-		OutcodesOR |= Outcodes[i];
-	}
-
-	// All corners outside the same plane.
-	if (OutcodesAND != 0)
-		return false;
-
-	// All corners inside the volume.
-	if (OutcodesOR == 0)
-		return true;
-
-	// Partial intersection, so check if any triangles are inside.
-	bool Hit = mPieceInfo->mMesh->IntersectsPlanes(LocalPlanes);
-
-	return Hit;
+	glVertexPointer(3, GL_FLOAT, 0, Verts);
+	glDrawArrays(GL_LINES, 0, 48);
 }
 
-void Piece::Move(unsigned short nTime, bool bAddKey, float dx, float dy, float dz)
+void lcPiece::Move(lcStep Step, bool AddKey, const lcVector3& Distance)
 {
-	mPosition[0] += dx;
-	mPosition[1] += dy;
-	mPosition[2] += dz;
+	lcVector3 Position = mModelWorld.GetTranslation() + Distance;
 
-	ChangeKey(nTime, bAddKey, mPosition, LC_PK_POSITION);
+	ChangeKey(mPositionKeys, Position, Step, AddKey);
 
-	mModelWorld.SetTranslation(mPosition);
+	mModelWorld.SetTranslation(Position);
 }
 
-bool Piece::IsVisible(unsigned short nTime)
+const char* lcPiece::GetName() const
 {
-	if (m_nState & LC_PIECE_HIDDEN)
-		return false;
-
-	if (m_nStepShow > nTime)
-		return false;
-
-	if ((m_nStepHide == 255) || (m_nStepHide > nTime))
-		return true;
-	return false;
+	return mPieceInfo->m_strDescription;
 }
 
-void Piece::CompareBoundingBox(float box[6])
+bool lcPiece::IsVisible(lcStep Step)
+{
+	if (mState & LC_PIECE_HIDDEN)
+		return false;
+
+	return (mStepShow <= Step) && (mStepHide > Step);
+}
+
+void lcPiece::CompareBoundingBox(float box[6])
 {
 	lcVector3 Points[8] =
 	{
@@ -488,36 +512,15 @@ void Piece::CompareBoundingBox(float box[6])
 	}
 }
 
-Group* Piece::GetTopGroup()
+lcGroup* lcPiece::GetTopGroup()
 {
-	return m_pGroup ? m_pGroup->GetTopGroup() : NULL;
+	return mGroup ? mGroup->GetTopGroup() : NULL;
 }
 
-void Piece::DoGroup(Group* pGroup)
+void lcPiece::UpdatePosition(lcStep Step)
 {
-	if (m_pGroup != NULL && m_pGroup != (Group*)-1 && m_pGroup > (Group*)0xFFFF)
-		m_pGroup->SetGroup(pGroup);
-	else
-		m_pGroup = pGroup;
-}
+	lcVector3 Position = CalculateKey(mPositionKeys, Step);
+	lcMatrix33 Rotation = CalculateKey(mRotationKeys, Step);
 
-void Piece::UnGroup(Group* pGroup)
-{
-	if ((m_pGroup == pGroup) || (pGroup == NULL))
-		m_pGroup = NULL;
-	else
-		if (m_pGroup != NULL)
-			m_pGroup->UnGroup(pGroup);
-}
-
-// Recalculates current position and connections
-void Piece::UpdatePosition(unsigned short nTime)
-{
-	if (!IsVisible(nTime))
-		m_nState &= ~(LC_PIECE_SELECTED|LC_PIECE_FOCUSED);
-
-	CalculateKeys(nTime);
-
-	mModelWorld = lcMatrix44FromAxisAngle(lcVector3(mRotation[0], mRotation[1], mRotation[2]), mRotation[3] * LC_DTOR);
-	mModelWorld.SetTranslation(mPosition);
+	mModelWorld = lcMatrix44(Rotation, Position);
 }
