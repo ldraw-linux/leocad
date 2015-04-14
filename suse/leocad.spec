@@ -38,7 +38,7 @@ virtual LEGO models and scenes.
 %setup -q -n leocad
 
 %build
-qmake
+qmake QMAKE_CXXFLAGS='-D LIBPATH_DEFAULT=\"/usr/share/ldraw/\"'
 make
 
 %install
